@@ -13,19 +13,16 @@ Build a service that tracks:
 
 ## In scope
 
-1. User import and external user creation API
-2. Subscription lifecycle
-3. Payment link generation
-4. First payment flow
-5. Monthly recurring payment flow
-6. Retry after failed payment
-7. Suspension after repeated failure
-8. Quarantine after expiration period
-9. Provider callback processing
-10. Domain events for future SendPulse integration
-11. Minimal support read API
-12. WayForPay first provider adapter
-13. Whitepay future provider adapter boundary
+1. Recurent payment lifecycle
+2. Payment link generation
+3. First payment flow
+4. Monthly recurring payment flow
+5. Retry after failed payment
+6. Provider callback processing
+7. Domain events for SendPulse integration
+8. Minimal support read API
+9. WayForPay first provider adapter
+10. Whitepay future provider adapter boundary
 
 ## Out of scope
 
@@ -36,6 +33,7 @@ Build a service that tracks:
 5. Refund management
 6. Raw card storage
 7. Production deployment automation
+8. Suspension lifecycle, after repeated failure
 
 ## Main architecture rule
 
