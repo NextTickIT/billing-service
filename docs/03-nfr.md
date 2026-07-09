@@ -7,19 +7,21 @@ Minimal NFR set for MVP and early production.
 - Active clients: up to 100,000
 - Payments per client: up to 1 scheduled payment per month
 - Concurrent support UI users: about 10
+- Client UI: 10,000 (effective 100)
+- We need to limit calls to WayForPay (rate limitter, queue)
 
 ## Performance
 
-- Support UI pages: under 1 second under normal load
-- Status API requests: under 500 ms under normal load
-- Provider callbacks (accept and store): under 1 second under normal load
+- Support UI pages: under 1-2 second under normal load
+- Status API requests: under 500ms - 1s under normal load
+- Provider callbacks (accept and store): under 2 second under normal load
 - Scheduler throughput: all due monthly payments processed within 24 hours, even if all 100,000 subscriptions are due on the same day
 
 ## Reliability
 
 - No loss of payment status, callbacks, payment attempts, subscription state, or domain events after restart.
 - Scheduler jobs must be restart-safe.
-- Payment processing must be idempotent.
+- Payment data must be idempotent.
 - Duplicate callbacks must not corrupt subscription state.
 
 ## Consistency
@@ -63,19 +65,9 @@ Structured logs and correlation IDs are required.
 - failed payments
 - pending payments
 - retry attempts
-- suspended subscriptions
-- quarantined subscriptions
 - provider callback errors
-- scheduler errors
-- event delivery errors
+- scheduled processes errors
 
 ## Backup and recovery
 
-- Database must be backed up automatically before production release.
-- For MVP, daily backup is acceptable.
-
-## Maintainability
-
-- Payment provider logic must be isolated from subscription domain logic.
-- Business rules must be testable without real providers.
-- Scheduler logic must be testable with controlled time.
+- For MVP, daily backup is acceptable (to external storage)
