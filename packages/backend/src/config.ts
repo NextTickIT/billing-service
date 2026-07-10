@@ -1,3 +1,5 @@
+import { Redacted } from 'effect';
+
 /**
  * Application configuration shape and loader.
  * Values come from the environment; the DB host defaults to the
@@ -15,6 +17,10 @@ export interface AppConfig {
   readonly host: string;
   readonly port: number;
   readonly database: DatabaseConfig;
+  /** Bootstrap admin credential (env `ADMIN_TOKEN`); hash-verified, never stored. */
+  readonly adminToken: Redacted.Redacted;
+  /** Session lifetime in seconds (env `SESSION_TTL_SECONDS`, default 24h). */
+  readonly sessionTtlSeconds: number;
 }
 
 export const loadConfig = (): AppConfig => ({
@@ -27,4 +33,6 @@ export const loadConfig = (): AppConfig => ({
     password: process.env['DB_PASSWORD'] ?? 'billing',
     database: process.env['DB_NAME'] ?? 'billing',
   },
+  adminToken: Redacted.make(process.env['ADMIN_TOKEN'] ?? ''),
+  sessionTtlSeconds: Number(process.env['SESSION_TTL_SECONDS'] ?? '86400'),
 });

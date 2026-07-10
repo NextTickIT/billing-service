@@ -19,6 +19,7 @@
     "lint": "eslint . && prettier --check .",
     "fix": "eslint . --fix && prettier --write .",
     "test": "turbo run test",
+    "test:e2e": "npm run test:e2e -w @billing-service/backend",
     "test:watch": "vitest",
     "format": "prettier --write .",
     "db:up": "docker compose up -d",
