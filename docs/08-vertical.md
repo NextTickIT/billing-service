@@ -19,18 +19,18 @@ Each valuable billing scenario should be implemented as a complete slice from AP
 
 Initial slices should be ordered by product value and risk:
 
-1. user creation or import
-2. subscription creation
-3. payment link generation
-4. first payment callback
-5. recurring billing attempt
+1. checkout session creation (API → payment link)
+2. checkout page (method choice, card tokenization)
+3. first payment callback → subscription creation + `payment_succeeded`
+4. outbox and sink delivery to SendPulse (≤ 60 seconds)
+5. recurring billing attempt (scheduler + token charge)
 6. duplicate charge protection
-7. failed payment retry
-8. suspension and access removal event
-9. quarantine
-10. recovery payment link
+7. failed payment retry schedule (days 0/1/3/5/7, final `renewal_failed`)
+8. incoming payment event pipeline (uniform path for any source)
+9. quarantine of unmatched payments + operator binding
+10. WayForPay migration poller (freshness + migration-tail metrics)
 11. support read API
-12. provider adapter extension boundary
+12. provider adapter extension boundary (Whitepay)
 
 Each slice must respect these horizontal boundaries:
 - api: accepts transport input, auth, routing, request shape

@@ -6,40 +6,42 @@ Public and support HTTP surface. Authentication requirements are noted per secti
 
 - `GET /health` (auth: none)
 
-## Users
+## Checkout sessions
 
-- `POST /api/users` (auth: service token)
+- `POST /api/checkout-sessions` (auth: service token)
+- `GET /checkout/:sessionId` (auth: none — public checkout page, unguessable session ID)
 
-### `POST /api/users`
+### `POST /api/checkout-sessions`
 
 Request body:
 
 ```json
 {
-  "externalId": "sendpulse:123",
-  "telegramId": "123456",
-  "email": "user@example.com",
-  "phone": "+380000000000"
+  "externalUserId": "sendpulse:123",
+  "amount": 30000,
+  "currency": "UAH",
+  "period": "P1M"
 }
 ```
 
+Response: session ID, payment link URL, expiry.
+
 ## Subscriptions
 
-- `POST /api/subscriptions` (auth: service token)
 - `GET /api/subscriptions/:id` (auth: service token)
-
-## Payment links
-
-- `POST /api/payment-links` (auth: service token)
+- `GET /api/subscriptions?externalUserId=...` (auth: service token)
 
 ## Provider callbacks
 
 - `POST /api/providers/:provider/callback` (auth: provider signature)
 
-## Support
+## Support / operator
 
-- `GET /api/users?query=value` (auth: support token)
-- `GET /api/users/:id/payments` (auth: support token)
-- `GET /api/subscriptions/:id/events` (auth: support token)
+All support endpoints require authentication (support token) and are audited.
 
-All support endpoints require authentication.
+- `GET /api/support/subscriptions?externalUserId=...`
+- `GET /api/support/subscriptions/:id/events`
+- `POST /api/support/subscriptions/:id/cancel`
+- `GET /api/support/quarantine`
+- `POST /api/support/quarantine/:id/bind` — bind an unmatched payment to a subscription (or create one); the event is then reprocessed normally
+- `GET /api/support/deliveries?status=failed` — undelivered outgoing events
