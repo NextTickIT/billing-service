@@ -5,10 +5,10 @@
   "type": "module",
   "main": "./dist/main.js",
   "scripts": {
-    "build": "tsc -b tsconfig.build.json && tsc-alias -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -b tsconfig.build.json && tsc-alias -p tsconfig.build.json",
     "dev": "tsx watch src/main.ts",
     "dev:worker": "tsx watch src/worker.ts",
-    "typecheck": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "lint": "eslint src test",
     "start": "node dist/main.js",

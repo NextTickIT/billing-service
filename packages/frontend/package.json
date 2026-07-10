@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -b tsconfig.build.json && tsc-alias -p tsconfig.build.json",
-    "typecheck": "tsc -b tsconfig.build.json",
+    "build": "rm -rf dist && tsc -b tsconfig.build.json && tsc-alias -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src"
   },
   "dependencies": {

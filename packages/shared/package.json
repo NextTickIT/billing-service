@@ -13,9 +13,9 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc -b tsconfig.build.json && tsc-alias -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -b tsconfig.build.json && tsc-alias -p tsconfig.build.json",
     "dev": "tsc -b tsconfig.build.json --watch",
-    "typecheck": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "lint": "eslint src test"
   },

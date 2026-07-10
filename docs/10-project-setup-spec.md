@@ -64,11 +64,11 @@ Stand up a TypeScript monorepo **skeleton** where every package shares identical
 ### D5 — Backend structure (Fastify + autoload)
 - **Decision:** Fastify with **`@fastify/autoload`**. Two autoloaded directories:
   - `src/plugins/` — **system plugins loaded before any module** (config, logger, Effect runtime, `@effect/sql-pg` connection Layer, TaskRegistry/dispatcher, error handler).
-  - `src/modules/{module_name}/` — one folder per module with separate files:
-    - `routes.ts` — transport only (Fastify route defs)
-    - `domain.ts` — domain logic as **Effect-returning functions** (services-as-functions, **no classes/methods**)
-    - `data-access.ts` — an **Effect `Context.Tag`** service interface with typed method signatures (no queries)
-    - `{module}.plugin.ts` — the module's Fastify plugin: registers its routes **and registers its `message_type` handler(s)** with the TaskRegistry.
+  - `src/modules/{module_name}/` — one folder per module. Autoload loads a module's `routes.ts` (its entrypoint) plus any optional `*.plugin.ts`; `domain.ts` / `data-access.ts` are plain imports, never autoloaded.
+    - `routes.ts` — **the module's autoloaded entrypoint**: a Fastify route plugin (transport only), importing the module's service(s).
+    - `domain.ts` — domain logic / services as **Effect-returning functions** (services-as-functions, **no classes/methods**).
+    - `data-access.ts` — **optional**: an **Effect `Context.Tag`** service interface with typed method signatures (no queries). Present only when the module needs persistence.
+    - `{module}.plugin.ts` — **optional**: present only when the module subscribes to task/queue events, registering its `message_type` handler(s) with the TaskRegistry. A route-only module (e.g. `health`) has no `.plugin`.
 - **Effect:** result/error types and DI via Effect (`Context.Tag` services, `Layer` composition, typed errors — no `throw`). Functions, not classes.
 
 ### D6 — Task registry / message queue
@@ -115,8 +115,8 @@ Stand up a TypeScript monorepo **skeleton** where every package shares identical
 - [ ] **AC3** One ESLint flat config + one Prettier config apply to all packages; `turbo run lint` runs `typescript-eslint` strict-type-checked + complexity caps; `eslint-config-metarhia` removed.
 - [ ] **AC4** `@/` resolves in build (tsc-alias), dev (tsx), and test (vite-tsconfig-paths); `@billing-service/shared` is importable from backend and frontend.
 - [ ] **AC5** `shared` exports ≥1 entity as an Effect Schema with a derived type, a `CreateParams` computed type (omit `id`), ≥1 numeric enum (stored as number), and ≥1 constant; backend imports a shared type with no transformation.
-- [ ] **AC6** Backend boots via Fastify + autoload; system `plugins/` load before `modules/`; `GET /health` responds; autoload discovers the `health` module.
-- [ ] **AC7** The `health` module's `.plugin` registers its route **and** a no-op handler with the TaskRegistry; a separate `worker` entrypoint starts the dispatcher poll-loop skeleton.
+- [ ] **AC6** Backend boots via Fastify + autoload; system `plugins/` load before `modules/`; `GET /health` responds; autoload discovers the `health` module via its `routes.ts` entrypoint.
+- [ ] **AC7** The TaskRegistry, `registerTaskHandler` decorator, and `worker` dispatcher (poll-loop skeleton, logs "worker started") are provided so a module can subscribe to docs/09 queue events via an optional `*.plugin.ts`. The `health` module is route-only (no `.plugin`), so no handlers are registered yet — the mechanism is a documented convention.
 - [ ] **AC8** `data-access.ts` is an Effect `Context.Tag` service with typed signatures (no queries); an `@effect/sql-pg` connection Layer is provided; no business logic exists.
 - [ ] **AC9** `docker compose up` starts Postgres reachable at `billing-service.local` (127.0.0.2) without clashing with `127.0.0.1`; a separate test compose gives an isolated DB; `/etc/hosts` setup documented.
 - [ ] **AC10** `packages/frontend` placeholder exists in the workspace and type-checks against the shared config with no app code.

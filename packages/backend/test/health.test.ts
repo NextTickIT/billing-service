@@ -15,16 +15,15 @@ afterAll(async () => {
   await app.close();
 });
 
-test('GET /health returns ok (autoload discovered the module)', async () => {
+test('GET /health returns ok (routes.ts autoloaded as the module entrypoint)', async () => {
   const response = await app.inject({ method: 'GET', url: '/health' });
   expect(response.statusCode).toBe(200);
   expect(response.json()).toEqual({ status: 'ok' });
 });
 
-test('health module registered exactly one task handler via its .plugin', () => {
+test('TaskRegistry is wired but has no handlers (health subscribes to none)', () => {
   const handlers = app.runtime.runSync(
     Effect.flatMap(TaskRegistry, (registry) => registry.handlers()),
   );
-  expect(handlers.has('health.check')).toBe(true);
-  expect(handlers.size).toBe(1);
+  expect(handlers.size).toBe(0);
 });
