@@ -1,22 +1,43 @@
 {
-  "name": "recurring-payments",
+  "name": "billing-service",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Minimal recurring payment processing service skeleton",
+  "description": "Billing-service monorepo (skeleton)",
   "license": "MIT",
-  "main": "src/main.js",
   "engines": {
     "node": ">=20"
   },
+  "packageManager": "npm@10.9.7",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "lint": "eslint . && prettier --check --no-error-on-unmatched-pattern \"**/*.js\" \"**/*.mjs\" \"**/*.json\" \"**/*.md\" \"**/*.ts\"",
-    "fix": "eslint . --fix && prettier --write --no-error-on-unmatched-pattern \"**/*.js\" \"**/*.mjs\" \"**/*.json\" \"**/*.md\" \"**/*.ts\"",
-    "test": "node --test test/"
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "typecheck": "turbo run typecheck",
+    "lint": "eslint . && prettier --check .",
+    "fix": "eslint . --fix && prettier --write .",
+    "test": "turbo run test",
+    "test:watch": "vitest",
+    "format": "prettier --write .",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:test:up": "docker compose -f docker-compose.test.yml up -d",
+    "db:test:down": "docker compose -f docker-compose.test.yml down"
   },
   "devDependencies": {
-    "eslint": "^10.4.1",
-    "eslint-config-metarhia": "^9.1.8",
-    "prettier": "^3.8.1"
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22",
+    "eslint": "^10.6.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.9.5",
+    "tsc-alias": "^1.9.0",
+    "tsx": "^4.23.0",
+    "turbo": "^2.10.4",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.63.0",
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^3.2.7"
   }
 }

@@ -1,0 +1,19 @@
+# Isolated database for tests / autotests.
+# Ephemeral (tmpfs, no persistent volume) and bound to its own port on the
+# project loopback so it never touches dev data or clashes with `db:up`.
+services:
+  postgres-test:
+    image: postgres:16
+    ports:
+      - '127.0.0.2:5433:5432'
+    environment:
+      POSTGRES_USER: billing
+      POSTGRES_PASSWORD: billing
+      POSTGRES_DB: billing_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U billing']
+      interval: 3s
+      timeout: 3s
+      retries: 10

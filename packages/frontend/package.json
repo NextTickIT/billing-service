@@ -1,0 +1,14 @@
+{
+  "name": "@billing-service/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json && tsc-alias -p tsconfig.build.json",
+    "typecheck": "tsc -b tsconfig.build.json",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@billing-service/shared": "*"
+  }
+}

@@ -188,3 +188,15 @@ Applied revisions:
 - **R5 — strict-flag consequences:** documented the NodeNext `.js`-extension, `verbatimModuleSyntax` `import type`, and `isolatedModules` enum rules the code must follow (step 3).
 - **R6 — "no classes" vs `Context.Tag`:** clarified the tag-identity exception and the `Context.GenericTag` alternative (steps 16–17).
 - **Gate strengthened:** verify the **built** output with plain `node dist/...` (not only tsx), add a per-tool alias check and a "no business logic" audit (verification steps 7, 8, 10).
+
+## Implementation Notes (as-built)
+
+Deviations discovered while executing the plan; the committed skeleton is the source of truth:
+
+- **Toolchain version pins.** The latest majors outran `typescript-eslint@8.63` (the newest release), which peers `typescript >=4.8.4 <6.1.0` and `eslint ^8.57||^9||^10`. So: **TypeScript pinned to `^6.0.3`** (the newest it supports — not the TS 7 native compiler) and **ESLint 10** (supported). `@effect/vitest@0.29` peers `vitest ^3.2`, so **Vitest pinned to `^3.2.7`** (not 4). Revisit when typescript-eslint / @effect/vitest ship support for TS 7 and Vitest 4.
+- **`baseUrl` dropped.** TS 6.0 deprecates `baseUrl` (removed in TS 7). Path aliases use `paths` alone (relative to each tsconfig), which is forward-compatible; `tsc-alias`, `tsx`, and `vite-tsconfig-paths` all resolve `@/` without it.
+- **Turbo needs `packageManager`.** Root `package.json` declares `"packageManager": "npm@..."` (Turbo 2.10 requires it).
+- **Vitest + autoload.** `@fastify/autoload` dynamically `import()`s plugin files from disk, escaping Vite's `@/` resolver under Vitest. Fixed by inlining `@fastify/autoload` (`test.server.deps.inline`) so Vitest transforms those imports. Production (tsc-alias) and dev (tsx) were unaffected. This is the concrete instance of the R1 cross-tool-alias risk — caught and closed by the gate.
+- **`@effect/sql-pg` API.** `PgClient.layer` takes plain values with a `Redacted` password (not `Config`-wrapped), and is provided but not wired into the default runtime (skeleton boots without a DB).
+- **macOS loopback.** Binding Docker to `127.0.0.2` needs `sudo ifconfig lo0 alias 127.0.0.2 up` on macOS (documented in the README); Linux needs nothing.
+- **Gate result:** `build`, `typecheck`, `lint` (0 errors/0 warnings across 28 files), and `test` all pass; a deliberate type error fails typecheck (TS2322) and a complexity-12 function fails lint; both compose files validate; built server returns `GET /health → 200` and the worker logs `worker started`.

@@ -1,1 +1,7 @@
 node_modules
+dist
+.turbo
+.omc
+*.tsbuildinfo
+coverage
+.env
