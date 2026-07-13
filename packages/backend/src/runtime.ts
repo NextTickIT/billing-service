@@ -3,6 +3,7 @@ import { Layer, ManagedRuntime } from 'effect';
 import type { AppConfig } from '@/config.js';
 import { DatabaseLive, SqlLive } from '@/infra/db.js';
 import { HasherLive } from '@/infra/hasher.js';
+import { QueueLive } from '@/infra/queue/service.js';
 import { TaskRegistryLive } from '@/infra/task-registry.js';
 import { makeAuthConfig } from '@/modules/auth/domain.js';
 import { AuthRepoLive } from '@/modules/auth/data-access.js';
@@ -46,3 +47,20 @@ export const makeDbRuntime = (config: AppConfig) =>
   ManagedRuntime.make(makeAppDbLayer(config));
 
 export type AppDbRuntime = ReturnType<typeof makeDbRuntime>;
+
+/**
+ * Worker runtime — the background process (src/worker.ts). DB-backed: the `Queue`
+ * dispatcher needs `SqlClient`, and reads the `TaskRegistry` for the handler set.
+ * Unlike `dbRuntime` this is the ONLY consumer, so it is fine to build eagerly on
+ * worker start (there is no hermetic-health constraint off the request path).
+ */
+export const makeWorkerLayer = (config: AppConfig) =>
+  Layer.provideMerge(
+    QueueLive,
+    Layer.merge(TaskRegistryLive, SqlLive(config.database)),
+  );
+
+export const makeWorkerRuntime = (config: AppConfig) =>
+  ManagedRuntime.make(makeWorkerLayer(config));
+
+export type WorkerRuntime = ReturnType<typeof makeWorkerRuntime>;
