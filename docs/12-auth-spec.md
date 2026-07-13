@@ -97,8 +97,11 @@ auth tokens and operators; there is no seeding step.
   (D3) so the schema is always current. This makes the *running server* require a live DB —
   which is expected. To preserve the existing hermetic **unit** tests, keep the migration
   run in the server boot/entrypoint (e.g. `main.ts`/`worker.ts` or a boot step), **not**
-  inside the pure `buildApp()` factory, so `buildApp()`-based unit tests and `GET /health`
-  stay DB-less. (The planner finalizes exactly where the hook lives.)
+  inside the pure `buildApp()` factory, so `buildApp()`-based unit tests stay DB-less
+  (the DB runtime is lazy — building the app opens no connection).
+  > **Update:** the earlier "`GET /health` stays DB-less" was a *temporary* decision and is
+  > lifted — `/health` is now a DB-aware readiness probe (200 only when Postgres answers,
+  > else 503). `buildApp()` and the unit gate stay hermetic (the probe fails fast, never hangs).
 - **Two test tiers (D5):** the default `npm test` gate stays hermetic (unit tier, no
   Postgres); a separate Dockerized E2E tier runs the whole system against a real,
   freshly-migrated, per-test database.
