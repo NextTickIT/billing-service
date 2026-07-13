@@ -149,7 +149,7 @@ export const scenarios: readonly Scenario[] = [
         adminHeader,
       );
       const hash = (
-        await query("SELECT password_hash FROM operators WHERE login = 'erin'")
+        await query(`SELECT "passwordHash" FROM operators WHERE login = 'erin'`)
       ).trim();
       assert.ok(
         hash.startsWith('$argon2id$'),

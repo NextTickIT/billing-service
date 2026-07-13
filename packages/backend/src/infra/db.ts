@@ -27,19 +27,12 @@ export const DatabaseLive = Layer.succeed(Database, {
   healthcheck: () => Effect.succeed(true),
 });
 
-/** camelCase (schema/query identifiers) -> snake_case (Postgres columns). */
-const camelToSnake = (identifier: string): string =>
-  identifier.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`);
-
-/** snake_case (Postgres result columns) -> camelCase (schema fields). */
-const snakeToCamel = (identifier: string): string =>
-  identifier.replace(/_([a-z])/g, (_match, char: string) => char.toUpperCase());
-
 /**
  * Real Postgres connection Layer — provides both `PgClient` and `SqlClient`.
- * The name transforms make camelCase<->snake_case a boundary encode/decode
- * (e.g. `operatorId` <-> `operator_id`), NOT a field remap, preserving the
- * single-source-of-truth "no transformation" rule.
+ * NO name transforms: columns are stored under the exact same names as the
+ * shared schema fields (camelCase, so DDL/queries double-quote them), so a row
+ * is the entity shape verbatim. Db, backend, and frontend share one shape with
+ * no remap — the single-source-of-truth rule.
  */
 export const SqlLive = (config: DatabaseConfig) =>
   PgClient.layer({
@@ -48,6 +41,4 @@ export const SqlLive = (config: DatabaseConfig) =>
     database: config.database,
     username: config.user,
     password: Redacted.make(config.password),
-    transformQueryNames: camelToSnake,
-    transformResultNames: snakeToCamel,
   });

@@ -79,14 +79,11 @@ const requireRow = <A>(rows: readonly A[]): Effect.Effect<A> => {
     : Effect.succeed(row);
 };
 
-// Column names are snake_case; PgClient's transformResultNames maps result keys
-// back to camelCase.
-
 const insertAuthToken = (sql: SqlClient.SqlClient) => (input: NewAuthToken) =>
   sql<AuthToken>`
-    INSERT INTO auth_tokens (alias, role, token_prefix, token_hash)
+    INSERT INTO auth_tokens (alias, role, "tokenPrefix", "tokenHash")
     VALUES (${input.alias}, ${input.role}, ${input.tokenPrefix}, ${input.tokenHash})
-    RETURNING id, alias, role, created_at
+    RETURNING id, alias, role, "createdAt"
   `.pipe(
     Effect.flatMap(requireRow),
     Effect.catchTag('SqlError', onUniqueViolation('alias')),
@@ -94,9 +91,9 @@ const insertAuthToken = (sql: SqlClient.SqlClient) => (input: NewAuthToken) =>
 
 const insertOperator = (sql: SqlClient.SqlClient) => (input: NewOperator) =>
   sql<Operator>`
-    INSERT INTO operators (login, role, password_hash)
+    INSERT INTO operators (login, role, "passwordHash")
     VALUES (${input.login}, ${input.role}, ${input.passwordHash})
-    RETURNING id, login, role, created_at
+    RETURNING id, login, role, "createdAt"
   `.pipe(
     Effect.flatMap(requireRow),
     Effect.catchTag('SqlError', onUniqueViolation('login')),
@@ -104,28 +101,28 @@ const insertOperator = (sql: SqlClient.SqlClient) => (input: NewOperator) =>
 
 const findAuthTokenByHash = (sql: SqlClient.SqlClient) => (tokenHash: string) =>
   sql<AuthToken>`
-      SELECT id, alias, role, created_at
-      FROM auth_tokens WHERE token_hash = ${tokenHash}
+      SELECT id, alias, role, "createdAt"
+      FROM auth_tokens WHERE "tokenHash" = ${tokenHash}
     `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
 const findOperatorByLogin = (sql: SqlClient.SqlClient) => (login: string) =>
   sql<OperatorRow>`
-    SELECT id, login, role, password_hash, created_at
+    SELECT id, login, role, "passwordHash", "createdAt"
     FROM operators WHERE login = ${login}
   `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
 const insertSession = (sql: SqlClient.SqlClient) => (input: NewSession) =>
   sql<Session>`
-    INSERT INTO sessions (operator_id, role, token_hash, expires_at)
+    INSERT INTO sessions ("operatorId", role, "tokenHash", "expiresAt")
     VALUES (${input.operatorId}, ${input.role}, ${input.tokenHash}, ${input.expiresAt})
-    RETURNING id, operator_id, role, created_at, expires_at
+    RETURNING id, "operatorId", role, "createdAt", "expiresAt"
   `.pipe(Effect.flatMap(requireRow));
 
 const findSessionByTokenHash =
   (sql: SqlClient.SqlClient) => (tokenHash: string) =>
     sql<Session>`
-      SELECT id, operator_id, role, created_at, expires_at
-      FROM sessions WHERE token_hash = ${tokenHash}
+      SELECT id, "operatorId", role, "createdAt", "expiresAt"
+      FROM sessions WHERE "tokenHash" = ${tokenHash}
     `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
 /** Real Postgres-backed repository (requires a `SqlClient`, i.e. `SqlLive`). */
