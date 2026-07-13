@@ -49,3 +49,10 @@ export type Subscription = Schema.Schema.Type<typeof Subscription>;
 export const CreateSubscription = Subscription.pipe(Schema.omit('id'));
 
 export type CreateSubscription = Schema.Schema.Type<typeof CreateSubscription>;
+
+/**
+ * Fixed retry schedule (days from the first failed recurring charge) — the
+ * subscription's recurring-charge retry policy. See FR-005 in
+ * docs/02-functional-requirements.md.
+ */
+export const RETRY_SCHEDULE_DAYS = [0, 1, 3, 5, 7] as const;

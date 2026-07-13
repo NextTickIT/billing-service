@@ -45,9 +45,11 @@ that follows. Where a rule supersedes an earlier spec/plan, that is noted.
 ## 6. `shared` is sliced by entity
 
 - `packages/shared/src/schemas/{entity}.ts` owns **all** of that entity's data:
-  its schemas and the enums it owns. There is no separate `enums/` bucket.
-- Every enum is owned by exactly one entity (e.g. `Role` → auth, `PaymentMethod`
-  and `Currency` → subscription).
+  its schemas, the enums it owns, and its constants. There is no separate
+  `enums/` or `constants/` bucket.
+- Every enum and constant is owned by exactly one entity (e.g. `Role` → auth,
+  `PaymentMethod` / `Currency` → subscription, `RETRY_SCHEDULE_DAYS` →
+  subscription, `SINK_DELIVERY_SLA_SECONDS` → event).
 - Types are always **derived** from schemas; never hand-written.
 
 ## 7. Errors own their HTTP mapping
