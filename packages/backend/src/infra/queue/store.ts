@@ -101,7 +101,7 @@ export const claimBatch =
         SELECT id FROM messages
         WHERE status IN ('pending', 'retry')
           AND ("retryAt" IS NULL OR "retryAt" <= now())
-          AND "messageType" ${sql.in(params.types)}
+          AND "messageType" IN ${sql.in(params.types)}
         ORDER BY id
         LIMIT ${params.limit}
         FOR UPDATE SKIP LOCKED

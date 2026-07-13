@@ -6,9 +6,14 @@ import { Effect } from 'effect';
 
 import { buildApp } from '@/app.js';
 import type { DatabaseConfig } from '@/config.js';
+import { loadConfig } from '@/config.js';
 import { runMigrations } from '@/infra/migrator.js';
 
 import { scenarios, type Scenario } from '@/modules/auth/test/routes.e2e.js';
+import {
+  effectScenarios,
+  type EffectScenario,
+} from '@/modules/payments/test/pipeline.e2e.js';
 
 /**
  * E2E test runner. Spins up the only external dependency (Postgres) in Docker,
@@ -126,28 +131,66 @@ const runScenario = async (
   }
 };
 
+/**
+ * Effect scenarios drive the worker pipeline directly (no HTTP): a throwaway DB
+ * is created + migrated, the scenario runs against it with the real config, then
+ * it is dropped. `setAppEnv` points `loadConfig` at that database.
+ */
+const runEffectScenario = async (
+  scenario: EffectScenario,
+  index: number,
+): Promise<void> => {
+  const database = `test_e${index.toString()}_${randomUUID().replace(/-/g, '')}`;
+  psql('postgres', `CREATE DATABASE ${database}`);
+  try {
+    await Effect.runPromise(runMigrations(testDbConfig(database)));
+    setAppEnv(database);
+    await scenario.run({ config: loadConfig(), query: queryTestDb(database) });
+    console.log(`  ✓ ${scenario.name}`);
+  } finally {
+    psql('postgres', `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+  }
+};
+
+const runHttpScenarios = async (): Promise<void> => {
+  for (let index = 0; index < scenarios.length; index += 1) {
+    const scenario = scenarios[index];
+    if (scenario !== undefined) {
+      await runScenario(scenario, index);
+    }
+  }
+};
+
+const runEffectScenarios = async (): Promise<void> => {
+  for (let index = 0; index < effectScenarios.length; index += 1) {
+    const scenario = effectScenarios[index];
+    if (scenario !== undefined) {
+      await runEffectScenario(scenario, index);
+    }
+  }
+};
+
+const verifyNoLeaks = (): void => {
+  dropStaleTestDbs();
+  const remaining = psql(
+    'postgres',
+    "SELECT count(*) FROM pg_database WHERE datname LIKE 'test\\_%'",
+  ).trim();
+  if (remaining !== '0') {
+    throw new Error(`leaked ${remaining} test database(s)`);
+  }
+  const total = scenarios.length + effectScenarios.length;
+  console.log(`e2e: ${total.toString()} scenarios passed; 0 leaked databases`);
+};
+
 const main = async (): Promise<void> => {
   console.log('e2e: starting Postgres (docker compose up --wait)...');
   compose('up', '-d', '--wait');
   try {
     dropStaleTestDbs();
-    for (let index = 0; index < scenarios.length; index += 1) {
-      const scenario = scenarios[index];
-      if (scenario !== undefined) {
-        await runScenario(scenario, index);
-      }
-    }
-    dropStaleTestDbs();
-    const remaining = psql(
-      'postgres',
-      "SELECT count(*) FROM pg_database WHERE datname LIKE 'test\\_%'",
-    ).trim();
-    if (remaining !== '0') {
-      throw new Error(`leaked ${remaining} test database(s)`);
-    }
-    console.log(
-      `e2e: ${scenarios.length.toString()} scenarios passed; 0 leaked databases`,
-    );
+    await runHttpScenarios();
+    await runEffectScenarios();
+    verifyNoLeaks();
   } finally {
     console.log('e2e: tearing down (docker compose down -v)...');
     compose('down', '-v');
