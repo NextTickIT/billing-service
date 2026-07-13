@@ -25,8 +25,13 @@ const event: IncomingPaymentEvent = {
 /** A repo whose every method fails the test if called (the recurring path). */
 const unusedSubs: SubscriptionRepo = {
   findActiveByExternalUser: () => Effect.die('unused'),
+  findById: () => Effect.die('unused'),
+  findDue: () => Effect.die('unused'),
   insert: () => Effect.die('unused'),
   extend: () => Effect.die('unused'),
+  advanceAfterSuccess: () => Effect.die('unused'),
+  recordRetry: () => Effect.die('unused'),
+  markRenewalFailed: () => Effect.die('unused'),
 };
 const unusedCheckout: CheckoutRepo = {
   findById: () => Effect.die('unused'),
@@ -42,6 +47,7 @@ it.effect(
       let insertedToken: string | null = 'unset';
       let completed = false;
       const subs: SubscriptionRepo = {
+        ...unusedSubs,
         findActiveByExternalUser: () => Effect.succeed(Option.none()),
         insert: (input) =>
           Effect.sync(() => {
@@ -53,7 +59,6 @@ it.effect(
               updatedAt: new Date(0),
             };
           }),
-        extend: () => Effect.void,
       };
       const checkout: CheckoutRepo = {
         ...unusedCheckout,

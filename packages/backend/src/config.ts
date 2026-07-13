@@ -51,6 +51,13 @@ export interface WayForPayConfig {
   readonly sessionTtlSeconds: number;
 }
 
+/** Recurring-charge scheduler (FR-004). Off until production credentials exist. */
+export interface SchedulerConfig {
+  readonly enabled: boolean;
+  readonly intervalSeconds: number;
+  readonly batchSize: number;
+}
+
 export interface AppConfig {
   readonly host: string;
   readonly port: number;
@@ -61,6 +68,7 @@ export interface AppConfig {
   readonly sessionTtlSeconds: number;
   readonly queue: QueueConfig;
   readonly wayforpay: WayForPayConfig;
+  readonly scheduler: SchedulerConfig;
 }
 
 /** Queue tuning is its own loader so `loadConfig` stays simple (one concern each). */
@@ -94,6 +102,12 @@ const loadW4pCheckoutConfig = () => ({
   sessionTtlSeconds: Number(process.env['W4P_SESSION_TTL_SECONDS'] ?? '3600'),
 });
 
+const loadSchedulerConfig = (): SchedulerConfig => ({
+  enabled: process.env['SCHEDULER_ENABLED'] === 'true',
+  intervalSeconds: Number(process.env['SCHEDULER_INTERVAL_SECONDS'] ?? '300'),
+  batchSize: Number(process.env['SCHEDULER_BATCH_SIZE'] ?? '100'),
+});
+
 const loadWayForPayConfig = (): WayForPayConfig => ({
   merchantAccount: process.env['W4P_MERCHANT_ACCOUNT'] ?? '',
   merchantSecretKey: Redacted.make(process.env['W4P_SECRET_KEY'] ?? ''),
@@ -122,4 +136,5 @@ export const loadConfig = (): AppConfig => ({
   sessionTtlSeconds: Number(process.env['SESSION_TTL_SECONDS'] ?? '86400'),
   queue: loadQueueConfig(),
   wayforpay: loadWayForPayConfig(),
+  scheduler: loadSchedulerConfig(),
 });

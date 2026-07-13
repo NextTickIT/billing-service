@@ -1,3 +1,4 @@
+import { type Currency, CurrencyCode } from '@billing-service/shared';
 import { Context, Effect, Layer, Redacted, Schema } from 'effect';
 
 import { isTransientStatus, retryTransient } from '@/infra/http/retry.js';
@@ -5,6 +6,8 @@ import { RateLimiterService, type RateLimiter } from '@/infra/rate-limiter.js';
 import { W4pConfig } from '@/modules/wayforpay/config.js';
 import {
   REASON,
+  type W4pChargeResponse,
+  W4pChargeResponseSchema,
   type W4pCheckStatusResponse,
   W4pCheckStatusResponseSchema,
   type W4pRegularStatusResponse,
@@ -20,7 +23,7 @@ import {
   W4pTransportError,
   W4pWindowTooLargeError,
 } from '@/modules/wayforpay/errors.js';
-import { signRequest } from '@/modules/wayforpay/signature.js';
+import { signPurchase, signRequest } from '@/modules/wayforpay/signature.js';
 import type { DateWindow } from '@/modules/wayforpay/windows.js';
 
 /**
@@ -42,6 +45,19 @@ export interface WayForPayClient {
   readonly regularStatus: (
     orderReference: string,
   ) => Effect.Effect<W4pRegularStatusResponse, W4pError>;
+  /** Charge a stored token (recurring). A Declined result is returned, not failed. */
+  readonly charge: (
+    params: ChargeParams,
+  ) => Effect.Effect<W4pChargeResponse, W4pError>;
+}
+
+export interface ChargeParams {
+  readonly orderReference: string;
+  readonly amount: number; // integer minor units
+  readonly currency: Currency;
+  readonly recToken: string;
+  readonly orderDate: number; // unix seconds
+  readonly productName: string;
 }
 
 export class WayForPay extends Context.Tag('WayForPay')<
@@ -64,6 +80,7 @@ export interface WayForPayClientOptions {
   readonly merchantAccount: string;
   readonly merchantSecretKey: string;
   readonly merchantPassword: string;
+  readonly merchantDomainName: string;
   readonly apiUrl: string;
   readonly regularApiUrl: string;
   readonly fetch: FetchLike;
@@ -263,12 +280,50 @@ const regularStatus =
       return parsed;
     });
 
+const charge =
+  (ctx: WayForPayClientOptions): WayForPayClient['charge'] =>
+  (params) =>
+    Effect.gen(function* () {
+      const amount = params.amount / 100;
+      const currency = CurrencyCode[params.currency];
+      const merchantSignature = signPurchase(
+        {
+          merchantAccount: ctx.merchantAccount,
+          merchantDomainName: ctx.merchantDomainName,
+          orderReference: params.orderReference,
+          orderDate: params.orderDate,
+          amount,
+          currency,
+          products: [{ name: params.productName, count: 1, price: amount }],
+        },
+        ctx.merchantSecretKey,
+      );
+      const body = yield* postJson(ctx, ctx.apiUrl, 'CHARGE', {
+        apiVersion: 1,
+        transactionType: 'CHARGE',
+        merchantAccount: ctx.merchantAccount,
+        merchantDomainName: ctx.merchantDomainName,
+        orderReference: params.orderReference,
+        orderDate: params.orderDate,
+        amount,
+        currency,
+        productName: [params.productName],
+        productCount: [1],
+        productPrice: [amount],
+        recToken: params.recToken,
+        merchantSignature,
+      });
+      // A Declined charge is a valid response; the scheduler branches on it.
+      return yield* decode(W4pChargeResponseSchema, 'CHARGE')(body);
+    });
+
 export const makeWayForPayClient = (
   options: WayForPayClientOptions,
 ): WayForPayClient => ({
   transactionList: transactionList(options),
   checkStatus: checkStatus(options),
   regularStatus: regularStatus(options),
+  charge: charge(options),
 });
 
 export const WayForPayLive = Layer.effect(
@@ -280,6 +335,7 @@ export const WayForPayLive = Layer.effect(
       merchantAccount: config.merchantAccount,
       merchantSecretKey: Redacted.value(config.merchantSecretKey),
       merchantPassword: Redacted.value(config.merchantPassword),
+      merchantDomainName: config.merchantDomainName,
       apiUrl: config.apiUrl,
       regularApiUrl: config.regularApiUrl,
       fetch: (url, init) => globalThis.fetch(url, init),

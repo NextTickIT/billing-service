@@ -24,6 +24,7 @@ const clientFor = (body: unknown) =>
     merchantAccount: 'm',
     merchantSecretKey: 's',
     merchantPassword: 'p',
+    merchantDomainName: 'd',
     apiUrl: 'http://x/api',
     regularApiUrl: 'http://x/reg',
     fetch: fetchReturning(body),
@@ -76,6 +77,28 @@ it.effect('regularStatus accepts 4107 (closed) as a valid state response', () =>
     .pipe(
       Effect.map((status) => {
         expect(status.status).toBe('Removed');
+      }),
+    ),
+);
+
+it.effect('charge returns a Declined response rather than failing', () =>
+  clientFor({
+    transactionStatus: 'Declined',
+    reasonCode: 1104,
+    reason: 'Insufficient funds',
+  })
+    .charge({
+      orderReference: 'sub_1_100',
+      amount: 30000,
+      currency: 0,
+      recToken: 'tok',
+      orderDate: 100,
+      productName: 'Subscription P1M',
+    })
+    .pipe(
+      Effect.map((response) => {
+        expect(response.transactionStatus).toBe('Declined');
+        expect(response.reason).toBe('Insufficient funds');
       }),
     ),
 );

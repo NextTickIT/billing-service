@@ -17,8 +17,10 @@ import {
 } from '@/modules/payments/contracts.js';
 import { makePaymentsRepo } from '@/modules/payments/data-access.js';
 import { PaymentPipeline } from '@/modules/payments/domain.js';
+import { scheduleTick } from '@/modules/billing/scheduler.js';
 import { normalizeCallback } from '@/modules/checkout/callback.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
+import { makeSubscriptionRepo } from '@/modules/subscription/data-access.js';
 import type { W4pTransaction } from '@/modules/wayforpay/contracts.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
 import { pollTick } from '@/modules/wayforpay/poller.js';
@@ -407,9 +409,90 @@ const checkoutCreatesSubscription: EffectScenario = {
   },
 };
 
+/** Insert a due subscription, run one scheduler tick with an approving charge,
+ * then let the pipeline record the payment — the FR-004 success path. */
+const driveScheduler = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makeSubscriptionRepo(sql);
+  yield* subs.insert({
+    externalUserId: 'sp:sched',
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: 0,
+    nextChargeDate: new Date('2026-01-01T00:00:00Z'),
+    recurringTokenRef: 'tok',
+    firstFailureAt: null,
+    retryAttempt: 0,
+  });
+  const outbox = yield* Outbox;
+  const pipeline = yield* PaymentPipeline;
+  yield* scheduleTick(
+    {
+      subs,
+      client: {
+        charge: () =>
+          Effect.succeed({
+            transactionStatus: 'Approved',
+            createdDate: '1700000000',
+          }),
+      },
+      ingest: pipeline.ingest,
+      publish: outbox.publish,
+    },
+    { intervalSeconds: 60, batchSize: 10 },
+  );
+  yield* runFor(2);
+});
+
+const assertScheduler = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT to_char("nextChargeDate", 'YYYY-MM-DD') FROM subscriptions`,
+    '2026-02-01',
+    'next charge advanced by the period (FR-004)',
+  );
+  await eq(
+    query,
+    `SELECT status::text FROM subscriptions`,
+    '0',
+    'subscription stayed active',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM payments`,
+    '1',
+    'the charge was recorded',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM domain_events WHERE name = 'payment_succeeded'`,
+    '1',
+    'payment_succeeded emitted for the recurring charge',
+  );
+};
+
+const schedulerChargesDue: EffectScenario = {
+  name: 'scheduler: a due subscription is charged and advanced (FR-004)',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveScheduler);
+      await assertScheduler(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
   bindReprocesses,
   pollerIngestsJournal,
   checkoutCreatesSubscription,
+  schedulerChargesDue,
 ];

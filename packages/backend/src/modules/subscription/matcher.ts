@@ -1,0 +1,41 @@
+import { Effect, Option } from 'effect';
+
+import type { PaymentMatcherService } from '@/modules/payments/contracts.js';
+import type { SubscriptionRepo } from '@/modules/subscription/data-access.js';
+
+/** Our recurring-charge orderReference format: `sub_<subscriptionId>_<...>`. */
+const OUR_REF = /^sub_([0-9a-fA-F-]+)_/;
+
+/**
+ * Recurring matcher: a succeeded charge whose orderReference is one WE minted
+ * (`sub_<id>_…`) resolves to that subscription. Legacy `_WFPREG-` charges are not
+ * ours — they carry no gateway subscription yet and fall through to quarantine
+ * (the migration tail; docs/15).
+ */
+export const makeRecurringMatcher = (
+  repo: SubscriptionRepo,
+): PaymentMatcherService => ({
+  match: (event) =>
+    Effect.gen(function* () {
+      if (event.status !== 'succeeded') {
+        return { matched: false };
+      }
+      const id = OUR_REF.exec(event.externalRef)?.[1];
+      if (id === undefined) {
+        return { matched: false };
+      }
+      const found = yield* repo.findById(id);
+      if (Option.isNone(found)) {
+        return { matched: false };
+      }
+      const sub = found.value;
+      return {
+        matched: true,
+        kind: 'recurring',
+        subscriptionId: sub.id,
+        externalUserId: sub.externalUserId,
+        period: sub.period,
+        method: sub.method,
+      };
+    }),
+});

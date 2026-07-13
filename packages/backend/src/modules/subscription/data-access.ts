@@ -17,21 +17,47 @@ export interface ExtendSubscription {
   readonly recurringTokenRef: string | null;
 }
 
+/** Retry state after a failed recurring charge (FR-005). */
+export interface RetryState {
+  readonly firstFailureAt: Date;
+  readonly retryAttempt: number;
+  readonly nextChargeDate: Date;
+}
+
 /**
- * Subscription persistence (FR-003/004). Same `(sql) => (input)` shape as the
- * other repos; columns are the shared field names verbatim. `extend` resets the
- * retry state (a fresh checkout payment restores good standing) — see FR-005.
+ * Subscription persistence (FR-003/004/005). Same `(sql) => (input)` shape as the
+ * other repos; columns are the shared field names verbatim. `extend`/`advanceAfter
+ * Success` reset the retry state (a good payment restores standing).
  */
 export interface SubscriptionRepo {
   readonly findActiveByExternalUser: (
     externalUserId: string,
   ) => Effect.Effect<Option.Option<Subscription>, SqlError.SqlError>;
+  readonly findById: (
+    id: string,
+  ) => Effect.Effect<Option.Option<Subscription>, SqlError.SqlError>;
+  /** Subscriptions due to be charged now (active or in the retry window). */
+  readonly findDue: (
+    now: Date,
+    limit: number,
+  ) => Effect.Effect<readonly Subscription[], SqlError.SqlError>;
   readonly insert: (
     input: CreateSubscription,
   ) => Effect.Effect<Subscription, SqlError.SqlError>;
   readonly extend: (
     id: string,
     input: ExtendSubscription,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly advanceAfterSuccess: (
+    id: string,
+    nextChargeDate: Date,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly recordRetry: (
+    id: string,
+    state: RetryState,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly markRenewalFailed: (
+    id: string,
   ) => Effect.Effect<void, SqlError.SqlError>;
 }
 
@@ -52,6 +78,21 @@ const findActiveByExternalUser =
       SELECT ${sql.unsafe(COLUMNS)} FROM subscriptions
       WHERE "externalUserId" = ${externalUserId} AND status = ${SubscriptionStatus.Active}
     `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
+
+const findById = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql<Subscription>`
+    SELECT ${sql.unsafe(COLUMNS)} FROM subscriptions WHERE id = ${id}
+  `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
+
+const findDue = (sql: SqlClient.SqlClient) => (now: Date, limit: number) =>
+  sql<Subscription>`
+    SELECT ${sql.unsafe(COLUMNS)} FROM subscriptions
+    WHERE status IN (${SubscriptionStatus.Active}, ${SubscriptionStatus.PastDue})
+      AND "nextChargeDate" <= ${now}
+      AND "recurringTokenRef" IS NOT NULL
+    ORDER BY "nextChargeDate"
+    LIMIT ${limit}
+  `;
 
 const insert = (sql: SqlClient.SqlClient) => (input: CreateSubscription) =>
   sql<Subscription>`
@@ -77,10 +118,41 @@ const extend =
       WHERE id = ${id}
     `.pipe(Effect.asVoid);
 
+const advanceAfterSuccess =
+  (sql: SqlClient.SqlClient) => (id: string, nextChargeDate: Date) =>
+    sql`
+      UPDATE subscriptions
+      SET status = ${SubscriptionStatus.Active}, "nextChargeDate" = ${nextChargeDate},
+          "firstFailureAt" = NULL, "retryAttempt" = 0, "updatedAt" = now()
+      WHERE id = ${id}
+    `.pipe(Effect.asVoid);
+
+const recordRetry =
+  (sql: SqlClient.SqlClient) => (id: string, state: RetryState) =>
+    sql`
+      UPDATE subscriptions
+      SET status = ${SubscriptionStatus.PastDue},
+          "firstFailureAt" = ${state.firstFailureAt},
+          "retryAttempt" = ${state.retryAttempt},
+          "nextChargeDate" = ${state.nextChargeDate}, "updatedAt" = now()
+      WHERE id = ${id}
+    `.pipe(Effect.asVoid);
+
+const markRenewalFailed = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql`
+    UPDATE subscriptions SET status = ${SubscriptionStatus.RenewalFailed},
+      "updatedAt" = now() WHERE id = ${id}
+  `.pipe(Effect.asVoid);
+
 export const makeSubscriptionRepo = (
   sql: SqlClient.SqlClient,
 ): SubscriptionRepo => ({
   findActiveByExternalUser: findActiveByExternalUser(sql),
+  findById: findById(sql),
+  findDue: findDue(sql),
   insert: insert(sql),
   extend: extend(sql),
+  advanceAfterSuccess: advanceAfterSuccess(sql),
+  recordRetry: recordRetry(sql),
+  markRenewalFailed: markRenewalFailed(sql),
 });

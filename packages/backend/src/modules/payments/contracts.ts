@@ -110,6 +110,22 @@ export const NoMatchLive = Layer.succeed(PaymentMatcher, {
   match: () => Effect.succeed({ matched: false }),
 });
 
+/** Try each matcher in order; the first match wins (checkout, then recurring). */
+export const makeCompositeMatcher = (
+  matchers: readonly PaymentMatcherService[],
+): PaymentMatcherService => ({
+  match: (event) =>
+    Effect.gen(function* () {
+      for (const matcher of matchers) {
+        const result = yield* matcher.match(event);
+        if (result.matched) {
+          return result;
+        }
+      }
+      return { matched: false };
+    }),
+});
+
 /** The subscription a matched payment resolved to, and whether it was just born. */
 export interface AppliedPayment {
   readonly subscriptionId: string;

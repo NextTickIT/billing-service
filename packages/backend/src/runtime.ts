@@ -1,4 +1,5 @@
-import { Layer, ManagedRuntime } from 'effect';
+import { SqlClient } from '@effect/sql';
+import { Effect, Layer, ManagedRuntime } from 'effect';
 
 import type { AppConfig } from '@/config.js';
 import { DatabaseLive, SqlLive } from '@/infra/db.js';
@@ -10,11 +11,29 @@ import { TaskRegistryLive } from '@/infra/task-registry.js';
 import { makeAuthConfig } from '@/modules/auth/domain.js';
 import { AuthRepoLive } from '@/modules/auth/data-access.js';
 import { OutboxLive } from '@/modules/outbox/domain.js';
+import {
+  makeCompositeMatcher,
+  PaymentMatcher,
+} from '@/modules/payments/contracts.js';
 import { PaymentPipelineLive } from '@/modules/payments/domain.js';
 import { CheckoutApplierLive } from '@/modules/checkout/applier.js';
-import { CheckoutMatcherLive } from '@/modules/checkout/matcher.js';
+import { makeCheckoutMatcher } from '@/modules/checkout/matcher.js';
+import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
+import { makeRecurringMatcher } from '@/modules/subscription/matcher.js';
+import { makeSubscriptionRepo } from '@/modules/subscription/data-access.js';
 import { WayForPayLive } from '@/modules/wayforpay/client.js';
 import { makeW4pConfig } from '@/modules/wayforpay/config.js';
+
+/** The live payment matcher: try checkout (session), then recurring (our charges). */
+const CompositeMatcherLive = Layer.effect(
+  PaymentMatcher,
+  Effect.map(SqlClient.SqlClient, (sql) =>
+    makeCompositeMatcher([
+      makeCheckoutMatcher(makeCheckoutRepo(sql)),
+      makeRecurringMatcher(makeSubscriptionRepo(sql)),
+    ]),
+  ),
+);
 
 /**
  * Two runtimes, by design (see docs/13 ADR):
@@ -89,11 +108,11 @@ export const makeWorkerLayer = (config: AppConfig) => {
     SqlLive(config.database),
     wayForPayLayer(config),
   );
-  // The checkout matcher + applier are the live PaymentMatcher/PaymentApplier;
-  // both need SqlClient (from base). Poller/legacy events find no session here
-  // and quarantine until the recurring matcher (M6).
+  // The composite matcher + checkout applier are the live PaymentMatcher/
+  // PaymentApplier; both need SqlClient (from base). Legacy _WFPREG charges match
+  // nothing here and quarantine (the migration tail).
   const withMatch = Layer.provideMerge(
-    Layer.mergeAll(CheckoutMatcherLive, CheckoutApplierLive),
+    Layer.mergeAll(CompositeMatcherLive, CheckoutApplierLive),
     base,
   );
   const withQueue = Layer.provideMerge(QueueLive, withMatch);

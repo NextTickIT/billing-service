@@ -58,6 +58,11 @@ const makeFakeRepo = (existing: Subscription | null) => {
       Effect.sync(() => {
         extended = { id, input };
       }),
+    findById: () => Effect.die('unused'),
+    findDue: () => Effect.die('unused'),
+    advanceAfterSuccess: () => Effect.die('unused'),
+    recordRetry: () => Effect.die('unused'),
+    markRenewalFailed: () => Effect.die('unused'),
   };
   return { repo, getInserted: () => inserted, getExtended: () => extended };
 };

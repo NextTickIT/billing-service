@@ -95,6 +95,23 @@ export type W4pRegularStatusResponse = Schema.Schema.Type<
 >;
 
 /**
+ * CHARGE response (wiki 852194). A Declined charge is a normal business outcome
+ * (the scheduler retries), so it is not a client error — the caller branches on
+ * `transactionStatus`/`reasonCode`.
+ */
+export const W4pChargeResponseSchema = Schema.Struct({
+  reasonCode: OptionalStringOrNumber,
+  reason: Schema.optional(Schema.String),
+  orderReference: Schema.optional(Schema.String),
+  transactionStatus: Schema.optional(Schema.String),
+  createdDate: OptionalStringOrNumber,
+});
+
+export type W4pChargeResponse = Schema.Schema.Type<
+  typeof W4pChargeResponseSchema
+>;
+
+/**
  * Natural external id of a transaction in the RAW layer. One orderReference can
  * yield several rows — a PURCHASE and its later REFUND share the ref but differ in
  * transactionType and createdDate — so the id is `ref|type|createdDate`: a REFUND
