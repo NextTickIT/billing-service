@@ -25,7 +25,9 @@ export default Effect.flatMap(SqlClient.SqlClient, (sql) =>
           token_prefix text NOT NULL,
           token_hash   text NOT NULL,
           created_at   timestamptz NOT NULL DEFAULT now(),
-          CONSTRAINT auth_tokens_alias_key UNIQUE (alias)
+          CONSTRAINT auth_tokens_alias_key UNIQUE (alias),
+          -- Bearer-token auth resolves a presented secret by its hash.
+          CONSTRAINT auth_tokens_token_hash_key UNIQUE (token_hash)
         )
       `,
       sql`
