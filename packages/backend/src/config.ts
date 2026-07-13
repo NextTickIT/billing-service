@@ -42,6 +42,13 @@ export interface WayForPayConfig {
   readonly pollIntervalSeconds: number;
   readonly windowOverlapSeconds: number;
   readonly maxWindowSeconds: number;
+  /** Hosted checkout page the Purchase form posts to. */
+  readonly checkoutUrl: string;
+  /** serviceUrl (our callback) and returnUrl (browser) sent with a Purchase. */
+  readonly serviceUrl: string;
+  readonly returnUrl: string;
+  /** Checkout session lifetime before it expires. */
+  readonly sessionTtlSeconds: number;
 }
 
 export interface AppConfig {
@@ -78,6 +85,15 @@ const loadW4pPollerConfig = () => ({
   maxWindowSeconds: Number(process.env['W4P_MAX_WINDOW_SECONDS'] ?? '21600'),
 });
 
+/** Checkout knobs (Purchase page + callback URLs), split out for the same reason. */
+const loadW4pCheckoutConfig = () => ({
+  checkoutUrl:
+    process.env['W4P_CHECKOUT_URL'] ?? 'https://secure.wayforpay.com/pay',
+  serviceUrl: process.env['W4P_SERVICE_URL'] ?? '',
+  returnUrl: process.env['W4P_RETURN_URL'] ?? '',
+  sessionTtlSeconds: Number(process.env['W4P_SESSION_TTL_SECONDS'] ?? '3600'),
+});
+
 const loadWayForPayConfig = (): WayForPayConfig => ({
   merchantAccount: process.env['W4P_MERCHANT_ACCOUNT'] ?? '',
   merchantSecretKey: Redacted.make(process.env['W4P_SECRET_KEY'] ?? ''),
@@ -89,6 +105,7 @@ const loadWayForPayConfig = (): WayForPayConfig => ({
   merchantDomainName: process.env['W4P_DOMAIN_NAME'] ?? '',
   rateLimitRps: Number(process.env['W4P_RATE_LIMIT_RPS'] ?? '2'),
   ...loadW4pPollerConfig(),
+  ...loadW4pCheckoutConfig(),
 });
 
 export const loadConfig = (): AppConfig => ({

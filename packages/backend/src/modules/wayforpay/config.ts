@@ -16,6 +16,11 @@ export interface W4pConfigService {
   readonly regularApiUrl: string;
   /** Merchant domain, part of the Purchase/CHARGE signature (M5/M6). */
   readonly merchantDomainName: string;
+  /** Hosted checkout page the Purchase form posts to. */
+  readonly checkoutUrl: string;
+  /** serviceUrl (our callback) + returnUrl (browser) sent with a Purchase. */
+  readonly serviceUrl: string;
+  readonly returnUrl: string;
 }
 
 export class W4pConfig extends Context.Tag('W4pConfig')<

@@ -17,6 +17,8 @@ import {
 } from '@/modules/payments/contracts.js';
 import { makePaymentsRepo } from '@/modules/payments/data-access.js';
 import { PaymentPipeline } from '@/modules/payments/domain.js';
+import { normalizeCallback } from '@/modules/checkout/callback.js';
+import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import type { W4pTransaction } from '@/modules/wayforpay/contracts.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
 import { pollTick } from '@/modules/wayforpay/poller.js';
@@ -316,8 +318,98 @@ const pollerIngestsJournal: EffectScenario = {
   },
 };
 
+const CHK_ID = 'chk_e2e';
+
+/** Seed a checkout session, then feed its (normalized) success callback through
+ * the pipeline — the checkout matcher + applier turn it into a subscription. */
+const driveCheckout = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  yield* makeCheckoutRepo(sql).insert({
+    id: CHK_ID,
+    externalUserId: 'sp:checkout',
+    amount: 30000,
+    currency: 0,
+    period: 'P1M',
+    expiresAt: new Date('2030-01-01T00:00:00Z'),
+  });
+  const pipeline = yield* PaymentPipeline;
+  yield* pipeline.ingest(
+    normalizeCallback({
+      orderReference: CHK_ID,
+      amount: '300',
+      currency: 'UAH',
+      transactionStatus: 'Approved',
+      recToken: 'tok_e2e',
+      createdDate: '1700000000',
+    }),
+  );
+  yield* runFor(2);
+});
+
+const assertCheckout = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT count(*) FROM subscriptions WHERE status = 0`,
+    '1',
+    'an active subscription was created (AC5)',
+  );
+  await eq(
+    query,
+    `SELECT "recurringTokenRef" FROM subscriptions`,
+    'tok_e2e',
+    'the card token was stored (AC5)',
+  );
+  await eq(
+    query,
+    `SELECT "externalUserId" FROM subscriptions`,
+    'sp:checkout',
+    'external user carried through',
+  );
+  await eq(
+    query,
+    `SELECT status FROM checkout_sessions WHERE id = '${CHK_ID}'`,
+    '2',
+    'the session was marked completed',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM domain_events WHERE name = 'subscription_created'`,
+    '1',
+    'subscription_created emitted',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM domain_events WHERE name = 'payment_succeeded'`,
+    '1',
+    'payment_succeeded emitted',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM event_deliveries WHERE status = 'delivered'`,
+    '2',
+    'both events delivered',
+  );
+};
+
+const checkoutCreatesSubscription: EffectScenario = {
+  name: 'checkout: a successful payment creates a subscription + events (AC5)',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveCheckout);
+      await assertCheckout(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
   bindReprocesses,
   pollerIngestsJournal,
+  checkoutCreatesSubscription,
 ];

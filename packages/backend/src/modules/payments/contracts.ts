@@ -96,7 +96,9 @@ export type Match = Extract<MatchResult, { readonly matched: true }>;
  * matches nothing, so every real payment quarantines until a matcher is wired.
  */
 export interface PaymentMatcherService {
-  readonly match: (event: IncomingPaymentEvent) => Effect.Effect<MatchResult>;
+  readonly match: (
+    event: IncomingPaymentEvent,
+  ) => Effect.Effect<MatchResult, SqlError.SqlError>;
 }
 
 export class PaymentMatcher extends Context.Tag('PaymentMatcher')<

@@ -30,6 +30,16 @@ export const CurrencyCode: Readonly<Record<Currency, string>> = {
   [Currency.EUR]: 'EUR',
 };
 
+const CurrencyByCode: Readonly<Record<string, Currency>> = {
+  UAH: Currency.UAH,
+  USD: Currency.USD,
+  EUR: Currency.EUR,
+};
+
+/** Parse an ISO 4217 code back to the enum; undefined for an unknown currency. */
+export const currencyFromCode = (code: string): Currency | undefined =>
+  CurrencyByCode[code];
+
 /**
  * Subscription lifecycle (docs/05). `active` when paid; `past_due` inside the
  * retry window (days 0–7); `renewal_failed` after the final retry (the gateway

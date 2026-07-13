@@ -1,4 +1,4 @@
-import { Currency } from '@billing-service/shared';
+import { Currency, currencyFromCode } from '@billing-service/shared';
 
 import type {
   IncomingPaymentEvent,
@@ -10,37 +10,39 @@ import {
 } from '@/modules/wayforpay/contracts.js';
 
 /**
- * Map a WayForPay journal row to a normalized incoming payment (docs/15). Pure, so
- * the field decisions are unit-tested without a client or DB. Non-payment rows
- * (SETTLE, etc.) map to null and are skipped-but-counted by the poller — only the
- * payment operations become events.
+ * Map WayForPay data to the normalized incoming-payment shape (docs/15). Pure, and
+ * the field decisions (currency/status/amount) are shared by the poller and the
+ * serviceUrl callback, so both normalize identically. Non-payment journal rows
+ * (SETTLE, etc.) map to null and the poller skips-but-counts them.
  */
 
 const PAYMENT_TYPES = new Set(['PURCHASE', 'CHARGE', 'REFUND']);
 
-const CURRENCY_BY_CODE: Readonly<Record<string, Currency>> = {
-  UAH: Currency.UAH,
-  USD: Currency.USD,
-  EUR: Currency.EUR,
-};
-
 /** Amounts arrive as major-unit decimals ("10.10"); we store integer minor units. */
-const toMinorUnits = (amount: string | number | undefined): number => {
+export const toMinorUnits = (amount: string | number | undefined): number => {
   const major = Number(amount);
   return Number.isFinite(major) ? Math.round(major * 100) : 0;
 };
 
 /** Epoch seconds (string or number) → Date; unparseable falls back to epoch 0. */
-const toDate = (createdDate: string | number | undefined): Date => {
-  const seconds = Number(createdDate);
+export const toDate = (value: string | number | undefined): Date => {
+  const seconds = Number(value);
   return new Date(Number.isFinite(seconds) ? seconds * 1000 : 0);
 };
 
-const toStatus = (tx: W4pTransaction): PaymentEventStatus => {
-  if (tx.transactionType === 'REFUND') {
+/** Unknown currency defaults to UAH (settlement); the raw payload keeps the truth. */
+export const toCurrency = (code: string | undefined): Currency =>
+  currencyFromCode(code ?? '') ?? Currency.UAH;
+
+/** Normalize a provider status; a REFUND operation is refunded regardless. */
+export const w4pStatus = (
+  transactionType: string | undefined,
+  transactionStatus: string | undefined,
+): PaymentEventStatus => {
+  if (transactionType === 'REFUND') {
     return 'refunded';
   }
-  switch (tx.transactionStatus) {
+  switch (transactionStatus) {
     case 'Approved':
       return 'succeeded';
     case 'Declined':
@@ -58,10 +60,9 @@ const toStatus = (tx: W4pTransaction): PaymentEventStatus => {
 };
 
 /**
- * Normalize a payment row, or null for a non-payment operation. Unknown currency
- * defaults to UAH (the settlement currency) — the raw payload keeps the true value
- * for reconciliation. `externalUserId` is left null: legacy rows carry no reliable
- * identity, so matching happens downstream (orderReference-first, docs/15).
+ * Normalize a journal row, or null for a non-payment operation. `externalUserId`
+ * is left null: legacy rows carry no reliable identity, so matching happens
+ * downstream (orderReference-first, docs/15).
  */
 export const mapTransaction = (
   tx: W4pTransaction,
@@ -78,8 +79,8 @@ export const mapTransaction = (
     externalRef: tx.orderReference ?? '',
     externalUserId: null,
     amount: toMinorUnits(tx.amount),
-    currency: CURRENCY_BY_CODE[tx.currency ?? ''] ?? Currency.UAH,
-    status: toStatus(tx),
+    currency: toCurrency(tx.currency),
+    status: w4pStatus(tx.transactionType, tx.transactionStatus),
     occurredAt: toDate(tx.createdDate),
     payload: { ...tx },
   };

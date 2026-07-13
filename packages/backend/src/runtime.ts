@@ -10,8 +10,9 @@ import { TaskRegistryLive } from '@/infra/task-registry.js';
 import { makeAuthConfig } from '@/modules/auth/domain.js';
 import { AuthRepoLive } from '@/modules/auth/data-access.js';
 import { OutboxLive } from '@/modules/outbox/domain.js';
-import { NoApplyLive, NoMatchLive } from '@/modules/payments/contracts.js';
 import { PaymentPipelineLive } from '@/modules/payments/domain.js';
+import { CheckoutApplierLive } from '@/modules/checkout/applier.js';
+import { CheckoutMatcherLive } from '@/modules/checkout/matcher.js';
 import { WayForPayLive } from '@/modules/wayforpay/client.js';
 import { makeW4pConfig } from '@/modules/wayforpay/config.js';
 
@@ -73,6 +74,9 @@ const wayForPayLayer = (config: AppConfig) =>
         apiUrl: config.wayforpay.apiUrl,
         regularApiUrl: config.wayforpay.regularApiUrl,
         merchantDomainName: config.wayforpay.merchantDomainName,
+        checkoutUrl: config.wayforpay.checkoutUrl,
+        serviceUrl: config.wayforpay.serviceUrl,
+        returnUrl: config.wayforpay.returnUrl,
       }),
     ),
     Layer.provide(rateLimiterLayer(config.wayforpay.rateLimitRps)),
@@ -82,12 +86,17 @@ export const makeWorkerLayer = (config: AppConfig) => {
   const base = Layer.mergeAll(
     TaskRegistryLive,
     LoggingSinkLive,
-    NoMatchLive,
-    NoApplyLive,
     SqlLive(config.database),
     wayForPayLayer(config),
   );
-  const withQueue = Layer.provideMerge(QueueLive, base);
+  // The checkout matcher + applier are the live PaymentMatcher/PaymentApplier;
+  // both need SqlClient (from base). Poller/legacy events find no session here
+  // and quarantine until the recurring matcher (M6).
+  const withMatch = Layer.provideMerge(
+    Layer.mergeAll(CheckoutMatcherLive, CheckoutApplierLive),
+    base,
+  );
+  const withQueue = Layer.provideMerge(QueueLive, withMatch);
   const withOutbox = Layer.provideMerge(OutboxLive, withQueue);
   return Layer.provideMerge(PaymentPipelineLive, withOutbox);
 };

@@ -48,3 +48,76 @@ export const signRequest = (
   fields: Readonly<Record<string, string | number>>,
   secretKey: string,
 ): string => hmacMd5Hex(buildSignatureBase(requestType, fields), secretKey);
+
+export interface PurchaseProduct {
+  readonly name: string;
+  readonly count: number;
+  readonly price: number;
+}
+
+export interface PurchaseSignatureFields {
+  readonly merchantAccount: string;
+  readonly merchantDomainName: string;
+  readonly orderReference: string;
+  readonly orderDate: number;
+  readonly amount: number;
+  readonly currency: string;
+  readonly products: readonly PurchaseProduct[];
+}
+
+/**
+ * Purchase / CHARGE signature base (wiki 852102 / 852194): the six head fields,
+ * then ALL productName, then ALL productCount, then ALL productPrice — each group
+ * flattened in product order. Card/token fields are not signed.
+ */
+export const purchaseSignatureBase = (f: PurchaseSignatureFields): string =>
+  [
+    f.merchantAccount,
+    f.merchantDomainName,
+    f.orderReference,
+    String(f.orderDate),
+    String(f.amount),
+    f.currency,
+    ...f.products.map((p) => p.name),
+    ...f.products.map((p) => String(p.count)),
+    ...f.products.map((p) => String(p.price)),
+  ].join(';');
+
+export const signPurchase = (
+  f: PurchaseSignatureFields,
+  secretKey: string,
+): string => hmacMd5Hex(purchaseSignatureBase(f), secretKey);
+
+export interface CallbackSignatureFields {
+  readonly merchantAccount: string;
+  readonly orderReference: string;
+  readonly amount: string;
+  readonly currency: string;
+  readonly authCode: string;
+  readonly cardPan: string;
+  readonly transactionStatus: string;
+  readonly reasonCode: string;
+}
+
+/**
+ * serviceUrl callback signature base (wiki 852102): exactly these eight fields,
+ * verified over the values AS RECEIVED (so amount/reasonCode are the raw strings).
+ */
+export const callbackSignatureBase = (f: CallbackSignatureFields): string =>
+  [
+    f.merchantAccount,
+    f.orderReference,
+    f.amount,
+    f.currency,
+    f.authCode,
+    f.cardPan,
+    f.transactionStatus,
+    f.reasonCode,
+  ].join(';');
+
+/** Our acknowledgement signature: `orderReference;status;time` (wiki 852102). */
+export const ackSignatureBase = (
+  orderReference: string,
+  status: string,
+  time: number,
+): string => [orderReference, status, String(time)].join(';');
