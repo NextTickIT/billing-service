@@ -1,17 +1,28 @@
+import { Effect } from 'effect';
 import type { FastifyInstance } from 'fastify';
 
 import { checkHealth } from '@/modules/health/domain.js';
 
 /**
- * Route-only module: autoloaded directly as the module entrypoint. Health
- * subscribes to no tasks, so it needs no `.plugin`. A module adds a
- * `*.plugin.ts` only when it must register handlers with the TaskRegistry.
+ * `/health` is a readiness probe: 200 only when the database is reachable, else
+ * 503. It runs `SELECT 1` on the DB-backed runtime; a failed or timed-out query
+ * (no connection) reports unavailable instead of a misleading 200. Use it as a
+ * readiness signal — pair with a cheap liveness check if the orchestrator should
+ * not restart the process during a transient DB outage.
  */
 export default function health(
   fastify: FastifyInstance,
   _opts: unknown,
   done: () => void,
 ): void {
-  fastify.get('/health', () => fastify.runtime.runSync(checkHealth()));
+  fastify.get('/health', async (_request, reply) => {
+    const ready = await fastify.dbRuntime
+      .runPromise(checkHealth().pipe(Effect.timeout('5 seconds')))
+      .then(() => true)
+      .catch(() => false);
+    reply
+      .status(ready ? 200 : 503)
+      .send(ready ? { status: 'ok' } : { status: 'unavailable' });
+  });
   done();
 }

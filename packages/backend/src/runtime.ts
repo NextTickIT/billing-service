@@ -37,7 +37,9 @@ export const makeAppDbLayer = (config: AppConfig) =>
       adminToken: config.adminToken,
       sessionTtlSeconds: config.sessionTtlSeconds,
     }),
-    AuthRepoLive.pipe(Layer.provide(SqlLive(config.database))),
+    // `provideMerge` (not `provide`) so `SqlClient` stays in the runtime's
+    // context — the `/health` readiness probe runs `SELECT 1` on it directly.
+    AuthRepoLive.pipe(Layer.provideMerge(SqlLive(config.database))),
   );
 
 export const makeDbRuntime = (config: AppConfig) =>

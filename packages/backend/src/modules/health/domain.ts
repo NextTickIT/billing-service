@@ -1,12 +1,8 @@
+import { SqlClient } from '@effect/sql';
 import { Effect } from 'effect';
 
-export interface HealthStatus {
-  readonly status: 'ok';
-}
-
-/**
- * Service as a plain function returning an Effect (no class, no methods).
- * Health is intentionally trivial — it takes no dependencies.
- */
-export const checkHealth = (): Effect.Effect<HealthStatus> =>
-  Effect.succeed({ status: 'ok' });
+/** Readiness probe: the service is healthy only when the database answers a
+ * trivial query. An unreachable database surfaces as a failed Effect, which the
+ * route turns into a 503 rather than a lying 200. */
+export const checkHealth = () =>
+  Effect.flatMap(SqlClient.SqlClient, (sql) => sql`SELECT 1`);
