@@ -34,9 +34,12 @@ that follows. Where a rule supersedes an earlier spec/plan, that is noted.
 
 ## 5. Test placement
 
-- `packages/backend/src/modules/{name}/test/` — unit and integration tests, next
-  to the code they cover. Picked up by `npm test` (hermetic, no Postgres).
-- `packages/backend/test/e2e/` — the e2e tier only, run via `npm run test:e2e`.
+- `packages/backend/src/modules/{name}/test/` — tests next to the code they
+  cover: `*.test.ts` unit/integration (run by `npm test`, hermetic, no Postgres)
+  and `*.e2e.ts` scenarios (run only by the e2e runner, never by `npm test` —
+  the unit gate globs `*.test.ts`, not `*.e2e.ts`).
+- `packages/backend/test/e2e/` — the e2e runner harness (`run.ts`), invoked by
+  `npm run test:e2e`; it loads each module's `*.e2e.ts` scenarios.
 - Test files never ship: the build tsconfig excludes `src/**/*.test.ts` and
   `src/**/test/**`.
 - Supersedes the "in-memory `AuthRepo` test layer" tier described in

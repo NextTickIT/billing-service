@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 
 /**
- * Auth E2E scenarios — black-box HTTP against a REAL, freshly-migrated Postgres.
+ * Auth route e2e scenarios — black-box HTTP against a REAL, freshly-migrated
+ * Postgres. Co-located with the auth module; run only by the e2e runner
+ * (`test/e2e/run.ts`), never by the `npm test` unit gate (`*.e2e.ts`, not
+ * `*.test.ts`).
  * Each scenario is handed a `baseUrl` (a real listening server) and a `query`
  * helper that runs SQL against that scenario's own throwaway database, so it can
  * assert on data at rest. The runner (run.ts) gives every scenario an isolated,

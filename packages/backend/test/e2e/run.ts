@@ -8,7 +8,7 @@ import { buildApp } from '@/app.js';
 import type { DatabaseConfig } from '@/config.js';
 import { runMigrations } from '@/infra/migrator.js';
 
-import { scenarios, type Scenario } from './auth.e2e.js';
+import { scenarios, type Scenario } from '@/modules/auth/test/routes.e2e.js';
 
 /**
  * E2E test runner. Spins up the only external dependency (Postgres) in Docker,
