@@ -4,9 +4,11 @@ import type { AppConfig } from '@/config.js';
 import { DatabaseLive, SqlLive } from '@/infra/db.js';
 import { HasherLive } from '@/infra/hasher.js';
 import { QueueLive } from '@/infra/queue/service.js';
+import { LoggingSinkLive } from '@/infra/sinks.js';
 import { TaskRegistryLive } from '@/infra/task-registry.js';
 import { makeAuthConfig } from '@/modules/auth/domain.js';
 import { AuthRepoLive } from '@/modules/auth/data-access.js';
+import { OutboxLive } from '@/modules/outbox/domain.js';
 
 /**
  * Two runtimes, by design (see docs/13 ADR):
@@ -50,15 +52,20 @@ export type AppDbRuntime = ReturnType<typeof makeDbRuntime>;
 
 /**
  * Worker runtime — the background process (src/worker.ts). DB-backed: the `Queue`
- * dispatcher needs `SqlClient`, and reads the `TaskRegistry` for the handler set.
- * Unlike `dbRuntime` this is the ONLY consumer, so it is fine to build eagerly on
- * worker start (there is no hermetic-health constraint off the request path).
+ * dispatcher and `Outbox` need `SqlClient`, the queue reads the `TaskRegistry` for
+ * the handler set, and the outbox fans out to the `Sinks`. Built eagerly on worker
+ * start (no hermetic-health constraint off the request path). Layering: base
+ * services -> Queue (needs sql + registry) -> Outbox (needs sql + sinks + queue).
  */
-export const makeWorkerLayer = (config: AppConfig) =>
-  Layer.provideMerge(
-    QueueLive,
-    Layer.merge(TaskRegistryLive, SqlLive(config.database)),
+export const makeWorkerLayer = (config: AppConfig) => {
+  const base = Layer.mergeAll(
+    TaskRegistryLive,
+    LoggingSinkLive,
+    SqlLive(config.database),
   );
+  const withQueue = Layer.provideMerge(QueueLive, base);
+  return Layer.provideMerge(OutboxLive, withQueue);
+};
 
 export const makeWorkerRuntime = (config: AppConfig) =>
   ManagedRuntime.make(makeWorkerLayer(config));

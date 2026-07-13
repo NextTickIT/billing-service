@@ -5,6 +5,9 @@ import { Effect } from 'effect';
 import { loadConfig } from '@/config.js';
 import { defaultRetryConfig } from '@/infra/queue/policy.js';
 import { Queue } from '@/infra/queue/service.js';
+import { TaskRegistry } from '@/infra/task-registry.js';
+import { DELIVER_EVENT } from '@/modules/outbox/contracts.js';
+import { Outbox } from '@/modules/outbox/domain.js';
 import { makeWorkerRuntime } from '@/runtime.js';
 
 /**
@@ -23,6 +26,12 @@ await runtime.runPromise(
   Effect.gen(function* () {
     yield* Effect.logInfo('worker started').pipe(
       Effect.annotateLogs('workerId', workerId),
+    );
+    // Register worker-side handlers, then run the dispatch loop.
+    const registry = yield* TaskRegistry;
+    const outbox = yield* Outbox;
+    yield* registry.register(DELIVER_EVENT, (payload) =>
+      outbox.deliverFromPayload(payload),
     );
     const queue = yield* Queue;
     yield* queue.run({
