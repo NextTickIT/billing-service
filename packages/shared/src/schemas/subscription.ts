@@ -1,30 +1,51 @@
 import { Schema } from 'effect';
 
-import { PaymentMethodSchema } from '@/enums/payment-method.js';
+/**
+ * Payment methods are numeric enums stored as numbers everywhere; the Schema
+ * mirror validates the values. Owned by the subscription slice.
+ */
+export enum PaymentMethod {
+  Card = 0,
+  Crypto = 1,
+}
+
+export const PaymentMethodSchema = Schema.Enums(PaymentMethod);
 
 /**
- * Single source of truth for the Subscription contract.
- *
- * The static type is DERIVED from this schema — never hand-written. The same
- * shape is used at db, backend, and frontend with no transformation: encode /
- * decode only validates at boundaries, it never remaps fields.
- *
- * (Reference schema demonstrating the pattern — not the full billing domain.)
+ * Currency is a closed set stored as a number, not a free string, so only
+ * allowed values can ever be persisted. `CurrencyCode` maps each to its ISO 4217
+ * string for human-readable rendering at the edges.
+ */
+export enum Currency {
+  UAH = 0,
+  USD = 1,
+  EUR = 2,
+}
+
+export const CurrencySchema = Schema.Enums(Currency);
+
+export const CurrencyCode: Readonly<Record<Currency, string>> = {
+  [Currency.UAH]: 'UAH',
+  [Currency.USD]: 'USD',
+  [Currency.EUR]: 'EUR',
+};
+
+/**
+ * Single source of truth for the Subscription contract. The static type is
+ * DERIVED from this schema; the same shape is used at db, backend, and frontend
+ * with no transformation.
  */
 export const Subscription = Schema.Struct({
   id: Schema.String,
   externalUserId: Schema.String,
   amount: Schema.Int, // integer minimal currency units
-  currency: Schema.String,
+  currency: CurrencySchema,
   method: PaymentMethodSchema,
 });
 
 export type Subscription = Schema.Schema.Type<typeof Subscription>;
 
-/**
- * Computed contract: create params = the entity without its server-owned `id`.
- * Derived from the schema via `Schema.omit`, so it can never drift.
- */
+/** Create params = the entity without its server-owned `id`. */
 export const CreateSubscription = Subscription.pipe(Schema.omit('id'));
 
 export type CreateSubscription = Schema.Schema.Type<typeof CreateSubscription>;

@@ -2,8 +2,13 @@ import { it } from '@effect/vitest';
 import { Effect, Schema } from 'effect';
 import { expect } from 'vitest';
 
-import { Role, RoleSchema } from '@/enums/role.js';
-import { CreateAuthToken, CreateOperator, Operator } from '@/schemas/auth.js';
+import {
+  CreateAuthToken,
+  CreateOperator,
+  Operator,
+  Role,
+  RoleSchema,
+} from '@/schemas/auth.js';
 
 const validOperator = {
   id: 'op_1',

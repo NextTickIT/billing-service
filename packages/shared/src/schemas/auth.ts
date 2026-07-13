@@ -1,17 +1,18 @@
 import { Schema } from 'effect';
 
-import { RoleSchema } from '@/enums/role.js';
-
 /**
- * Public Auth contracts — the single source of truth for the shapes that flow
- * unchanged to db, backend, and frontend. These are the PUBLIC shapes only:
- * secrets (passwords, token/session hashes) never appear here — they live in
- * the backend data-access layer and in the backend-only request contracts.
- * Static types are DERIVED from the schemas; `CreateParams` are computed via
- * `Schema.omit`, so they can never drift. Timestamps are `Date` (what the
- * Postgres driver returns and what `Clock` derives); JSON encoding to an ISO
- * string happens only at the HTTP boundary.
+ * Roles are numeric enums stored as numbers everywhere (db `smallint`, backend,
+ * frontend); the Schema mirror validates the values. `Role` is owned by the auth
+ * slice: an Admin-role credential creates tokens/operators, and a session
+ * carries its operator's role.
  */
+export enum Role {
+  Admin = 0,
+  Operator = 1,
+  Service = 2,
+}
+
+export const RoleSchema = Schema.Enums(Role);
 
 /** An API/auth token: an admin-minted credential carrying an alias and a role. */
 export const AuthToken = Schema.Struct({
@@ -39,9 +40,8 @@ export const Operator = Schema.Struct({
 export type Operator = Schema.Schema.Type<typeof Operator>;
 
 /**
- * Create params: the admin supplies login + role. The password is a secret and
- * is intentionally NOT part of this public shape — it travels only in the
- * backend's `CreateOperatorBody` request contract.
+ * The password is a secret and is intentionally NOT part of this public shape —
+ * it travels only in the backend's request schema.
  */
 export const CreateOperator = Operator.pipe(Schema.omit('id', 'createdAt'));
 
@@ -58,7 +58,6 @@ export const Session = Schema.Struct({
 
 export type Session = Schema.Schema.Type<typeof Session>;
 
-/** Create params: the server owns id, createdAt, and the derived expiresAt. */
 export const CreateSession = Session.pipe(
   Schema.omit('id', 'createdAt', 'expiresAt'),
 );

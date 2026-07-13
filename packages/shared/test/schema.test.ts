@@ -2,8 +2,12 @@ import { it } from '@effect/vitest';
 import { Effect, Schema } from 'effect';
 import { expect } from 'vitest';
 
-import { PaymentMethod } from '@/enums/payment-method.js';
-import { CreateSubscription, Subscription } from '@/schemas/subscription.js';
+import {
+  CreateSubscription,
+  Currency,
+  PaymentMethod,
+  Subscription,
+} from '@/schemas/subscription.js';
 
 it.effect('decodes a valid subscription', () =>
   Effect.gen(function* () {
@@ -11,7 +15,7 @@ it.effect('decodes a valid subscription', () =>
       id: 'sub_1',
       externalUserId: 'sendpulse:1',
       amount: 30000,
-      currency: 'UAH',
+      currency: Currency.UAH,
       method: PaymentMethod.Card,
     });
     expect(decoded.method).toBe(PaymentMethod.Card);
@@ -34,7 +38,7 @@ it.effect(
       const params = {
         externalUserId: 'sendpulse:1',
         amount: 30000,
-        currency: 'UAH',
+        currency: Currency.UAH,
         method: PaymentMethod.Card,
       };
       // CreateSubscription decodes id-less params and yields no `id`...
