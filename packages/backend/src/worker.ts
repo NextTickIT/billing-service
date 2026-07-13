@@ -1,5 +1,6 @@
 import { hostname } from 'node:os';
 
+import { SqlClient } from '@effect/sql';
 import { Effect } from 'effect';
 
 import { loadConfig } from '@/config.js';
@@ -13,6 +14,9 @@ import {
   PAYMENT_REBIND,
 } from '@/modules/payments/contracts.js';
 import { PaymentPipeline } from '@/modules/payments/domain.js';
+import { WayForPay } from '@/modules/wayforpay/client.js';
+import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
+import { runPoller } from '@/modules/wayforpay/poller.js';
 import { makeWorkerRuntime } from '@/runtime.js';
 
 /**
@@ -45,6 +49,27 @@ await runtime.runPromise(
     yield* registry.register(DELIVER_EVENT, (payload) =>
       outbox.deliverFromPayload(payload),
     );
+
+    // The migration poller runs alongside the dispatcher (docs/15). It is a
+    // separate long-lived source and must not block queue processing, so it is
+    // forked; gated off until production WayForPay credentials are provisioned.
+    if (config.wayforpay.pollerEnabled) {
+      const client = yield* WayForPay;
+      const sql = yield* SqlClient.SqlClient;
+      yield* Effect.forkDaemon(
+        runPoller(
+          { client, ingest: pipeline.ingest, state: makePollerStateRepo(sql) },
+          {
+            account: config.wayforpay.merchantAccount,
+            pollIntervalSeconds: config.wayforpay.pollIntervalSeconds,
+            windowOverlapSeconds: config.wayforpay.windowOverlapSeconds,
+            maxWindowSeconds: config.wayforpay.maxWindowSeconds,
+          },
+        ),
+      );
+      yield* Effect.logInfo('w4p migration poller started');
+    }
+
     const queue = yield* Queue;
     yield* queue.run({
       workerId,

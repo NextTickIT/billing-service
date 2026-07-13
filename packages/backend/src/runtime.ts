@@ -4,6 +4,7 @@ import type { AppConfig } from '@/config.js';
 import { DatabaseLive, SqlLive } from '@/infra/db.js';
 import { HasherLive } from '@/infra/hasher.js';
 import { QueueLive } from '@/infra/queue/service.js';
+import { rateLimiterLayer } from '@/infra/rate-limiter.js';
 import { LoggingSinkLive } from '@/infra/sinks.js';
 import { TaskRegistryLive } from '@/infra/task-registry.js';
 import { makeAuthConfig } from '@/modules/auth/domain.js';
@@ -11,6 +12,8 @@ import { AuthRepoLive } from '@/modules/auth/data-access.js';
 import { OutboxLive } from '@/modules/outbox/domain.js';
 import { NoMatchLive } from '@/modules/payments/contracts.js';
 import { PaymentPipelineLive } from '@/modules/payments/domain.js';
+import { WayForPayLive } from '@/modules/wayforpay/client.js';
+import { makeW4pConfig } from '@/modules/wayforpay/config.js';
 
 /**
  * Two runtimes, by design (see docs/13 ADR):
@@ -59,12 +62,29 @@ export type AppDbRuntime = ReturnType<typeof makeDbRuntime>;
  * start (no hermetic-health constraint off the request path). Layering: base
  * services -> Queue (needs sql + registry) -> Outbox (needs sql + sinks + queue).
  */
+/** The WayForPay client with its config + rate limiter satisfied. */
+const wayForPayLayer = (config: AppConfig) =>
+  WayForPayLive.pipe(
+    Layer.provide(
+      makeW4pConfig({
+        merchantAccount: config.wayforpay.merchantAccount,
+        merchantSecretKey: config.wayforpay.merchantSecretKey,
+        merchantPassword: config.wayforpay.merchantPassword,
+        apiUrl: config.wayforpay.apiUrl,
+        regularApiUrl: config.wayforpay.regularApiUrl,
+        merchantDomainName: config.wayforpay.merchantDomainName,
+      }),
+    ),
+    Layer.provide(rateLimiterLayer(config.wayforpay.rateLimitRps)),
+  );
+
 export const makeWorkerLayer = (config: AppConfig) => {
   const base = Layer.mergeAll(
     TaskRegistryLive,
     LoggingSinkLive,
     NoMatchLive,
     SqlLive(config.database),
+    wayForPayLayer(config),
   );
   const withQueue = Layer.provideMerge(QueueLive, base);
   const withOutbox = Layer.provideMerge(OutboxLive, withQueue);

@@ -17,6 +17,9 @@ import {
 } from '@/modules/payments/contracts.js';
 import { makePaymentsRepo } from '@/modules/payments/data-access.js';
 import { PaymentPipeline } from '@/modules/payments/domain.js';
+import type { W4pTransaction } from '@/modules/wayforpay/contracts.js';
+import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
+import { pollTick } from '@/modules/wayforpay/poller.js';
 import { makeWorkerRuntime } from '@/runtime.js';
 
 /**
@@ -232,7 +235,89 @@ const bindReprocesses: EffectScenario = {
   },
 };
 
+const journal: readonly W4pTransaction[] = [
+  {
+    transactionType: 'PURCHASE',
+    orderReference: 'p1',
+    createdDate: '1700000000',
+    amount: '10.00',
+    currency: 'UAH',
+    transactionStatus: 'Approved',
+  },
+  {
+    transactionType: 'PURCHASE',
+    orderReference: 'p2',
+    createdDate: '1700000100',
+    amount: '20.00',
+    currency: 'UAH',
+    transactionStatus: 'Approved',
+  },
+  {
+    transactionType: 'SETTLE',
+    orderReference: 's1',
+    createdDate: '1700000200',
+  },
+];
+
+/** Poll a canned journal (fake client, no network), then drain the pipeline. */
+const drivePoller = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  const pipeline = yield* PaymentPipeline;
+  yield* pollTick(
+    {
+      client: { transactionList: () => Effect.succeed(journal) },
+      ingest: pipeline.ingest,
+      state: makePollerStateRepo(sql),
+    },
+    {
+      account: 'acc',
+      pollIntervalSeconds: 120,
+      windowOverlapSeconds: 900,
+      maxWindowSeconds: 21600,
+    },
+  );
+  yield* runFor(2);
+});
+
+const assertPoller = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT count(*) FROM incoming_payment_events`,
+    '2',
+    'two payment rows ingested; SETTLE skipped',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM w4p_poller_state WHERE account = 'acc'`,
+    '1',
+    'watermark persisted for the account',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM event_deliveries WHERE status = 'delivered'`,
+    '2',
+    'both quarantine events delivered',
+  );
+};
+
+const pollerIngestsJournal: EffectScenario = {
+  name: 'poller: journal rows are ingested through the pipeline (FR-008)',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(drivePoller);
+      await assertPoller(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
   bindReprocesses,
+  pollerIngestsJournal,
 ];

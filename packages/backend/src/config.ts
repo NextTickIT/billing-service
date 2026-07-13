@@ -37,6 +37,11 @@ export interface WayForPayConfig {
   readonly merchantDomainName: string;
   /** Client-side request rate (req/s); WayForPay documents no server limit. */
   readonly rateLimitRps: number;
+  /** Migration poller (docs/15): off until production credentials are provisioned. */
+  readonly pollerEnabled: boolean;
+  readonly pollIntervalSeconds: number;
+  readonly windowOverlapSeconds: number;
+  readonly maxWindowSeconds: number;
 }
 
 export interface AppConfig {
@@ -61,6 +66,18 @@ const loadQueueConfig = (): QueueConfig => ({
   maxAttempts: Number(process.env['QUEUE_MAX_ATTEMPTS'] ?? '5'),
 });
 
+/** Poller knobs split out to keep each loader under the complexity budget. */
+const loadW4pPollerConfig = () => ({
+  pollerEnabled: process.env['W4P_POLLER_ENABLED'] === 'true',
+  pollIntervalSeconds: Number(
+    process.env['W4P_POLL_INTERVAL_SECONDS'] ?? '120',
+  ),
+  windowOverlapSeconds: Number(
+    process.env['W4P_WINDOW_OVERLAP_SECONDS'] ?? '900',
+  ),
+  maxWindowSeconds: Number(process.env['W4P_MAX_WINDOW_SECONDS'] ?? '21600'),
+});
+
 const loadWayForPayConfig = (): WayForPayConfig => ({
   merchantAccount: process.env['W4P_MERCHANT_ACCOUNT'] ?? '',
   merchantSecretKey: Redacted.make(process.env['W4P_SECRET_KEY'] ?? ''),
@@ -71,6 +88,7 @@ const loadWayForPayConfig = (): WayForPayConfig => ({
     'https://api.wayforpay.com/regularApi',
   merchantDomainName: process.env['W4P_DOMAIN_NAME'] ?? '',
   rateLimitRps: Number(process.env['W4P_RATE_LIMIT_RPS'] ?? '2'),
+  ...loadW4pPollerConfig(),
 });
 
 export const loadConfig = (): AppConfig => ({
