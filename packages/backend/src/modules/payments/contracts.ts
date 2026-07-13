@@ -1,3 +1,4 @@
+import type { SqlError } from '@effect/sql';
 import { CurrencySchema } from '@billing-service/shared';
 import { Context, Effect, Layer, Schema } from 'effect';
 
@@ -66,20 +67,28 @@ export type IncomingPaymentEvent = Schema.Schema.Type<
   typeof IncomingPaymentEvent
 >;
 
+/** How a matched payment relates to a subscription: a first checkout payment
+ * (create-or-extend) or a charge against one that already exists (M6). */
+export type MatchKind = 'checkout' | 'recurring';
+
 /**
  * The result of matching an incoming event to a gateway subscription. A match
- * carries everything the outgoing `payment_succeeded` needs (docs/07) that the
- * event itself doesn't (period, method). No match → the event is quarantined.
+ * carries what the outgoing events need (docs/07) that the event itself doesn't
+ * (period, method). `subscriptionId` is null for a checkout first payment — the
+ * subscription is created while applying it. No match → the event is quarantined.
  */
 export type MatchResult =
   | {
       readonly matched: true;
-      readonly subscriptionId: string;
+      readonly kind: MatchKind;
+      readonly subscriptionId: string | null;
       readonly externalUserId: string;
       readonly period: string;
       readonly method: number;
     }
   | { readonly matched: false };
+
+export type Match = Extract<MatchResult, { readonly matched: true }>;
 
 /**
  * Matching port — the seam a real matcher (checkout session / subscription
@@ -97,4 +106,33 @@ export class PaymentMatcher extends Context.Tag('PaymentMatcher')<
 
 export const NoMatchLive = Layer.succeed(PaymentMatcher, {
   match: () => Effect.succeed({ matched: false }),
+});
+
+/** The subscription a matched payment resolved to, and whether it was just born. */
+export interface AppliedPayment {
+  readonly subscriptionId: string;
+  readonly created: boolean;
+}
+
+/**
+ * Applier port — the domain follow-up for a matched payment (FR-003): create or
+ * extend the subscription and store the token. Kept out of the pipeline so the
+ * pipeline stays generic (AC8). The default refuses: it is only reachable if a
+ * matcher matched without an applier wired, which is a misconfiguration.
+ */
+export interface PaymentApplierService {
+  readonly apply: (
+    event: IncomingPaymentEvent,
+    match: Match,
+  ) => Effect.Effect<AppliedPayment, SqlError.SqlError>;
+}
+
+export class PaymentApplier extends Context.Tag('PaymentApplier')<
+  PaymentApplier,
+  PaymentApplierService
+>() {}
+
+export const NoApplyLive = Layer.succeed(PaymentApplier, {
+  apply: () =>
+    Effect.dieMessage('no PaymentApplier configured for a matched payment'),
 });

@@ -7,9 +7,11 @@ import { Queue } from '@/infra/queue/service.js';
 import type { EnqueueInput, EnqueueResult } from '@/infra/queue/store.js';
 import {
   IncomingPaymentEvent,
-  type MatchResult,
+  type Match,
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
+  PaymentApplier,
+  type PaymentApplierService,
   PaymentMatcher,
   type PaymentMatcherService,
   RebindPayload,
@@ -35,20 +37,40 @@ const eventId = (idemKey: string, suffix: string): string =>
 /** payment_succeeded envelope for a matched incoming event (docs/07). */
 export const paymentSucceeded = (
   event: IncomingPaymentEvent,
-  match: Extract<MatchResult, { matched: true }>,
+  match: Match,
+  subscriptionId: string,
 ): DomainEvent => ({
   id: eventId(event.idemKey, 'succeeded'),
   name: 'payment_succeeded',
   occurredAt: event.occurredAt,
   correlationId: event.idemKey,
   externalUserId: match.externalUserId,
-  aggregateId: match.subscriptionId,
+  aggregateId: subscriptionId,
   payload: {
     amount: event.amount,
     currency: event.currency,
     method: match.method,
     period: match.period,
     source: event.source,
+  },
+});
+
+/** subscription_created envelope for a brand-new gateway subscription (docs/07). */
+export const subscriptionCreated = (
+  event: IncomingPaymentEvent,
+  match: Match,
+  subscriptionId: string,
+): DomainEvent => ({
+  id: eventId(event.idemKey, 'subscription'),
+  name: 'subscription_created',
+  occurredAt: event.occurredAt,
+  correlationId: event.idemKey,
+  externalUserId: match.externalUserId,
+  aggregateId: subscriptionId,
+  payload: {
+    amount: event.amount,
+    currency: event.currency,
+    period: match.period,
   },
 });
 
@@ -116,6 +138,7 @@ export const ingest =
 interface HandleDeps {
   readonly repo: PaymentsRepo;
   readonly matcher: PaymentMatcherService;
+  readonly applier: PaymentApplierService;
   readonly publish: (
     event: DomainEvent,
   ) => Effect.Effect<void, SqlError.SqlError>;
@@ -126,9 +149,10 @@ const process = (deps: HandleDeps, event: IncomingPaymentEvent) =>
     const incomingId = yield* deps.repo.upsertIncomingEvent(event);
     const match = yield* deps.matcher.match(event);
     if (match.matched) {
+      const applied = yield* deps.applier.apply(event, match);
       yield* deps.repo.insertPayment({
         incomingEventId: incomingId,
-        subscriptionId: match.subscriptionId,
+        subscriptionId: applied.subscriptionId,
         externalUserId: match.externalUserId,
         amount: event.amount,
         currency: event.currency,
@@ -136,7 +160,14 @@ const process = (deps: HandleDeps, event: IncomingPaymentEvent) =>
         occurredAt: event.occurredAt,
       });
       yield* deps.repo.setMatchResult(incomingId, 'matched');
-      yield* deps.publish(paymentSucceeded(event, match));
+      if (applied.created) {
+        yield* deps.publish(
+          subscriptionCreated(event, match, applied.subscriptionId),
+        );
+      }
+      yield* deps.publish(
+        paymentSucceeded(event, match, applied.subscriptionId),
+      );
       return;
     }
     const quarantineId = yield* deps.repo.upsertQuarantine(incomingId);
@@ -222,10 +253,11 @@ export const PaymentPipelineLive = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const matcher = yield* PaymentMatcher;
+    const applier = yield* PaymentApplier;
     const outbox = yield* Outbox;
     const queue = yield* Queue;
     const repo = makePaymentsRepo(sql);
-    const handleDeps = { repo, matcher, publish: outbox.publish };
+    const handleDeps = { repo, matcher, applier, publish: outbox.publish };
     return {
       ingest: ingest({ enqueue: queue.enqueue }),
       handleFromPayload: handlePaymentEvent(handleDeps),

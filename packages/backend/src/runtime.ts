@@ -10,7 +10,7 @@ import { TaskRegistryLive } from '@/infra/task-registry.js';
 import { makeAuthConfig } from '@/modules/auth/domain.js';
 import { AuthRepoLive } from '@/modules/auth/data-access.js';
 import { OutboxLive } from '@/modules/outbox/domain.js';
-import { NoMatchLive } from '@/modules/payments/contracts.js';
+import { NoApplyLive, NoMatchLive } from '@/modules/payments/contracts.js';
 import { PaymentPipelineLive } from '@/modules/payments/domain.js';
 import { WayForPayLive } from '@/modules/wayforpay/client.js';
 import { makeW4pConfig } from '@/modules/wayforpay/config.js';
@@ -83,6 +83,7 @@ export const makeWorkerLayer = (config: AppConfig) => {
     TaskRegistryLive,
     LoggingSinkLive,
     NoMatchLive,
+    NoApplyLive,
     SqlLive(config.database),
     wayForPayLayer(config),
   );

@@ -5,9 +5,11 @@ import { expect } from 'vitest';
 
 import type { EnqueueInput } from '@/infra/queue/store.js';
 import {
+  type AppliedPayment,
   type IncomingPaymentEvent,
   type MatchResult,
   PAYMENT_EVENT_RECEIVED,
+  type PaymentApplierService,
   type PaymentMatcherService,
 } from '@/modules/payments/contracts.js';
 import type { PaymentsRepo } from '@/modules/payments/data-access.js';
@@ -100,6 +102,15 @@ const matcherOf = (result: MatchResult): PaymentMatcherService => ({
   match: () => Effect.succeed(result),
 });
 
+const applierOf = (result: AppliedPayment): PaymentApplierService => ({
+  apply: () => Effect.succeed(result),
+});
+
+/** Applier for paths where no match occurs, so apply must never be called. */
+const noApplier: PaymentApplierService = {
+  apply: () => Effect.die('applier called on an unmatched path'),
+};
+
 const recordingPublish = () => {
   const events: DomainEvent[] = [];
   return {
@@ -121,6 +132,7 @@ it.effect(
       yield* handlePaymentEvent({
         repo,
         matcher: matcherOf({ matched: false }),
+        applier: noApplier,
         publish: pub.publish,
       })(encodedPayload('k1'));
 
@@ -142,20 +154,51 @@ it.effect('a matched event records a payment and emits payment_succeeded', () =>
       repo,
       matcher: matcherOf({
         matched: true,
+        kind: 'recurring',
         subscriptionId: 'sub_1',
         externalUserId: 'sp:1',
         period: 'P1M',
         method: 0,
       }),
+      applier: applierOf({ subscriptionId: 'sub_1', created: false }),
       publish: pub.publish,
     })(encodedPayload('k2'));
 
     expect(quarantines.size).toBe(0);
     expect(payments.size).toBe(1);
+    // No subscription_created when the subscription already existed.
+    expect(pub.events).toHaveLength(1);
     expect(pub.events[0]?.name).toBe('payment_succeeded');
     expect(pub.events[0]?.externalUserId).toBe('sp:1');
     expect(pub.events[0]?.aggregateId).toBe('sub_1');
     expect(pub.events[0]?.id).toBe('evt_k2:succeeded');
+  }),
+);
+
+it.effect('a checkout first payment also emits subscription_created', () =>
+  Effect.gen(function* () {
+    const { repo } = makeFakeRepo();
+    const pub = recordingPublish();
+
+    yield* handlePaymentEvent({
+      repo,
+      matcher: matcherOf({
+        matched: true,
+        kind: 'checkout',
+        subscriptionId: null,
+        externalUserId: 'sp:2',
+        period: 'P1M',
+        method: 0,
+      }),
+      applier: applierOf({ subscriptionId: 'sub_new', created: true }),
+      publish: pub.publish,
+    })(encodedPayload('k7'));
+
+    expect(pub.events.map((e) => e.name)).toEqual([
+      'subscription_created',
+      'payment_succeeded',
+    ]);
+    expect(pub.events.every((e) => e.aggregateId === 'sub_new')).toBe(true);
   }),
 );
 
@@ -189,6 +232,7 @@ it.effect(
       yield* rebindFromPayload({
         repo: fake.repo,
         matcher: matcherOf({ matched: false }),
+        applier: noApplier,
         publish: pub.publish,
       })({
         incomingEventId: incId,
@@ -208,13 +252,18 @@ it.effect(
 );
 
 it('paymentSucceeded carries the docs/07 required payload fields', () => {
-  const event = paymentSucceeded(decodedEvent('k4'), {
-    matched: true,
-    subscriptionId: 'sub_9',
-    externalUserId: 'sp:9',
-    period: 'P1M',
-    method: 1,
-  });
+  const event = paymentSucceeded(
+    decodedEvent('k4'),
+    {
+      matched: true,
+      kind: 'recurring',
+      subscriptionId: 'sub_9',
+      externalUserId: 'sp:9',
+      period: 'P1M',
+      method: 1,
+    },
+    'sub_9',
+  );
   expect(event.payload).toEqual({
     amount: 30000,
     currency: 0,

@@ -71,9 +71,7 @@ export interface PaymentsRepo {
     readonly QuarantineListRow[],
     SqlError.SqlError
   >;
-  readonly getQuarantine: (
-    id: string,
-  ) => Effect.Effect<
+  readonly getQuarantine: (id: string) => Effect.Effect<
     Option.Option<{
       readonly incomingEventId: string;
       readonly status: string;

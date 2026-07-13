@@ -31,9 +31,25 @@ export const CurrencyCode: Readonly<Record<Currency, string>> = {
 };
 
 /**
+ * Subscription lifecycle (docs/05). `active` when paid; `past_due` inside the
+ * retry window (days 0–7); `renewal_failed` after the final retry (the gateway
+ * then stops); `cancelled` by operator or provider. Stored as a number.
+ */
+export enum SubscriptionStatus {
+  Active = 0,
+  PastDue = 1,
+  RenewalFailed = 2,
+  Cancelled = 3,
+}
+
+export const SubscriptionStatusSchema = Schema.Enums(SubscriptionStatus);
+
+/**
  * Single source of truth for the Subscription contract. The static type is
  * DERIVED from this schema; the same shape is used at db, backend, and frontend
- * with no transformation.
+ * with no transformation. `period` is an ISO-8601 duration (e.g. `P1M`);
+ * `recurringTokenRef` points at the stored provider token (null for crypto or
+ * before tokenization); `firstFailureAt`/`retryAttempt` drive the FR-005 retries.
  */
 export const Subscription = Schema.Struct({
   id: Schema.String,
@@ -41,12 +57,22 @@ export const Subscription = Schema.Struct({
   amount: Schema.Int, // integer minimal currency units
   currency: CurrencySchema,
   method: PaymentMethodSchema,
+  period: Schema.String,
+  status: SubscriptionStatusSchema,
+  nextChargeDate: Schema.Date,
+  recurringTokenRef: Schema.NullOr(Schema.String),
+  firstFailureAt: Schema.NullOr(Schema.Date),
+  retryAttempt: Schema.Int,
+  createdAt: Schema.Date,
+  updatedAt: Schema.Date,
 });
 
 export type Subscription = Schema.Schema.Type<typeof Subscription>;
 
-/** Create params = the entity without its server-owned `id`. */
-export const CreateSubscription = Subscription.pipe(Schema.omit('id'));
+/** Create params: the server owns `id` and the timestamps. */
+export const CreateSubscription = Subscription.pipe(
+  Schema.omit('id', 'createdAt', 'updatedAt'),
+);
 
 export type CreateSubscription = Schema.Schema.Type<typeof CreateSubscription>;
 
