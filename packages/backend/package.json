@@ -1,0 +1,35 @@
+{
+  "name": "@billing-service/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "rm -rf dist && tsc -b tsconfig.build.json && tsc-alias -p tsconfig.build.json",
+    "dev": "tsx watch src/main.ts",
+    "dev:worker": "tsx watch src/worker.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:e2e": "tsx test/e2e/run.ts",
+    "lint": "eslint src test",
+    "start": "node dist/main.js",
+    "start:worker": "node dist/worker.js",
+    "db:migrate": "tsx src/db-migrate.ts"
+  },
+  "dependencies": {
+    "@billing-service/shared": "*",
+    "@effect/platform": "^0.96.2",
+    "@effect/platform-node": "^0.107.0",
+    "@effect/sql": "^0.51.1",
+    "@effect/sql-pg": "^0.52.1",
+    "@fastify/autoload": "^6.4.0",
+    "argon2": "^0.44.0",
+    "effect": "^3.21.4",
+    "fastify": "^5.10.0",
+    "fastify-plugin": "^6.0.0"
+  },
+  "devDependencies": {
+    "@effect/vitest": "^0.29.0",
+    "@types/node": "^22"
+  }
+}

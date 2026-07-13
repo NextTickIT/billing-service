@@ -5,7 +5,7 @@ Minimal NFR set for MVP and early production.
 ## Capacity
 
 - Active clients: up to 100,000
-- Payments per client: up to 1 scheduled payment per month
+- Payments per client: up to 1 scheduled payment per period (typically monthly)
 - Concurrent support UI users: about 10
 - Client UI: 10,000 (effective 100)
 - We need to limit calls to WayForPay (rate limitter, queue)
@@ -15,7 +15,8 @@ Minimal NFR set for MVP and early production.
 - Support UI pages: under 1-2 second under normal load
 - Status API requests: under 500ms - 1s under normal load
 - Provider callbacks (accept and store): under 2 second under normal load
-- Scheduler throughput: all due monthly payments processed within 24 hours, even if all 100,000 subscriptions are due on the same day
+- Outgoing event delivery: each sink updated within **60 seconds** of payment fixation (AC1)
+- Scheduler throughput: all due payments processed within 24 hours, even if all 100,000 subscriptions are due on the same day
 
 ## Reliability
 
@@ -23,6 +24,11 @@ Minimal NFR set for MVP and early production.
 - Scheduler jobs must be restart-safe.
 - Payment data must be idempotent.
 - Duplicate callbacks must not corrupt subscription state.
+
+## Money and time
+
+- Amounts are stored only in integer minimal currency units.
+- All timestamps are stored and emitted in UTC.
 
 ## Consistency
 
@@ -51,9 +57,8 @@ Audit records are required for:
 - provider callbacks
 - subscription status changes
 - retry scheduling
-- manual support actions
-- payment link generation
-- access restore or removal events
+- manual support actions (quarantine binding, cancellation)
+- checkout session creation (payment link issuance)
 
 ## Observability
 
@@ -67,6 +72,13 @@ Structured logs and correlation IDs are required.
 - retry attempts
 - provider callback errors
 - scheduled processes errors
+- quarantine queue size
+- undelivered outgoing events
+- subscriptions currently in retry
+- migration poller freshness
+- migration tail (not-yet-migrated W4P recurrents)
+
+Each operator queue (quarantine, undelivered events, subscriptions in retry, poller freshness, migration tail) must have an alert.
 
 ## Backup and recovery
 

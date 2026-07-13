@@ -1,0 +1,20 @@
+# Ephemeral Postgres for the auth E2E tier. Data lives on tmpfs and the whole
+# stack is discarded (`docker compose down -v`) by the test runner, so nothing
+# persists between runs. Bound to 127.0.0.1 on a distinct port so it never
+# clashes with the dev DB (billing-service.local:5432) or another project.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - '127.0.0.1:5544:5432'
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 1s
+      timeout: 3s
+      retries: 30

@@ -1,37 +1,34 @@
 # Domain Events
 
-Events are stored durably before delivery. Consumers must expect at-least-once delivery.
+Events are stored durably (outbox) before delivery. Each event is delivered to each connected sink at least once; sinks must be idempotent. Failed deliveries are retried; undelivered events are visible to the operator. Payment events must reach sinks within 60 seconds of payment fixation.
 
-## Event names
+## Event vocabulary
 
-- `payment.link.created` payment link generated
-- `payment.upcoming` billing date approaching
-- `payment.started` charge or checkout started
-- `payment.succeeded` payment completed
-- `payment.failed` payment failed
-- `payment.retry.scheduled` retry time set after failure
-- `subscription.activated` first successful payment
-- `subscription.renewed` recurring payment succeeded
-- `subscription.past_due` first recurring failure
-- `subscription.suspended` second recurring failure
-- `subscription.restored` recovery payment succeeded
-- `subscription.quarantined` grace period after suspension expired
-- `subscription.cancelled` subscription ended
-- `recurring_token.created` provider token stored
-- `recurring_token.cancel_requested` cancellation sent to provider
-- `recurring_token.cancelled` token cancelled at provider
-- `access.remove_requested` downstream should revoke access
-- `access.restore_requested` downstream should restore access
+Minimal vocabulary per 00 §6, extensible.
+
+| Event | When | Required payload fields |
+|-------|------|-------------------------|
+| `payment_succeeded` | successful payment fixed (checkout, own billing cycle, external source) | external_user_id, amount, currency, method, period, source |
+| `charge_retry_failed` | failed intermediate charge attempt | external_user_id, attempt number, next retry date, provider reason |
+| `renewal_failed` | final failure of the retry cycle (day 7) | external_user_id, reason |
+| `subscription_created` | new gateway subscription appeared | external_user_id, amount, period |
+| `subscription_cancelled` | subscription stopped (operator / provider event) | external_user_id, reason |
+| `unknown_payment_quarantined` | incoming event went to quarantine | quarantine record reference |
 
 ## Event envelope
 
 ```json
 {
   "id": "evt_...",
-  "name": "payment.succeeded",
+  "name": "payment_succeeded",
   "occurredAt": "2026-01-01T00:00:00.000Z",
   "correlationId": "...",
+  "externalUserId": "sendpulse:123",
   "aggregateId": "subscription_...",
   "payload": {}
 }
 ```
+
+- `externalUserId` is carried verbatim from the calling system in every event (AC9). It is `null` only for `unknown_payment_quarantined`, where the user is by definition unknown.
+- `occurredAt` is UTC.
+- Amounts in payloads are integer minimal currency units.

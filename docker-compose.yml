@@ -1,0 +1,24 @@
+# Local development dependencies.
+# Ports are published on the project-specific loopback IP (127.0.0.2), mapped
+# to `billing-service.local` in /etc/hosts (see README). This keeps the
+# standard Postgres port usable even if another project already binds
+# 127.0.0.1:5432.
+services:
+  postgres:
+    image: postgres:16
+    ports:
+      - '127.0.0.2:5432:5432'
+    environment:
+      POSTGRES_USER: billing
+      POSTGRES_PASSWORD: billing
+      POSTGRES_DB: billing
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U billing']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

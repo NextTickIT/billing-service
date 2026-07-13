@@ -1,31 +1,40 @@
-import init from 'eslint-config-metarhia';
+import js from '@eslint/js';
+import prettier from 'eslint-config-prettier';
+import tseslint from 'typescript-eslint';
 
-export default [
-  ...init,
+export default tseslint.config(
   {
-    files: [
-      '*.config.js',
-      'server.js',
-      'routes/**/*.js',
-      'shared/**/*.mjs',
-      'static/**/*.mjs',
+    ignores: [
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/*.config.js',
+      '**/*.config.ts',
+      '**/.turbo/**',
+      'coverage/**',
     ],
-    languageOptions: {
-      sourceType: 'module',
-    },
-    rules: {
-      'max-len': 'off',
-    },
   },
+  js.configs.recommended,
+  ...tseslint.configs.strictTypeChecked,
+  ...tseslint.configs.stylisticTypeChecked,
   {
-    files: ['static/**/*.mjs'],
     languageOptions: {
-      globals: {
-        customElements: 'readonly',
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
       },
     },
     rules: {
-      strict: 'off',
+      // Decomposed, low-complexity code — starting thresholds (tunable).
+      complexity: ['error', 10],
+      'max-depth': ['error', 3],
+      'max-lines-per-function': [
+        'error',
+        { max: 60, skipBlankLines: true, skipComments: true },
+      ],
+      'max-params': ['error', 4],
+      'max-nested-callbacks': ['error', 3],
+      'max-statements': ['error', 15],
     },
   },
-];
+  prettier,
+);
