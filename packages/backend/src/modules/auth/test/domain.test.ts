@@ -1,17 +1,21 @@
 import { it } from '@effect/vitest';
 import { Role } from '@billing-service/shared';
-import { Effect, Layer, Redacted } from 'effect';
+import { Effect, Layer, Option, Redacted } from 'effect';
 import { expect } from 'vitest';
 
 import { HasherLive } from '@/infra/hasher.js';
 import { makeAuthConfig } from '@/modules/auth/config.js';
-import { isExpired, requireAdmin, requireRole } from '@/modules/auth/domain.js';
+import {
+  isExpired,
+  requireRole,
+  verifyBootstrapToken,
+} from '@/modules/auth/domain.js';
 
 /**
  * Unit tests cover only the pure / non-DB guards — real `Hasher` (pure crypto)
  * and config, no repository. Everything that touches Postgres (create/sign-in/
- * authenticate) is exercised by the e2e tier against a real database, so no
- * test-only repository double exists.
+ * authenticate, the stored auth-token path) is exercised by the e2e tier against
+ * a real database, so no test-only repository double exists.
  */
 const ADMIN = 'admin-secret';
 
@@ -24,30 +28,29 @@ const authLayer = (adminToken = ADMIN) =>
     }),
   );
 
-it.effect('requireAdmin yields an Admin actor for the configured token', () =>
-  requireAdmin(Redacted.make(ADMIN)).pipe(
+it.effect('verifyBootstrapToken yields an Admin actor for the env token', () =>
+  verifyBootstrapToken(Redacted.make(ADMIN)).pipe(
     Effect.map((actor) => {
-      expect(actor.role).toBe(Role.Admin);
+      expect(Option.isSome(actor)).toBe(true);
+      expect(Option.getOrThrow(actor).role).toBe(Role.Admin);
     }),
     Effect.provide(authLayer()),
   ),
 );
 
-it.effect('requireAdmin rejects a wrong token as Unauthorized', () =>
-  requireAdmin(Redacted.make('wrong')).pipe(
-    Effect.flip,
-    Effect.map((error) => {
-      expect(error._tag).toBe('Unauthorized');
+it.effect('verifyBootstrapToken is None for a non-matching token', () =>
+  verifyBootstrapToken(Redacted.make('wrong')).pipe(
+    Effect.map((actor) => {
+      expect(Option.isNone(actor)).toBe(true);
     }),
     Effect.provide(authLayer()),
   ),
 );
 
-it.effect('requireAdmin fails closed when ADMIN_TOKEN is empty', () =>
-  requireAdmin(Redacted.make('anything')).pipe(
-    Effect.flip,
-    Effect.map((error) => {
-      expect(error._tag).toBe('Unauthorized');
+it.effect('verifyBootstrapToken is None when ADMIN_TOKEN is unset', () =>
+  verifyBootstrapToken(Redacted.make('anything')).pipe(
+    Effect.map((actor) => {
+      expect(Option.isNone(actor)).toBe(true);
     }),
     Effect.provide(authLayer('')),
   ),

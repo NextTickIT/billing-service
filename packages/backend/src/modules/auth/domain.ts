@@ -40,26 +40,49 @@ export const requireRole = (actor: Actor, required: Role) =>
         new Forbidden({ reason: `requires role ${required.toString()}` }),
       );
 
-/** Verify the bootstrap admin credential and yield an admin actor. Fails closed
- * when `ADMIN_TOKEN` is unset, so an empty env can never authenticate. */
-export const requireAdmin = (presented: Redacted.Redacted) =>
+/** Bootstrap check: does the credential match the env `ADMIN_TOKEN`? Yields an
+ * admin actor when it is configured and matches, `None` otherwise — an unset
+ * `ADMIN_TOKEN` is simply absent, so removing it just disables this path. */
+export const verifyBootstrapToken = (presented: Redacted.Redacted) =>
   Effect.gen(function* () {
     const { adminToken } = yield* AuthConfig;
     const hasher = yield* Hasher;
     const expected = Redacted.value(adminToken);
     if (expected.length === 0) {
-      return yield* Effect.fail(
-        new Unauthorized({ reason: 'admin token not configured' }),
-      );
+      return Option.none<Actor>();
     }
-    if (
-      !hasher.verifyToken(hasher.hashToken(expected), Redacted.value(presented))
-    ) {
-      return yield* Effect.fail(
-        new Unauthorized({ reason: 'invalid admin token' }),
-      );
+    return hasher.verifyToken(
+      hasher.hashToken(expected),
+      Redacted.value(presented),
+    )
+      ? Option.some<Actor>({ role: Role.Admin })
+      : Option.none<Actor>();
+  });
+
+/** Resolve a stored auth-token (its one-time `bst_` secret) to its principal. */
+export const authenticateToken = (presented: Redacted.Redacted) =>
+  Effect.gen(function* () {
+    const hasher = yield* Hasher;
+    const repo = yield* AuthRepo;
+    const found = yield* repo.findAuthTokenByHash(
+      hasher.hashToken(Redacted.value(presented)),
+    );
+    if (Option.isNone(found)) {
+      return yield* Effect.fail(new Unauthorized({ reason: 'invalid token' }));
     }
-    return { role: Role.Admin } satisfies Actor;
+    return { role: found.value.role } satisfies Actor;
+  });
+
+/** Resolve an admin credential to its principal: the env bootstrap token (used
+ * once to mint the first admin auth-token) OR a stored auth-token. Once an admin
+ * auth-token exists, `ADMIN_TOKEN` can be removed and this falls through to the
+ * stored-token path. The role gate stays with each operation (`requireRole`). */
+export const authenticateAdminCredential = (presented: Redacted.Redacted) =>
+  Effect.gen(function* () {
+    const bootstrap = yield* verifyBootstrapToken(presented);
+    return Option.isSome(bootstrap)
+      ? bootstrap.value
+      : yield* authenticateToken(presented);
   });
 
 export const createAuthToken = (actor: Actor, command: CreateAuthToken) =>

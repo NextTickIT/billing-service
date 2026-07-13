@@ -35,6 +35,9 @@ export interface AuthRepoService {
   readonly insertOperator: (
     input: NewOperator,
   ) => Effect.Effect<Operator, Conflict | SqlError.SqlError>;
+  readonly findAuthTokenByHash: (
+    tokenHash: string,
+  ) => Effect.Effect<Option.Option<AuthToken>, SqlError.SqlError>;
   readonly findOperatorByLogin: (
     login: string,
   ) => Effect.Effect<Option.Option<OperatorRow>, SqlError.SqlError>;
@@ -99,6 +102,12 @@ const insertOperator = (sql: SqlClient.SqlClient) => (input: NewOperator) =>
     Effect.catchTag('SqlError', onUniqueViolation('login')),
   );
 
+const findAuthTokenByHash = (sql: SqlClient.SqlClient) => (tokenHash: string) =>
+  sql<AuthToken>`
+      SELECT id, alias, role, created_at
+      FROM auth_tokens WHERE token_hash = ${tokenHash}
+    `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
+
 const findOperatorByLogin = (sql: SqlClient.SqlClient) => (login: string) =>
   sql<OperatorRow>`
     SELECT id, login, role, password_hash, created_at
@@ -125,6 +134,7 @@ export const AuthRepoLive = Layer.effect(
   Effect.map(SqlClient.SqlClient, (sql) => ({
     insertAuthToken: insertAuthToken(sql),
     insertOperator: insertOperator(sql),
+    findAuthTokenByHash: findAuthTokenByHash(sql),
     findOperatorByLogin: findOperatorByLogin(sql),
     insertSession: insertSession(sql),
     findSessionByTokenHash: findSessionByTokenHash(sql),

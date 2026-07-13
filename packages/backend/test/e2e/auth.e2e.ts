@@ -158,4 +158,68 @@ export const scenarios: readonly Scenario[] = [
       );
     },
   },
+  {
+    name: 'an admin auth-token minted via the env token can then create operators',
+    run: async ({ baseUrl }) => {
+      // Bootstrap: use the env admin token once to mint an Admin auth-token.
+      const minted = await postJson(
+        baseUrl,
+        '/auth/tokens',
+        { alias: 'root-admin', role: 0 },
+        adminHeader,
+      );
+      assert.equal(minted.status, 201);
+      const { secret } = (await minted.json()) as CreateTokenResponse;
+      // From now on the minted admin token authenticates admin ops — so the env
+      // ADMIN_TOKEN can be removed. Same code path with or without the env var.
+      const created = await postJson(
+        baseUrl,
+        '/auth/operators',
+        { login: 'via-token', password: 'pw', role: 1 },
+        { authorization: `Bearer ${secret}` },
+      );
+      assert.equal(created.status, 201);
+    },
+  },
+  {
+    name: 'a non-admin (Service) auth-token cannot create operators (403)',
+    run: async ({ baseUrl }) => {
+      const minted = await postJson(
+        baseUrl,
+        '/auth/tokens',
+        { alias: 'svc', role: 2 },
+        adminHeader,
+      );
+      assert.equal(minted.status, 201);
+      const { secret } = (await minted.json()) as CreateTokenResponse;
+      const forbidden = await postJson(
+        baseUrl,
+        '/auth/operators',
+        { login: 'nope', password: 'pw', role: 1 },
+        { authorization: `Bearer ${secret}` },
+      );
+      assert.equal(forbidden.status, 403);
+    },
+  },
+  {
+    name: 'an unknown bearer token is rejected (401)',
+    run: async ({ baseUrl }) => {
+      const res = await postJson(
+        baseUrl,
+        '/auth/operators',
+        { login: 'x', password: 'y', role: 1 },
+        { authorization: 'Bearer bst_does-not-exist' },
+      );
+      assert.equal(res.status, 401);
+    },
+  },
+  {
+    name: 'GET /health is 200 against a real database (readiness)',
+    run: async ({ baseUrl }) => {
+      const res = await fetch(`${baseUrl}/health`);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { readonly status: string };
+      assert.equal(body.status, 'ok');
+    },
+  },
 ];

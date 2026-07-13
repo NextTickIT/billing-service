@@ -11,9 +11,9 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { Unauthorized } from '@/infra/http/errors.js';
 import { makeRoute } from '@/infra/http/route.js';
 import {
+  authenticateAdminCredential,
   createAuthToken,
   createOperator,
-  requireAdmin,
   signIn,
 } from '@/modules/auth/domain.js';
 
@@ -54,12 +54,12 @@ const extractBearer = (request: FastifyRequest): Redacted.Redacted | null => {
 };
 
 /** Transport guard: pull the bearer credential off the request and resolve it to
- * an admin actor via the domain (the header parsing stays out of the domain). */
-const authenticateAdmin = (request: FastifyRequest) => {
+ * an actor via the domain (the header parsing stays out of the domain). */
+const adminActor = (request: FastifyRequest) => {
   const presented = extractBearer(request);
   return presented === null
     ? Effect.fail(new Unauthorized({ reason: 'missing bearer token' }))
-    : requireAdmin(presented);
+    : authenticateAdminCredential(presented);
 };
 
 const route = makeRoute((app: FastifyInstance) => app.dbRuntime);
@@ -77,7 +77,7 @@ export default function auth(
     status: 201,
     handler: (command, request) =>
       Effect.gen(function* () {
-        const actor = yield* authenticateAdmin(request);
+        const actor = yield* adminActor(request);
         return yield* createAuthToken(actor, command);
       }),
   });
@@ -90,7 +90,7 @@ export default function auth(
     status: 201,
     handler: (command, request) =>
       Effect.gen(function* () {
-        const actor = yield* authenticateAdmin(request);
+        const actor = yield* adminActor(request);
         const operator = yield* createOperator(actor, command);
         return { operator };
       }),

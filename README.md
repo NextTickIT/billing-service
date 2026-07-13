@@ -76,10 +76,18 @@ Environment variables: see [.env.example](./.env.example).
 
 ## Auth module
 
-The first real module. A bootstrap **admin credential** (`ADMIN_TOKEN`, presented
-as `Authorization: Bearer <token>`, hash-verified and never stored) manages
-credentials; operators sign in for a session. Passwords are hashed with
-**argon2id**; tokens/sessions are stored as SHA-256 and compared in constant time.
+The first real module. Admin operations accept an **admin credential** as
+`Authorization: Bearer <token>`, which is either:
+
+1. the **bootstrap** `ADMIN_TOKEN` (env, hash-verified, never stored), or
+2. a stored **auth-token** minted with the `Admin` role.
+
+The intended flow is: use the bootstrap `ADMIN_TOKEN` **once** to mint an admin
+auth-token (`POST /auth/tokens` with `role: 0`), then authenticate with that
+token and **remove `ADMIN_TOKEN` from the environment** — the guard falls through
+to the stored-token path, so no permanent master secret needs to live in env.
+Operators sign in for a session. Passwords are hashed with **argon2id**;
+tokens/sessions are stored as SHA-256 and compared in constant time.
 
 | Method + Path          | Auth           | Purpose                                   |
 | ---------------------- | -------------- | ----------------------------------------- |
@@ -87,7 +95,9 @@ credentials; operators sign in for a session. Passwords are hashed with
 | `POST /auth/operators` | admin bearer   | Create an operator (`login` + `password`) |
 | `POST /auth/sessions`  | none (sign-in) | Operator signs in → session (+ token)     |
 
-Errors map to `401` (bad/missing admin token or credentials), `403` (reserved),
+Admin bearer = the bootstrap `ADMIN_TOKEN` **or** an `Admin`-role auth-token; a
+non-admin token authenticates but is `403` for admin operations. Errors map to
+`401` (bad/missing/unknown credential), `403` (authenticated but not `Admin`),
 and `409` (duplicate `login`/`alias`). Roles are the numeric `Role` enum in
 `@billing-service/shared` (`Admin=0, Operator=1, Service=2`).
 
