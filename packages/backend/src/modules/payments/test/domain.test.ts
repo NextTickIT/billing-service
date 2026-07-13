@@ -1,0 +1,191 @@
+import { it } from '@effect/vitest';
+import type { DomainEvent } from '@billing-service/shared';
+import { Effect } from 'effect';
+import { expect } from 'vitest';
+
+import type { EnqueueInput } from '@/infra/queue/store.js';
+import {
+  type IncomingPaymentEvent,
+  type MatchResult,
+  PAYMENT_EVENT_RECEIVED,
+  type PaymentMatcherService,
+} from '@/modules/payments/contracts.js';
+import type { PaymentsRepo } from '@/modules/payments/data-access.js';
+import {
+  handlePaymentEvent,
+  ingest,
+  paymentSucceeded,
+  quarantined,
+} from '@/modules/payments/domain.js';
+
+/** The JSON-encoded `payment_event_received` payload the handler decodes. */
+const encodedPayload = (idemKey: string) => ({
+  source: 'test',
+  idemKey,
+  externalRef: 'ref-1',
+  externalUserId: 'sp:1',
+  amount: 30000,
+  currency: 0, // UAH
+  status: 'succeeded',
+  occurredAt: '1970-01-01T00:00:00.000Z',
+  payload: {},
+});
+
+const decodedEvent = (idemKey: string): IncomingPaymentEvent => ({
+  source: 'test',
+  idemKey,
+  externalRef: 'ref-1',
+  externalUserId: 'sp:1',
+  amount: 30000,
+  currency: 0,
+  status: 'succeeded',
+  occurredAt: new Date(0),
+  payload: {},
+});
+
+const makeFakeRepo = () => {
+  const incoming = new Map<string, string>();
+  const payments = new Set<string>();
+  const quarantines = new Map<string, string>();
+  const matchResults = new Map<string, string>();
+  let seq = 0;
+
+  const repo: PaymentsRepo = {
+    transaction: (effect) => effect,
+    upsertIncomingEvent: (event) =>
+      Effect.sync(() => {
+        let id = incoming.get(event.idemKey);
+        if (id === undefined) {
+          seq += 1;
+          id = `inc${seq.toString()}`;
+          incoming.set(event.idemKey, id);
+        }
+        return id;
+      }),
+    setMatchResult: (id, outcome) =>
+      Effect.sync(() => {
+        matchResults.set(id, outcome);
+      }),
+    insertPayment: (input) =>
+      Effect.sync(() => {
+        payments.add(input.incomingEventId);
+      }),
+    upsertQuarantine: (incomingEventId) =>
+      Effect.sync(() => {
+        let q = quarantines.get(incomingEventId);
+        if (q === undefined) {
+          q = `q_${incomingEventId}`;
+          quarantines.set(incomingEventId, q);
+        }
+        return q;
+      }),
+  };
+  return { repo, payments, quarantines, matchResults };
+};
+
+const matcherOf = (result: MatchResult): PaymentMatcherService => ({
+  match: () => Effect.succeed(result),
+});
+
+const recordingPublish = () => {
+  const events: DomainEvent[] = [];
+  return {
+    events,
+    publish: (event: DomainEvent) =>
+      Effect.sync(() => {
+        events.push(event);
+      }),
+  };
+};
+
+it.effect(
+  'an unmatched event is quarantined and emits unknown_payment_quarantined',
+  () =>
+    Effect.gen(function* () {
+      const { repo, quarantines, payments } = makeFakeRepo();
+      const pub = recordingPublish();
+
+      yield* handlePaymentEvent({
+        repo,
+        matcher: matcherOf({ matched: false }),
+        publish: pub.publish,
+      })(encodedPayload('k1'));
+
+      expect(payments.size).toBe(0);
+      expect(quarantines.size).toBe(1);
+      expect(pub.events).toHaveLength(1);
+      expect(pub.events[0]?.name).toBe('unknown_payment_quarantined');
+      expect(pub.events[0]?.externalUserId).toBeNull();
+      expect(pub.events[0]?.id).toBe('evt_k1:quarantined');
+    }),
+);
+
+it.effect('a matched event records a payment and emits payment_succeeded', () =>
+  Effect.gen(function* () {
+    const { repo, payments, quarantines } = makeFakeRepo();
+    const pub = recordingPublish();
+
+    yield* handlePaymentEvent({
+      repo,
+      matcher: matcherOf({
+        matched: true,
+        subscriptionId: 'sub_1',
+        externalUserId: 'sp:1',
+        period: 'P1M',
+        method: 0,
+      }),
+      publish: pub.publish,
+    })(encodedPayload('k2'));
+
+    expect(quarantines.size).toBe(0);
+    expect(payments.size).toBe(1);
+    expect(pub.events[0]?.name).toBe('payment_succeeded');
+    expect(pub.events[0]?.externalUserId).toBe('sp:1');
+    expect(pub.events[0]?.aggregateId).toBe('sub_1');
+    expect(pub.events[0]?.id).toBe('evt_k2:succeeded');
+  }),
+);
+
+it.effect(
+  'ingest enqueues a payment_event_received keyed on the source idemKey',
+  () =>
+    Effect.gen(function* () {
+      const enqueued: EnqueueInput[] = [];
+      const enqueue = (input: EnqueueInput) =>
+        Effect.sync(() => {
+          enqueued.push(input);
+          return { enqueued: true, messageId: 'm1' };
+        });
+
+      yield* ingest({ enqueue })(decodedEvent('k3'));
+
+      expect(enqueued).toHaveLength(1);
+      expect(enqueued[0]?.messageType).toBe(PAYMENT_EVENT_RECEIVED);
+      expect(enqueued[0]?.idemKey).toBe('k3');
+    }),
+);
+
+it('paymentSucceeded carries the docs/07 required payload fields', () => {
+  const event = paymentSucceeded(decodedEvent('k4'), {
+    matched: true,
+    subscriptionId: 'sub_9',
+    externalUserId: 'sp:9',
+    period: 'P1M',
+    method: 1,
+  });
+  expect(event.payload).toEqual({
+    amount: 30000,
+    currency: 0,
+    method: 1,
+    period: 'P1M',
+    source: 'test',
+  });
+  expect(event.aggregateId).toBe('sub_9');
+});
+
+it('quarantined carries a null user and references the quarantine record', () => {
+  const event = quarantined(decodedEvent('k5'), 'q_1', 'inc_1');
+  expect(event.externalUserId).toBeNull();
+  expect(event.aggregateId).toBe('q_1');
+  expect(event.payload['incomingEventId']).toBe('inc_1');
+});

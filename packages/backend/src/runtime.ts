@@ -9,6 +9,8 @@ import { TaskRegistryLive } from '@/infra/task-registry.js';
 import { makeAuthConfig } from '@/modules/auth/domain.js';
 import { AuthRepoLive } from '@/modules/auth/data-access.js';
 import { OutboxLive } from '@/modules/outbox/domain.js';
+import { NoMatchLive } from '@/modules/payments/contracts.js';
+import { PaymentPipelineLive } from '@/modules/payments/domain.js';
 
 /**
  * Two runtimes, by design (see docs/13 ADR):
@@ -61,10 +63,12 @@ export const makeWorkerLayer = (config: AppConfig) => {
   const base = Layer.mergeAll(
     TaskRegistryLive,
     LoggingSinkLive,
+    NoMatchLive,
     SqlLive(config.database),
   );
   const withQueue = Layer.provideMerge(QueueLive, base);
-  return Layer.provideMerge(OutboxLive, withQueue);
+  const withOutbox = Layer.provideMerge(OutboxLive, withQueue);
+  return Layer.provideMerge(PaymentPipelineLive, withOutbox);
 };
 
 export const makeWorkerRuntime = (config: AppConfig) =>
