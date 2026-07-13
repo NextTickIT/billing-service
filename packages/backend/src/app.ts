@@ -15,8 +15,8 @@ const isRouteFile = (path: string): boolean =>
   path.endsWith('routes.js') || path.endsWith('routes.ts');
 
 export const buildApp = async (): Promise<FastifyInstance> => {
-  // Redact the Authorization header from logs (defense in depth; secrets in
-  // request bodies are already `Redacted` in `@/modules/auth/contracts`).
+  // Redact the Authorization header from logs (defense in depth; secret fields
+  // in request bodies decode straight into `Redacted`).
   const app = Fastify({
     logger: { redact: ['req.headers.authorization'] },
   });

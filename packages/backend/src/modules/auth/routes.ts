@@ -1,44 +1,48 @@
-import type { SqlError } from '@effect/sql';
-import { Effect, Either, Redacted, Schema } from 'effect';
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-
-import type { HashError } from '@/infra/hasher.js';
 import {
-  CreateAuthTokenBody,
-  CreateOperatorBody,
-  CreateSessionBody,
-} from '@/modules/auth/contracts.js';
+  AuthToken,
+  CreateAuthToken,
+  CreateOperator,
+  Operator,
+  Session,
+} from '@billing-service/shared';
+import { Effect, Redacted, Schema } from 'effect';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+
+import { Unauthorized } from '@/infra/http/errors.js';
+import { makeRoute } from '@/infra/http/route.js';
 import {
   createAuthToken,
   createOperator,
   requireAdmin,
   signIn,
 } from '@/modules/auth/domain.js';
-import { Unauthorized, type AuthError } from '@/modules/auth/errors.js';
 
-/**
- * Auth routes — the module's autoloaded entrypoint (transport only). Handlers
- * decode the request, run the domain effect on the DB-backed runtime
- * (`fastify.dbRuntime`, async ⇒ `runPromise`), and map typed `AuthError`s to
- * HTTP status codes. Unmapped failures (SqlError/HashError) propagate and fall
- * through to the generic 500 handler in `error-handler.plugin.ts`.
- */
+/** Backend-only request bodies carry the secret password (never in `shared`);
+ * responses hand back the one-time plaintext secret/token exactly once. The
+ * request shape is derived from the public create shape plus the secret. */
+const CreateOperatorRequest = Schema.extend(
+  CreateOperator,
+  Schema.Struct({ password: Schema.Redacted(Schema.String) }),
+);
 
-interface ReplyShape {
-  readonly status: number;
-  readonly body: unknown;
-}
+const SignInRequest = Schema.Struct({
+  login: Schema.String,
+  password: Schema.Redacted(Schema.String),
+});
 
-const BAD_REQUEST: ReplyShape = {
-  status: 400,
-  body: { error: 'Invalid request body' },
-};
+const TokenCreated = Schema.Struct({
+  authToken: AuthToken,
+  secret: Schema.String,
+});
+
+const OperatorCreated = Schema.Struct({ operator: Operator });
+
+const SessionCreated = Schema.Struct({
+  session: Session,
+  token: Schema.String,
+});
 
 const BEARER_PREFIX = 'Bearer ';
-
-const send = (reply: FastifyReply, shape: ReplyShape): void => {
-  reply.status(shape.status).send(shape.body);
-};
 
 const extractBearer = (request: FastifyRequest): Redacted.Redacted | null => {
   const header = request.headers.authorization;
@@ -49,110 +53,57 @@ const extractBearer = (request: FastifyRequest): Redacted.Redacted | null => {
   return token.length === 0 ? null : Redacted.make(token);
 };
 
-const adminGuard = (request: FastifyRequest) => {
+/** Transport guard: pull the bearer credential off the request and resolve it to
+ * an admin actor via the domain (the header parsing stays out of the domain). */
+const authenticateAdmin = (request: FastifyRequest) => {
   const presented = extractBearer(request);
   return presented === null
     ? Effect.fail(new Unauthorized({ reason: 'missing bearer token' }))
     : requireAdmin(presented);
 };
 
-const authErrorToReply = (error: AuthError): ReplyShape => {
-  switch (error._tag) {
-    case 'Unauthorized':
-      return { status: 401, body: { error: 'Unauthorized' } };
-    case 'Forbidden':
-      return { status: 403, body: { error: 'Forbidden' } };
-    case 'InvalidCredentials':
-      return { status: 401, body: { error: 'Invalid credentials' } };
-    case 'Conflict':
-      return {
-        status: 409,
-        body: { error: `Conflict: ${error.field} already exists` },
-      };
-  }
-};
-
-/** Convert the domain error channel to a reply, re-raising non-auth failures
- * (SqlError/HashError) so they become a generic 500. */
-const handleAuthError = (
-  error: AuthError | SqlError.SqlError | HashError,
-): Effect.Effect<ReplyShape, SqlError.SqlError | HashError> => {
-  switch (error._tag) {
-    case 'Unauthorized':
-    case 'Forbidden':
-    case 'InvalidCredentials':
-    case 'Conflict':
-      return Effect.succeed(authErrorToReply(error));
-    default:
-      return Effect.fail(error);
-  }
-};
-
-const created = (body: unknown): ReplyShape => ({ status: 201, body });
-
-const postTokens = async (
-  request: FastifyRequest,
-  reply: FastifyReply,
-): Promise<void> => {
-  const parsed = Schema.decodeUnknownEither(CreateAuthTokenBody)(request.body);
-  if (Either.isLeft(parsed)) {
-    send(reply, BAD_REQUEST);
-    return;
-  }
-  const shape = await request.server.dbRuntime.runPromise(
-    adminGuard(request).pipe(
-      Effect.andThen(() => createAuthToken(parsed.right)),
-      Effect.map(created),
-      Effect.catchAll(handleAuthError),
-    ),
-  );
-  send(reply, shape);
-};
-
-const postOperators = async (
-  request: FastifyRequest,
-  reply: FastifyReply,
-): Promise<void> => {
-  const parsed = Schema.decodeUnknownEither(CreateOperatorBody)(request.body);
-  if (Either.isLeft(parsed)) {
-    send(reply, BAD_REQUEST);
-    return;
-  }
-  const shape = await request.server.dbRuntime.runPromise(
-    adminGuard(request).pipe(
-      Effect.andThen(() => createOperator(parsed.right)),
-      Effect.map((operator) => created({ operator })),
-      Effect.catchAll(handleAuthError),
-    ),
-  );
-  send(reply, shape);
-};
-
-const postSessions = async (
-  request: FastifyRequest,
-  reply: FastifyReply,
-): Promise<void> => {
-  const parsed = Schema.decodeUnknownEither(CreateSessionBody)(request.body);
-  if (Either.isLeft(parsed)) {
-    send(reply, BAD_REQUEST);
-    return;
-  }
-  const shape = await request.server.dbRuntime.runPromise(
-    signIn(parsed.right).pipe(
-      Effect.map(created),
-      Effect.catchAll(handleAuthError),
-    ),
-  );
-  send(reply, shape);
-};
+const route = makeRoute((app: FastifyInstance) => app.dbRuntime);
 
 export default function auth(
   fastify: FastifyInstance,
   _opts: unknown,
   done: () => void,
 ): void {
-  fastify.post('/auth/tokens', postTokens);
-  fastify.post('/auth/operators', postOperators);
-  fastify.post('/auth/sessions', postSessions);
+  route(fastify, {
+    method: 'POST',
+    path: '/auth/tokens',
+    input: CreateAuthToken,
+    output: TokenCreated,
+    status: 201,
+    handler: (command, request) =>
+      Effect.gen(function* () {
+        const actor = yield* authenticateAdmin(request);
+        return yield* createAuthToken(actor, command);
+      }),
+  });
+
+  route(fastify, {
+    method: 'POST',
+    path: '/auth/operators',
+    input: CreateOperatorRequest,
+    output: OperatorCreated,
+    status: 201,
+    handler: (command, request) =>
+      Effect.gen(function* () {
+        const actor = yield* authenticateAdmin(request);
+        const operator = yield* createOperator(actor, command);
+        return { operator };
+      }),
+  });
+
+  route(fastify, {
+    method: 'POST',
+    path: '/auth/sessions',
+    input: SignInRequest,
+    output: SessionCreated,
+    status: 201,
+    handler: (command) => signIn(command),
+  });
+
   done();
 }
