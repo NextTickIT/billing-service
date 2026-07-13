@@ -64,11 +64,7 @@ const adminActor = (request: FastifyRequest) => {
 
 const route = makeRoute((app: FastifyInstance) => app.dbRuntime);
 
-export default function auth(
-  fastify: FastifyInstance,
-  _opts: unknown,
-  done: () => void,
-): void {
+export default function auth(fastify: FastifyInstance): void {
   route(fastify, {
     method: 'POST',
     path: '/auth/tokens',
@@ -104,6 +100,4 @@ export default function auth(
     status: 201,
     handler: (command) => signIn(command),
   });
-
-  done();
 }
