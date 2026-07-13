@@ -1,7 +1,7 @@
 import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
 import type { DomainEvent } from '@billing-service/shared';
-import { Context, Effect, Layer, Schema } from 'effect';
+import { Context, Effect, Layer, Option, Schema } from 'effect';
 
 import { Queue } from '@/infra/queue/service.js';
 import type { EnqueueInput, EnqueueResult } from '@/infra/queue/store.js';
@@ -9,8 +9,10 @@ import {
   IncomingPaymentEvent,
   type MatchResult,
   PAYMENT_EVENT_RECEIVED,
+  PAYMENT_REBIND,
   PaymentMatcher,
   type PaymentMatcherService,
+  RebindPayload,
 } from '@/modules/payments/contracts.js';
 import {
   makePaymentsRepo,
@@ -69,6 +71,27 @@ export const quarantined = (
     externalRef: event.externalRef,
     amount: event.amount,
     currency: event.currency,
+  },
+});
+
+/** payment_succeeded envelope for an operator-bound quarantine (FR-009). Without
+ * a real subscription yet, the aggregate id falls back to the incoming event. */
+export const boundPaymentSucceeded = (
+  event: IncomingPaymentEvent,
+  bind: RebindPayload,
+): DomainEvent => ({
+  id: eventId(event.idemKey, 'succeeded'),
+  name: 'payment_succeeded',
+  occurredAt: event.occurredAt,
+  correlationId: event.idemKey,
+  externalUserId: bind.externalUserId,
+  aggregateId: bind.subscriptionId ?? `bound:${bind.incomingEventId}`,
+  payload: {
+    amount: event.amount,
+    currency: event.currency,
+    method: bind.method,
+    period: bind.period,
+    source: event.source,
   },
 });
 
@@ -134,11 +157,57 @@ export const handlePaymentEvent =
       ),
     );
 
+/**
+ * Reprocess an operator-bound quarantine: load the incoming event, record the
+ * payment against the operator-supplied user, resolve the quarantine, and emit
+ * payment_succeeded — the matched path, with the match supplied by hand (FR-009).
+ * Idempotent (payment ON CONFLICT, deterministic event id) so replays are safe.
+ */
+const rebind =
+  (deps: HandleDeps) =>
+  (bind: RebindPayload): Effect.Effect<void, SqlError.SqlError> =>
+    Effect.gen(function* () {
+      const found = yield* deps.repo.getIncomingEventById(bind.incomingEventId);
+      if (Option.isNone(found)) {
+        return; // incoming event vanished — nothing to reprocess
+      }
+      const event = found.value;
+      yield* deps.repo.insertPayment({
+        incomingEventId: bind.incomingEventId,
+        subscriptionId: bind.subscriptionId,
+        externalUserId: bind.externalUserId,
+        amount: event.amount,
+        currency: event.currency,
+        source: event.source,
+        occurredAt: event.occurredAt,
+      });
+      yield* deps.repo.setMatchResult(bind.incomingEventId, 'matched');
+      yield* deps.repo.resolveQuarantine(
+        bind.incomingEventId,
+        bind.subscriptionId,
+      );
+      yield* deps.publish(boundPaymentSucceeded(event, bind));
+    });
+
+/** The `payment_rebind` handler: decode the operator's bind payload, then rebind. */
+export const rebindFromPayload =
+  (deps: HandleDeps) =>
+  (payload: unknown): Effect.Effect<void, SqlError.SqlError> =>
+    Schema.decodeUnknown(RebindPayload)(payload).pipe(
+      Effect.flatMap((bind) => rebind(deps)(bind)),
+      Effect.catchTag('ParseError', (error) =>
+        Effect.die(`invalid ${PAYMENT_REBIND} payload: ${error.message}`),
+      ),
+    );
+
 export interface PaymentPipelineService {
   readonly ingest: (
     event: IncomingPaymentEvent,
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly handleFromPayload: (
+    payload: unknown,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly rebindFromPayload: (
     payload: unknown,
   ) => Effect.Effect<void, SqlError.SqlError>;
 }
@@ -156,13 +225,11 @@ export const PaymentPipelineLive = Layer.effect(
     const outbox = yield* Outbox;
     const queue = yield* Queue;
     const repo = makePaymentsRepo(sql);
+    const handleDeps = { repo, matcher, publish: outbox.publish };
     return {
       ingest: ingest({ enqueue: queue.enqueue }),
-      handleFromPayload: handlePaymentEvent({
-        repo,
-        matcher,
-        publish: outbox.publish,
-      }),
+      handleFromPayload: handlePaymentEvent(handleDeps),
+      rebindFromPayload: rebindFromPayload(handleDeps),
     };
   }),
 );

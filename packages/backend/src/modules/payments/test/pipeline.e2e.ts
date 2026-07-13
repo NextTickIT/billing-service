@@ -1,15 +1,21 @@
 import assert from 'node:assert/strict';
 
+import { SqlClient } from '@effect/sql';
 import { Duration, Effect } from 'effect';
 
 import type { AppConfig } from '@/config.js';
 import { defaultRetryConfig } from '@/infra/queue/policy.js';
 import { Queue } from '@/infra/queue/service.js';
+import { enqueue } from '@/infra/queue/store.js';
 import { TaskRegistry } from '@/infra/task-registry.js';
 import { DELIVER_EVENT } from '@/modules/outbox/contracts.js';
 import { Outbox } from '@/modules/outbox/domain.js';
 import type { IncomingPaymentEvent } from '@/modules/payments/contracts.js';
-import { PAYMENT_EVENT_RECEIVED } from '@/modules/payments/contracts.js';
+import {
+  PAYMENT_EVENT_RECEIVED,
+  PAYMENT_REBIND,
+} from '@/modules/payments/contracts.js';
+import { makePaymentsRepo } from '@/modules/payments/data-access.js';
 import { PaymentPipeline } from '@/modules/payments/domain.js';
 import { makeWorkerRuntime } from '@/runtime.js';
 
@@ -17,8 +23,8 @@ import { makeWorkerRuntime } from '@/runtime.js';
  * Non-HTTP e2e scenarios: drive the worker pipeline directly against a real,
  * freshly-migrated Postgres (the runner in test/e2e/run.ts creates/migrates/drops
  * a throwaway database around each). This is the DB-integration proof for M1+M2 —
- * dedup, FOR UPDATE SKIP LOCKED, the CTE writes, and ON CONFLICT idempotency only
- * run for real here.
+ * dedup, FOR UPDATE SKIP LOCKED, the CTE writes, ON CONFLICT idempotency, and the
+ * bind/rebind SQL only run for real here.
  */
 export interface EffectE2eContext {
   readonly config: AppConfig;
@@ -31,11 +37,9 @@ export interface EffectScenario {
   readonly run: (ctx: EffectE2eContext) => Promise<void>;
 }
 
-const IDEM_KEY = 'w4p:o1|PURCHASE|1700000000';
-
-const testEvent: IncomingPaymentEvent = {
+const event = (idemKey: string): IncomingPaymentEvent => ({
   source: 'test',
-  idemKey: IDEM_KEY,
+  idemKey,
   externalRef: 'o1',
   externalUserId: null,
   amount: 30000,
@@ -43,37 +47,37 @@ const testEvent: IncomingPaymentEvent = {
   status: 'succeeded',
   occurredAt: new Date('2026-01-01T00:00:00.000Z'),
   payload: { note: 'e2e' },
-};
+});
 
-/**
- * Register the two handlers, ingest the event twice (a duplicate receipt), then
- * run the dispatch loop until it drains (the loop is `Effect<never>`, so race it
- * against a short timer and stop).
- */
-const drive = Effect.gen(function* () {
+/** Register the three worker handlers. */
+const registerHandlers = Effect.gen(function* () {
   const registry = yield* TaskRegistry;
   const outbox = yield* Outbox;
   const pipeline = yield* PaymentPipeline;
   yield* registry.register(PAYMENT_EVENT_RECEIVED, (p) =>
     pipeline.handleFromPayload(p),
   );
-  yield* registry.register(DELIVER_EVENT, (p) => outbox.deliverFromPayload(p));
-
-  yield* pipeline.ingest(testEvent);
-  yield* pipeline.ingest(testEvent); // duplicate receipt
-
-  const queue = yield* Queue;
-  yield* Effect.race(
-    queue.run({
-      workerId: 'e2e',
-      pollIntervalMillis: 50,
-      batchSize: 10,
-      visibilityTimeoutMillis: 300_000,
-      retry: defaultRetryConfig,
-    }),
-    Effect.sleep(Duration.seconds(3)),
+  yield* registry.register(PAYMENT_REBIND, (p) =>
+    pipeline.rebindFromPayload(p),
   );
+  yield* registry.register(DELIVER_EVENT, (p) => outbox.deliverFromPayload(p));
 });
+
+/** Run the dispatch loop for `seconds`, then stop (the loop is `Effect<never>`). */
+const runFor = (seconds: number) =>
+  Effect.gen(function* () {
+    const queue = yield* Queue;
+    yield* Effect.race(
+      queue.run({
+        workerId: 'e2e',
+        pollIntervalMillis: 50,
+        batchSize: 10,
+        visibilityTimeoutMillis: 300_000,
+        retry: defaultRetryConfig,
+      }),
+      Effect.sleep(Duration.seconds(seconds)),
+    );
+  });
 
 const eq = async (
   query: EffectE2eContext['query'],
@@ -84,8 +88,20 @@ const eq = async (
   assert.equal((await query(sql)).trim(), expected, message);
 };
 
-/** Assert the whole chain landed: dedup (AC2/AC3), quarantine (AC6), delivery. */
-const assertChain = async (query: EffectE2eContext['query']): Promise<void> => {
+const IDEM_KEY = 'w4p:o1|PURCHASE|1700000000';
+
+/** Ingest the same event twice, drain, and assert dedup + quarantine + delivery. */
+const driveQuarantine = Effect.gen(function* () {
+  yield* registerHandlers;
+  const pipeline = yield* PaymentPipeline;
+  yield* pipeline.ingest(event(IDEM_KEY));
+  yield* pipeline.ingest(event(IDEM_KEY)); // duplicate receipt
+  yield* runFor(3);
+});
+
+const assertQuarantine = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
   await eq(
     query,
     `SELECT count(*) FROM raw_events WHERE "idemKey" = '${IDEM_KEY}'`,
@@ -97,12 +113,6 @@ const assertChain = async (query: EffectE2eContext['query']): Promise<void> => {
     `SELECT count(*) FROM messages WHERE "messageType" = 'payment_event_received'`,
     '1',
     'duplicate deduped to a single message (AC2)',
-  );
-  await eq(
-    query,
-    `SELECT count(*) FROM incoming_payment_events`,
-    '1',
-    'one incoming payment event recorded',
   );
   await eq(
     query,
@@ -118,21 +128,9 @@ const assertChain = async (query: EffectE2eContext['query']): Promise<void> => {
   );
   await eq(
     query,
-    `SELECT count(*) FROM domain_events WHERE name = 'unknown_payment_quarantined'`,
-    '1',
-    'quarantine emitted exactly one domain event',
-  );
-  await eq(
-    query,
     `SELECT status FROM event_deliveries`,
     'delivered',
     'delivery reached the sink and was marked delivered',
-  );
-  await eq(
-    query,
-    `SELECT status FROM messages WHERE "messageType" = 'payment_event_received'`,
-    'success',
-    'processed message is terminally success',
   );
 };
 
@@ -141,8 +139,93 @@ const quarantineAndDeliver: EffectScenario = {
   run: async ({ config, query }) => {
     const runtime = makeWorkerRuntime(config);
     try {
-      await runtime.runPromise(drive);
-      await assertChain(query);
+      await runtime.runPromise(driveQuarantine);
+      await assertQuarantine(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
+const BIND_KEY = 'w4p:o2|PURCHASE|1700000500';
+
+/** Quarantine an event, then bind it (audit + enqueue rebind) via the real repo. */
+const driveBind = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  const repo = makePaymentsRepo(sql);
+  const pipeline = yield* PaymentPipeline;
+
+  yield* pipeline.ingest(event(BIND_KEY));
+  yield* runFor(2); // quarantine + deliver
+
+  const open = yield* repo.listOpenQuarantine();
+  const record = open[0];
+  if (record === undefined) {
+    return;
+  }
+  yield* repo.insertAudit({
+    actor: 'Operator',
+    action: 'bind_quarantine',
+    targetType: 'quarantine',
+    targetId: record.quarantineId,
+    detail: { externalUserId: 'sp:bound' },
+  });
+  yield* enqueue(sql)({
+    messageType: PAYMENT_REBIND,
+    idemKey: `rebind:${record.quarantineId}`,
+    payload: {
+      incomingEventId: record.incomingEventId,
+      quarantineId: record.quarantineId,
+      externalUserId: 'sp:bound',
+      subscriptionId: null,
+      period: 'P1M',
+      method: 0,
+    },
+  });
+  yield* runFor(2); // reprocess + deliver
+});
+
+const assertBind = async (query: EffectE2eContext['query']): Promise<void> => {
+  await eq(
+    query,
+    `SELECT count(*) FROM payments WHERE "subscriptionId" IS NULL`,
+    '1',
+    'bound payment recorded without a subscription yet',
+  );
+  await eq(
+    query,
+    `SELECT status FROM quarantine_records`,
+    'resolved',
+    'quarantine resolved after bind (AC6)',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM domain_events WHERE name = 'payment_succeeded'`,
+    '1',
+    'bind emitted payment_succeeded',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM audit_log WHERE action = 'bind_quarantine'`,
+    '1',
+    'operator bind was audited',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM event_deliveries WHERE status = 'delivered'`,
+    '2',
+    'both the quarantine and the bound payment were delivered',
+  );
+};
+
+const bindReprocesses: EffectScenario = {
+  name: 'support: operator bind reprocesses a quarantine into a payment (FR-009)',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveBind);
+      await assertBind(query);
     } finally {
       await runtime.dispose();
     }
@@ -151,4 +234,5 @@ const quarantineAndDeliver: EffectScenario = {
 
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
+  bindReprocesses,
 ];

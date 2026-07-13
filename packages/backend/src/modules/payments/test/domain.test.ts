@@ -1,6 +1,6 @@
 import { it } from '@effect/vitest';
 import type { DomainEvent } from '@billing-service/shared';
-import { Effect } from 'effect';
+import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
 import type { EnqueueInput } from '@/infra/queue/store.js';
@@ -16,6 +16,7 @@ import {
   ingest,
   paymentSucceeded,
   quarantined,
+  rebindFromPayload,
 } from '@/modules/payments/domain.js';
 
 /** The JSON-encoded `payment_event_received` payload the handler decodes. */
@@ -45,9 +46,11 @@ const decodedEvent = (idemKey: string): IncomingPaymentEvent => ({
 
 const makeFakeRepo = () => {
   const incoming = new Map<string, string>();
+  const eventsById = new Map<string, IncomingPaymentEvent>();
   const payments = new Set<string>();
   const quarantines = new Map<string, string>();
   const matchResults = new Map<string, string>();
+  const resolved = new Set<string>();
   let seq = 0;
 
   const repo: PaymentsRepo = {
@@ -59,6 +62,7 @@ const makeFakeRepo = () => {
           seq += 1;
           id = `inc${seq.toString()}`;
           incoming.set(event.idemKey, id);
+          eventsById.set(id, event);
         }
         return id;
       }),
@@ -79,8 +83,17 @@ const makeFakeRepo = () => {
         }
         return q;
       }),
+    getIncomingEventById: (id) =>
+      Effect.sync(() => Option.fromNullable(eventsById.get(id))),
+    listOpenQuarantine: () => Effect.succeed([]),
+    getQuarantine: () => Effect.succeed(Option.none()),
+    resolveQuarantine: (incomingEventId) =>
+      Effect.sync(() => {
+        resolved.add(incomingEventId);
+      }),
+    insertAudit: () => Effect.void,
   };
-  return { repo, payments, quarantines, matchResults };
+  return { repo, payments, quarantines, matchResults, resolved };
 };
 
 const matcherOf = (result: MatchResult): PaymentMatcherService => ({
@@ -162,6 +175,35 @@ it.effect(
       expect(enqueued).toHaveLength(1);
       expect(enqueued[0]?.messageType).toBe(PAYMENT_EVENT_RECEIVED);
       expect(enqueued[0]?.idemKey).toBe('k3');
+    }),
+);
+
+it.effect(
+  'rebind records a payment, resolves the quarantine, and emits payment_succeeded',
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo();
+      const pub = recordingPublish();
+      const incId = yield* fake.repo.upsertIncomingEvent(decodedEvent('k9'));
+
+      yield* rebindFromPayload({
+        repo: fake.repo,
+        matcher: matcherOf({ matched: false }),
+        publish: pub.publish,
+      })({
+        incomingEventId: incId,
+        quarantineId: 'q1',
+        externalUserId: 'sp:9',
+        subscriptionId: null,
+        period: 'P1M',
+        method: 0,
+      });
+
+      expect(fake.payments.has(incId)).toBe(true);
+      expect(fake.resolved.has(incId)).toBe(true);
+      expect(pub.events[0]?.name).toBe('payment_succeeded');
+      expect(pub.events[0]?.externalUserId).toBe('sp:9');
+      expect(pub.events[0]?.id).toBe('evt_k9:succeeded');
     }),
 );
 

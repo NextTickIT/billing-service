@@ -8,7 +8,10 @@ import { Queue } from '@/infra/queue/service.js';
 import { TaskRegistry } from '@/infra/task-registry.js';
 import { DELIVER_EVENT } from '@/modules/outbox/contracts.js';
 import { Outbox } from '@/modules/outbox/domain.js';
-import { PAYMENT_EVENT_RECEIVED } from '@/modules/payments/contracts.js';
+import {
+  PAYMENT_EVENT_RECEIVED,
+  PAYMENT_REBIND,
+} from '@/modules/payments/contracts.js';
 import { PaymentPipeline } from '@/modules/payments/domain.js';
 import { makeWorkerRuntime } from '@/runtime.js';
 
@@ -35,6 +38,9 @@ await runtime.runPromise(
     const pipeline = yield* PaymentPipeline;
     yield* registry.register(PAYMENT_EVENT_RECEIVED, (payload) =>
       pipeline.handleFromPayload(payload),
+    );
+    yield* registry.register(PAYMENT_REBIND, (payload) =>
+      pipeline.rebindFromPayload(payload),
     );
     yield* registry.register(DELIVER_EVENT, (payload) =>
       outbox.deliverFromPayload(payload),

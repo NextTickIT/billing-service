@@ -36,3 +36,21 @@ export class Conflict extends Data.TaggedError('Conflict')<{
     };
   }
 }
+
+export class NotFound extends Data.TaggedError('NotFound')<{
+  readonly resource: string;
+}> {
+  toHttp(): HttpReply {
+    return { status: 404, body: { error: `${this.resource} not found` } };
+  }
+}
+
+export class UnprocessableEntity extends Data.TaggedError(
+  'UnprocessableEntity',
+)<{
+  readonly reason: string;
+}> {
+  toHttp(): HttpReply {
+    return { status: 422, body: { error: this.reason } };
+  }
+}

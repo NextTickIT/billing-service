@@ -11,6 +11,26 @@ import { Context, Effect, Layer, Schema } from 'effect';
 /** Queue message type for a normalized incoming payment awaiting processing. */
 export const PAYMENT_EVENT_RECEIVED = 'payment_event_received';
 
+/** Queue message type for an operator-bound quarantine, reprocessed by the worker. */
+export const PAYMENT_REBIND = 'payment_rebind';
+
+/**
+ * Operator bind decision (FR-009): reprocess a quarantined event AS IF matched to
+ * the given user (and optionally a subscription). Carried on a `payment_rebind`
+ * message so the worker records the payment and emits the outgoing event, exactly
+ * like a normal match — the operator's action just supplies the match.
+ */
+export const RebindPayload = Schema.Struct({
+  incomingEventId: Schema.String,
+  quarantineId: Schema.String,
+  externalUserId: Schema.String,
+  subscriptionId: Schema.NullOr(Schema.String),
+  period: Schema.String,
+  method: Schema.Int,
+});
+
+export type RebindPayload = Schema.Schema.Type<typeof RebindPayload>;
+
 /** Normalized status of an incoming payment, provider-agnostic. */
 export const PAYMENT_EVENT_STATUSES = [
   'succeeded',
