@@ -25,6 +25,20 @@ export interface QueueConfig {
   readonly maxAttempts: number;
 }
 
+/** WayForPay credentials + endpoints (env-sourced). `merchantPassword` is empty
+ * until the regularApi credential is provisioned; on the test merchant the shared
+ * demo secret is enough to exercise reads. */
+export interface WayForPayConfig {
+  readonly merchantAccount: string;
+  readonly merchantSecretKey: Redacted.Redacted;
+  readonly merchantPassword: Redacted.Redacted;
+  readonly apiUrl: string;
+  readonly regularApiUrl: string;
+  readonly merchantDomainName: string;
+  /** Client-side request rate (req/s); WayForPay documents no server limit. */
+  readonly rateLimitRps: number;
+}
+
 export interface AppConfig {
   readonly host: string;
   readonly port: number;
@@ -34,6 +48,7 @@ export interface AppConfig {
   /** Session lifetime in seconds (env `SESSION_TTL_SECONDS`, default 24h). */
   readonly sessionTtlSeconds: number;
   readonly queue: QueueConfig;
+  readonly wayforpay: WayForPayConfig;
 }
 
 /** Queue tuning is its own loader so `loadConfig` stays simple (one concern each). */
@@ -44,6 +59,18 @@ const loadQueueConfig = (): QueueConfig => ({
     process.env['QUEUE_VISIBILITY_TIMEOUT_MS'] ?? '300000',
   ),
   maxAttempts: Number(process.env['QUEUE_MAX_ATTEMPTS'] ?? '5'),
+});
+
+const loadWayForPayConfig = (): WayForPayConfig => ({
+  merchantAccount: process.env['W4P_MERCHANT_ACCOUNT'] ?? '',
+  merchantSecretKey: Redacted.make(process.env['W4P_SECRET_KEY'] ?? ''),
+  merchantPassword: Redacted.make(process.env['W4P_MERCHANT_PASSWORD'] ?? ''),
+  apiUrl: process.env['W4P_API_URL'] ?? 'https://api.wayforpay.com/api',
+  regularApiUrl:
+    process.env['W4P_REGULAR_API_URL'] ??
+    'https://api.wayforpay.com/regularApi',
+  merchantDomainName: process.env['W4P_DOMAIN_NAME'] ?? '',
+  rateLimitRps: Number(process.env['W4P_RATE_LIMIT_RPS'] ?? '2'),
 });
 
 export const loadConfig = (): AppConfig => ({
@@ -59,4 +86,5 @@ export const loadConfig = (): AppConfig => ({
   adminToken: Redacted.make(process.env['ADMIN_TOKEN'] ?? ''),
   sessionTtlSeconds: Number(process.env['SESSION_TTL_SECONDS'] ?? '86400'),
   queue: loadQueueConfig(),
+  wayforpay: loadWayForPayConfig(),
 });
