@@ -63,6 +63,8 @@ const makeFakeRepo = (existing: Subscription | null) => {
     advanceAfterSuccess: () => Effect.die('unused'),
     recordRetry: () => Effect.die('unused'),
     markRenewalFailed: () => Effect.die('unused'),
+    findByExternalUser: () => Effect.die('unused'),
+    cancel: () => Effect.die('unused'),
   };
   return { repo, getInserted: () => inserted, getExtended: () => extended };
 };

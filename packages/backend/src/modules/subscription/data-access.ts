@@ -59,6 +59,11 @@ export interface SubscriptionRepo {
   readonly markRenewalFailed: (
     id: string,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly findByExternalUser: (
+    externalUserId: string,
+  ) => Effect.Effect<readonly Subscription[], SqlError.SqlError>;
+  /** Cancel unless already ended; returns false if it was already cancelled. */
+  readonly cancel: (id: string) => Effect.Effect<boolean, SqlError.SqlError>;
 }
 
 const COLUMNS = `id, "externalUserId", amount, currency, method, period, status,
@@ -144,6 +149,21 @@ const markRenewalFailed = (sql: SqlClient.SqlClient) => (id: string) =>
       "updatedAt" = now() WHERE id = ${id}
   `.pipe(Effect.asVoid);
 
+const findByExternalUser =
+  (sql: SqlClient.SqlClient) => (externalUserId: string) =>
+    sql<Subscription>`
+      SELECT ${sql.unsafe(COLUMNS)} FROM subscriptions
+      WHERE "externalUserId" = ${externalUserId}
+      ORDER BY "createdAt" DESC
+    `;
+
+const cancel = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql<{ readonly id: string }>`
+    UPDATE subscriptions SET status = ${SubscriptionStatus.Cancelled}, "updatedAt" = now()
+    WHERE id = ${id} AND status <> ${SubscriptionStatus.Cancelled}
+    RETURNING id
+  `.pipe(Effect.map((rows) => rows.length > 0));
+
 export const makeSubscriptionRepo = (
   sql: SqlClient.SqlClient,
 ): SubscriptionRepo => ({
@@ -155,4 +175,6 @@ export const makeSubscriptionRepo = (
   advanceAfterSuccess: advanceAfterSuccess(sql),
   recordRetry: recordRetry(sql),
   markRenewalFailed: markRenewalFailed(sql),
+  findByExternalUser: findByExternalUser(sql),
+  cancel: cancel(sql),
 });

@@ -20,6 +20,8 @@ import { PaymentPipeline } from '@/modules/payments/domain.js';
 import { scheduleTick } from '@/modules/billing/scheduler.js';
 import { normalizeCallback } from '@/modules/checkout/callback.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
+import { cancelNotify } from '@/modules/subscription/cancel.js';
+import { SUBSCRIPTION_CANCEL } from '@/modules/subscription/contracts.js';
 import { makeSubscriptionRepo } from '@/modules/subscription/data-access.js';
 import type { W4pTransaction } from '@/modules/wayforpay/contracts.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
@@ -68,6 +70,7 @@ const registerHandlers = Effect.gen(function* () {
     pipeline.rebindFromPayload(p),
   );
   yield* registry.register(DELIVER_EVENT, (p) => outbox.deliverFromPayload(p));
+  yield* registry.register(SUBSCRIPTION_CANCEL, cancelNotify(outbox.publish));
 });
 
 /** Run the dispatch loop for `seconds`, then stop (the loop is `Effect<never>`). */
@@ -489,10 +492,78 @@ const schedulerChargesDue: EffectScenario = {
   },
 };
 
+/** Cancel an active subscription (like the support route does), then let the
+ * worker emit subscription_cancelled — the FR-012 path. */
+const driveCancel = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makeSubscriptionRepo(sql);
+  const created = yield* subs.insert({
+    externalUserId: 'sp:cancel',
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: 0,
+    nextChargeDate: new Date('2030-01-01T00:00:00Z'),
+    recurringTokenRef: 'tok',
+    firstFailureAt: null,
+    retryAttempt: 0,
+  });
+  yield* subs.cancel(created.id);
+  yield* enqueue(sql)({
+    messageType: SUBSCRIPTION_CANCEL,
+    idemKey: `cancel:${created.id}`,
+    payload: {
+      subscriptionId: created.id,
+      externalUserId: 'sp:cancel',
+      reason: 'operator',
+    },
+  });
+  yield* runFor(2);
+});
+
+const assertCancel = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT status::text FROM subscriptions`,
+    '3',
+    'subscription is cancelled (FR-012)',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM domain_events WHERE name = 'subscription_cancelled'`,
+    '1',
+    'subscription_cancelled emitted',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM event_deliveries WHERE status = 'delivered'`,
+    '1',
+    'the cancellation event was delivered',
+  );
+};
+
+const cancelSubscription: EffectScenario = {
+  name: 'support: operator cancels a subscription (FR-012)',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveCancel);
+      await assertCancel(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
   bindReprocesses,
   pollerIngestsJournal,
   checkoutCreatesSubscription,
   schedulerChargesDue,
+  cancelSubscription,
 ];

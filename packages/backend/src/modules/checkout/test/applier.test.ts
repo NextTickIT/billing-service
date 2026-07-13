@@ -32,6 +32,8 @@ const unusedSubs: SubscriptionRepo = {
   advanceAfterSuccess: () => Effect.die('unused'),
   recordRetry: () => Effect.die('unused'),
   markRenewalFailed: () => Effect.die('unused'),
+  findByExternalUser: () => Effect.die('unused'),
+  cancel: () => Effect.die('unused'),
 };
 const unusedCheckout: CheckoutRepo = {
   findById: () => Effect.die('unused'),

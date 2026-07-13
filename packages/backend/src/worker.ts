@@ -21,6 +21,8 @@ import {
   type PaymentPipelineService,
 } from '@/modules/payments/domain.js';
 import { runScheduler } from '@/modules/billing/scheduler.js';
+import { cancelNotify } from '@/modules/subscription/cancel.js';
+import { SUBSCRIPTION_CANCEL } from '@/modules/subscription/contracts.js';
 import { makeSubscriptionRepo } from '@/modules/subscription/data-access.js';
 import { WayForPay } from '@/modules/wayforpay/client.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
@@ -52,6 +54,7 @@ const registerHandlers = (
     yield* registry.register(DELIVER_EVENT, (payload) =>
       outbox.deliverFromPayload(payload),
     );
+    yield* registry.register(SUBSCRIPTION_CANCEL, cancelNotify(outbox.publish));
   });
 
 /** Fork the WayForPay migration poller (docs/15) if enabled. */

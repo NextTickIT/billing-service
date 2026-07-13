@@ -37,6 +37,8 @@ const repo = (found: Subscription | null): SubscriptionRepo => ({
   advanceAfterSuccess: die,
   recordRetry: die,
   markRenewalFailed: die,
+  findByExternalUser: die,
+  cancel: die,
 });
 
 const event = (

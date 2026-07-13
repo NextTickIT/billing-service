@@ -64,6 +64,8 @@ const makeDeps = (sub: Subscription, response: W4pChargeResponse) => {
     findById: die,
     insert: die,
     extend: die,
+    findByExternalUser: die,
+    cancel: die,
   };
   const deps: SchedulerDeps = {
     subs,
