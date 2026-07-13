@@ -1,11 +1,5 @@
 import { Schema } from 'effect';
 
-/**
- * Roles are numeric enums stored as numbers everywhere (db `smallint`, backend,
- * frontend); the Schema mirror validates the values. `Role` is owned by the auth
- * slice: an Admin-role credential creates tokens/operators, and a session
- * carries its operator's role.
- */
 export enum Role {
   Admin = 0,
   Operator = 1,
