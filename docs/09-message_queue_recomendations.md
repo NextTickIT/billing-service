@@ -23,8 +23,14 @@ On failure the handler decides:
 - Return the message to the queue with a custom `retry_at` time, or
 - After a handler-determined number of attempts, mark the message terminally processed with `fail` status.
 
-**R6 — Message lifecycle.**
+**R6 — Message lifecycle (append-only status).**
 `pending → in_progress → (retry → in_progress)* → success | fail`
+
+Status is **not mutated in place**: each transition is a new, immutable row in an
+append-only status log, timestamped, so the current status is simply the latest
+transition by time. This keeps the same auditability guarantee as `raw_events`
+and `attempts` — every state the message was ever in is preserved and countable,
+and a transition can never silently overwrite its predecessor.
 
 ### Non-functional
 
@@ -101,6 +107,9 @@ CREATE TABLE messages (
   payload       JSONB NOT NULL,
   status        TEXT NOT NULL DEFAULT 'pending',
                 -- pending | in_progress | retry | success | fail
+                -- Denormalized cache of the latest message_status_events row,
+                -- advanced only inside the same transaction that appends it.
+                -- Kept on the row so the claim query can filter cheaply.
   attempt_count INT NOT NULL DEFAULT 0,
   retry_at      TIMESTAMPTZ,
   locked_by     TEXT,

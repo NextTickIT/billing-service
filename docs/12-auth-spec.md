@@ -56,7 +56,12 @@ The admin credential lives in **config/secret (env `ADMIN_TOKEN`)** and is verif
 auth tokens and operators; there is no seeding step.
 
 ### D5 — Testing strategy (two tiers)
-1. **Hermetic domain/unit tests** — in-memory `AuthRepo` test layer + real `Hasher`.
+> **Superseded by [docs/16](./16-conventions.md) §4–5.** The in-memory `AuthRepo`
+> test layer was removed: we do not ship test-only production code. The default
+> gate now unit-tests only pure / non-DB logic (real `Hasher`), and all DB-bound
+> behavior is covered by the e2e tier below.
+
+1. **Hermetic domain/unit tests** — ~~in-memory `AuthRepo` test layer~~ + real `Hasher`.
    Fast, need no Postgres; run in the default `npm test` gate.
 2. **Auth integration test is a full E2E test against a REAL database after REAL
    migrations.** The **whole system is actually run inside Docker**; a dedicated

@@ -22,7 +22,10 @@ TypeScript monorepo for the billing-service payment gateway.
 - **Imports:** `@/` is each package's `src` root (e.g. `@/modules/health/routes.js`); cross-package uses `@billing-service/*`. No `../../..` ladders.
 - **TypeScript:** one strict `tsconfig.base.json` extended everywhere. Build with `tsc -b` project references + `tsc-alias`; dev with `tsx`. NodeNext requires `.js` import extensions; `verbatimModuleSyntax` requires `import type` for type-only imports.
 - **Lint/format:** one root ESLint flat config (`typescript-eslint` strict-type-checked + complexity caps) + Prettier. Run from the root.
-- **Tests:** Vitest workspace + `@effect/vitest`.
+- **Tests:** Vitest workspace + `@effect/vitest`. Unit/integration tests live in
+  `src/modules/{name}/test/`; the top-level `test/` holds the e2e tier only. Pure
+  / non-DB logic is unit-tested; DB-bound behavior is covered by e2e (no
+  test-only doubles). See [docs/16](./docs/16-conventions.md).
 
 ## Requirements
 
@@ -93,7 +96,8 @@ schema is always current; the same runner is exposed as `npm run db:migrate`.
 Migrations are typed Effect modules in `packages/backend/src/migrations/`
 (compiled to `dist/migrations/`), applied by the `@effect/sql` migrator.
 
-**Testing** has two tiers: the default `npm test` runs hermetic unit tests (an
-in-memory repo + real hasher, **no Postgres**), while `npm run test:e2e` runs the
-whole system over HTTP against a real, freshly-migrated Postgres in Docker,
-provisioning and dropping a unique database per test (requires Docker).
+**Testing** has two tiers: the default `npm test` runs hermetic **unit** tests —
+pure / non-DB logic only (real hasher, **no Postgres**, no in-memory doubles) —
+while `npm run test:e2e` runs the whole system over HTTP against a real,
+freshly-migrated Postgres in Docker, provisioning and dropping a unique database
+per test (requires Docker). All DB-bound auth behavior is proven by the e2e tier.
