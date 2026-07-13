@@ -4,7 +4,7 @@ import type { AppConfig } from '@/config.js';
 import { DatabaseLive, SqlLive } from '@/infra/db.js';
 import { HasherLive } from '@/infra/hasher.js';
 import { TaskRegistryLive } from '@/infra/task-registry.js';
-import { makeAuthConfig } from '@/modules/auth/config.js';
+import { makeAuthConfig } from '@/modules/auth/domain.js';
 import { AuthRepoLive } from '@/modules/auth/data-access.js';
 
 /**

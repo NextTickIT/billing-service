@@ -4,7 +4,7 @@ import type {
   CreateOperator,
   Session,
 } from '@billing-service/shared';
-import { Clock, Effect, Option, Redacted } from 'effect';
+import { Clock, Context, Effect, Layer, Option, Redacted } from 'effect';
 
 import { Hasher } from '@/infra/hasher.js';
 import {
@@ -12,8 +12,25 @@ import {
   InvalidCredentials,
   Unauthorized,
 } from '@/infra/http/errors.js';
-import { AuthConfig } from '@/modules/auth/config.js';
 import { AuthRepo } from '@/modules/auth/data-access.js';
+
+/** The auth config slice, injected as an Effect dependency so the domain never
+ * reads `process.env` — declared next to the service that consumes it. */
+export interface AuthConfigService {
+  /** Bootstrap admin credential (env `ADMIN_TOKEN`); never stored in the DB. */
+  readonly adminToken: Redacted.Redacted;
+  /** Session lifetime in seconds. */
+  readonly sessionTtlSeconds: number;
+}
+
+export class AuthConfig extends Context.Tag('AuthConfig')<
+  AuthConfig,
+  AuthConfigService
+>() {}
+
+export const makeAuthConfig = (
+  config: AuthConfigService,
+): Layer.Layer<AuthConfig> => Layer.succeed(AuthConfig, config);
 
 const TOKEN_PREFIX = 'bst_';
 const SESSION_TOKEN_PREFIX = 'bss_';

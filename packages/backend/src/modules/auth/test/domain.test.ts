@@ -4,19 +4,13 @@ import { Effect, Layer, Option, Redacted } from 'effect';
 import { expect } from 'vitest';
 
 import { HasherLive } from '@/infra/hasher.js';
-import { makeAuthConfig } from '@/modules/auth/config.js';
 import {
   isExpired,
+  makeAuthConfig,
   requireRole,
   verifyBootstrapToken,
 } from '@/modules/auth/domain.js';
 
-/**
- * Unit tests cover only the pure / non-DB guards — real `Hasher` (pure crypto)
- * and config, no repository. Everything that touches Postgres (create/sign-in/
- * authenticate, the stored auth-token path) is exercised by the e2e tier against
- * a real database, so no test-only repository double exists.
- */
 const ADMIN = 'admin-secret';
 
 const authLayer = (adminToken = ADMIN) =>
