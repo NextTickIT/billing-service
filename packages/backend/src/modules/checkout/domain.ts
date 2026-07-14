@@ -1,7 +1,6 @@
-import { CurrencyCode } from '@billing-service/shared';
+import { type CheckoutSession, CurrencyCode } from '@billing-service/shared';
 import { Redacted } from 'effect';
 
-import type { CheckoutSession } from '@/modules/checkout/contracts.js';
 import type { W4pConfigService } from '@/modules/wayforpay/config.js';
 import { signPurchase } from '@/modules/wayforpay/signature.js';
 

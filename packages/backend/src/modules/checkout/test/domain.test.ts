@@ -1,7 +1,7 @@
+import { CheckoutSessionStatus } from '@billing-service/shared';
 import { Redacted } from 'effect';
 import { describe, expect, test } from 'vitest';
 
-import { CheckoutSessionStatus } from '@/modules/checkout/contracts.js';
 import { buildPurchase } from '@/modules/checkout/domain.js';
 import type { W4pConfigService } from '@/modules/wayforpay/config.js';
 

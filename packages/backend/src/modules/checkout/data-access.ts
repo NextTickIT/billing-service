@@ -1,21 +1,13 @@
 import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
+import {
+  CheckoutSession,
+  CheckoutSessionStatus,
+  type NewCheckoutSession,
+} from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
-import {
-  type CheckoutSession,
-  CheckoutSessionStatus,
-} from '@/modules/checkout/contracts.js';
-
-/** Params to create a session (server owns status/createdAt; method chosen later). */
-export interface NewCheckoutSession {
-  readonly id: string;
-  readonly externalUserId: string;
-  readonly amount: number;
-  readonly currency: number;
-  readonly period: string;
-  readonly expiresAt: Date;
-}
+import { columnList } from '@/infra/db/columns.js';
 
 export interface CheckoutRepo {
   readonly insert: (
@@ -34,8 +26,7 @@ export interface CheckoutRepo {
   ) => Effect.Effect<void, SqlError.SqlError>;
 }
 
-const COLUMNS = `id, "externalUserId", amount, currency, period, method, status,
-  "expiresAt", "createdAt"`;
+const COLUMNS = columnList(CheckoutSession.fields);
 
 const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) =>
   sql`

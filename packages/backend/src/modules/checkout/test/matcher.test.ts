@@ -1,8 +1,8 @@
 import { it } from '@effect/vitest';
+import type { CheckoutSession } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
-import type { CheckoutSession } from '@/modules/checkout/contracts.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import { makeCheckoutMatcher } from '@/modules/checkout/matcher.js';
 import type { IncomingPaymentEvent } from '@/modules/payments/contracts.js';

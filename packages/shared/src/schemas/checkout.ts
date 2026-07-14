@@ -1,0 +1,65 @@
+import { Schema } from 'effect';
+
+import { CurrencySchema, PaymentMethodSchema } from '@/schemas/subscription.js';
+
+/**
+ * Checkout session (docs/05/06). The session id doubles as the WayForPay
+ * orderReference, so the callback matches back to it. status: 0=created (link
+ * issued) 1=pending (paying at provider) 2=completed 3=expired. Owned by the
+ * checkout slice; the id is the single source of truth every layer shares.
+ */
+export enum CheckoutSessionStatus {
+  Created = 0,
+  Pending = 1,
+  Completed = 2,
+  Expired = 3,
+}
+
+export const CheckoutSessionStatusSchema = Schema.Enums(CheckoutSessionStatus);
+
+/** A checkout session at rest. `method` is null until chosen on the page. */
+export const CheckoutSession = Schema.Struct({
+  id: Schema.String,
+  externalUserId: Schema.String,
+  amount: Schema.Int,
+  currency: CurrencySchema,
+  period: Schema.String,
+  method: Schema.NullOr(PaymentMethodSchema),
+  status: CheckoutSessionStatusSchema,
+  expiresAt: Schema.Date,
+  createdAt: Schema.Date,
+});
+
+export type CheckoutSession = Schema.Schema.Type<typeof CheckoutSession>;
+
+/** Insert params: the server owns status/createdAt; the method is chosen later. */
+export const NewCheckoutSession = CheckoutSession.pipe(
+  Schema.omit('method', 'status', 'createdAt'),
+);
+
+export type NewCheckoutSession = Schema.Schema.Type<typeof NewCheckoutSession>;
+
+/** POST /api/checkout-sessions body (docs/06): the external system's intent. */
+export const CreateCheckoutSession = CheckoutSession.pipe(
+  Schema.pick('externalUserId', 'amount', 'currency', 'period'),
+);
+
+export type CreateCheckoutSession = Schema.Schema.Type<
+  typeof CreateCheckoutSession
+>;
+
+/** POST /api/checkout-sessions/:id/pay body: the method the user chose. */
+export const SelectMethod = Schema.Struct({
+  method: PaymentMethodSchema,
+});
+
+export type SelectMethod = Schema.Schema.Type<typeof SelectMethod>;
+
+/** POST /api/checkout-sessions response: the issued link and its expiry. */
+export const SessionCreated = Schema.Struct({
+  sessionId: Schema.String,
+  checkoutUrl: Schema.String,
+  expiresAt: Schema.Date,
+});
+
+export type SessionCreated = Schema.Schema.Type<typeof SessionCreated>;

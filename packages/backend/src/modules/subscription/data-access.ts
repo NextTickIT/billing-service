@@ -2,10 +2,12 @@ import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
 import {
   type CreateSubscription,
-  type Subscription,
+  Subscription,
   SubscriptionStatus,
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
+
+import { columnList } from '@/infra/db/columns.js';
 
 /** New billing terms applied when a checkout extends an existing subscription. */
 export interface ExtendSubscription {
@@ -66,9 +68,7 @@ export interface SubscriptionRepo {
   readonly cancel: (id: string) => Effect.Effect<boolean, SqlError.SqlError>;
 }
 
-const COLUMNS = `id, "externalUserId", amount, currency, method, period, status,
-  "nextChargeDate", "recurringTokenRef", "firstFailureAt", "retryAttempt",
-  "createdAt", "updatedAt"`;
+const COLUMNS = columnList(Subscription.fields);
 
 const requireRow = <A>(rows: readonly A[]): Effect.Effect<A> => {
   const [row] = rows;

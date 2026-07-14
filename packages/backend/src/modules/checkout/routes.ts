@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
 import { SqlClient } from '@effect/sql';
+import {
+  CheckoutSessionStatus,
+  CreateCheckoutSession,
+  SelectMethod,
+  SessionCreated,
+} from '@billing-service/shared';
 import { Clock, Effect, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
@@ -16,19 +22,8 @@ import {
   normalizeCallback,
   verifyCallback,
 } from '@/modules/checkout/callback.js';
-import {
-  CheckoutSessionStatus,
-  CreateCheckoutSession,
-  SelectMethod,
-} from '@/modules/checkout/contracts.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import { buildPurchase, checkoutPath } from '@/modules/checkout/domain.js';
-
-const SessionCreated = Schema.Struct({
-  sessionId: Schema.String,
-  checkoutUrl: Schema.String,
-  expiresAt: Schema.Date,
-});
 
 const PurchaseFormSchema = Schema.Struct({
   action: Schema.String,
@@ -55,7 +50,11 @@ const serviceActor = (request: FastifyRequest) => {
 const readId = (request: FastifyRequest): string =>
   (request.params as { readonly id: string }).id;
 
-/** Minimal checkout page (FR-002): method choice + pay, no access data shown. */
+/**
+ * Minimal checkout page (FR-002): method choice + pay, no access data shown.
+ * TODO(frontend): a server-rendered stub — the real page belongs in the frontend
+ * package; this exists only so the hosted-checkout flow is end-to-end testable.
+ */
 const pageHtml = (sessionId: string): string => `<!doctype html>
 <html><head><meta charset="utf-8"><title>Checkout</title></head>
 <body>
