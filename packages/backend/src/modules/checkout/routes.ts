@@ -16,14 +16,15 @@ import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { PAYMENT_EVENT_RECEIVED } from '@/modules/payments/contracts.js';
 import { authenticateToken } from '@/modules/auth/domain.js';
+import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
+import { checkoutPath } from '@/modules/checkout/domain.js';
 import {
   ackResponse,
   type CallbackPayload,
   normalizeCallback,
   verifyCallback,
-} from '@/modules/checkout/callback.js';
-import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
-import { buildPurchase, checkoutPath } from '@/modules/checkout/domain.js';
+} from '@/modules/wayforpay/callback.js';
+import { buildPurchase } from '@/modules/wayforpay/purchase.js';
 
 const PurchaseFormSchema = Schema.Struct({
   action: Schema.String,

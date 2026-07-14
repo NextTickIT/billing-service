@@ -5,7 +5,7 @@ import {
   ackResponse,
   normalizeCallback,
   verifyCallback,
-} from '@/modules/checkout/callback.js';
+} from '@/modules/wayforpay/callback.js';
 import type { W4pConfigService } from '@/modules/wayforpay/config.js';
 import {
   callbackSignatureBase,
