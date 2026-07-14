@@ -83,7 +83,7 @@ const BindAccepted = Schema.Struct({ status: Schema.Literal('accepted') });
 
 type BindBody = Schema.Schema.Type<typeof BindRequest>;
 
-const route = makeRoute((app: FastifyInstance) => app.dbRuntime);
+const route = makeRoute((app: FastifyInstance) => app.runtime);
 
 /** Validate the quarantine, audit the operator action, enqueue the reprocessing. */
 const bind = (request: FastifyRequest, body: BindBody) =>

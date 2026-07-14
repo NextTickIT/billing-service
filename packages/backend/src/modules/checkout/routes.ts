@@ -37,7 +37,7 @@ const CallbackAckSchema = Schema.Struct({
   signature: Schema.String,
 });
 
-const route = makeRoute((app: FastifyInstance) => app.dbRuntime);
+const route = makeRoute((app: FastifyInstance) => app.runtime);
 
 /** The external system authenticates with a service token to open a session. */
 const serviceActor = (request: FastifyRequest) => {
@@ -153,7 +153,7 @@ export default function checkout(fastify: FastifyInstance): void {
 
   fastify.get('/checkout/:id', async (request, reply) => {
     const id = (request.params as { readonly id: string }).id;
-    const found = await fastify.dbRuntime.runPromise(
+    const found = await fastify.runtime.runPromise(
       Effect.flatMap(SqlClient.SqlClient, (sql) =>
         makeCheckoutRepo(sql).findById(id),
       ),

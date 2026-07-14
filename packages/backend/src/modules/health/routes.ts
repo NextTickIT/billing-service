@@ -16,7 +16,7 @@ export default function health(
   done: () => void,
 ): void {
   fastify.get('/health', async (_request, reply) => {
-    const ready = await fastify.dbRuntime
+    const ready = await fastify.runtime
       .runPromise(checkHealth().pipe(Effect.timeout('5 seconds')))
       .then(() => true)
       .catch(() => false);

@@ -54,9 +54,11 @@ interval with a visible tail metric · AC8 new provider/sink without core change
   **records of functions** (no classes, no `this`); errors are typed
   (`Data.TaggedError`), never `throw`; effects and async run through `Effect`.
   (docs/10–13)
-- **Two runtimes, by design** (docs/13 ADR): a DB-less layer (health, task registry —
-  must never pull `SqlLive`, so `/health` stays hermetic) and a lazy DB-backed layer
-  built on first use. The worker runtime is DB-backed and eager.
+- **One application runtime**: a single lazy DB-backed `ManagedRuntime` that every
+  route runs on. `ManagedRuntime.make` opens no connection until the first `run*`, so
+  `buildApp()` and connection-free unit tests stay hermetic; `/health` is a readiness
+  probe that runs `SELECT 1` on it. The worker is a separate OS process with its own
+  runtime.
 - **Autoload**: only `routes.ts` (and optional `*.plugin.ts`) are autoloaded;
   `domain.ts` / `data-access.ts` are plain imports. Migrations are typed `.ts` modules
   in `src/migrations/`, applied at startup by the server (or `npm run db:migrate`),

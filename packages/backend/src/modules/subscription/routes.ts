@@ -21,7 +21,7 @@ import { makeSubscriptionRepo } from '@/modules/subscription/data-access.js';
 
 const CancelAccepted = Schema.Struct({ status: Schema.Literal('cancelled') });
 
-const route = makeRoute((app: FastifyInstance) => app.dbRuntime);
+const route = makeRoute((app: FastifyInstance) => app.runtime);
 
 /** Any valid token authorizes these read/support actions (role gating is open). */
 const authed = (request: FastifyRequest) => {

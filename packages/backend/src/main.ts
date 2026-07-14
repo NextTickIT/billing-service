@@ -6,9 +6,9 @@ import { runMigrations } from '@/infra/migrator.js';
 
 const config = loadConfig();
 
-// Server-side migration hook: bring the schema up to date BEFORE serving
-// traffic, in its own short-lived scope. Deliberately NOT inside `buildApp()`,
-// so `buildApp()`-based unit tests and `GET /health` stay DB-less.
+// Server-side migration hook: bring the schema up to date BEFORE serving traffic,
+// in its own short-lived scope. Deliberately NOT inside `buildApp()`, so
+// `buildApp()`-based unit tests stay connection-free (the app runtime is lazy).
 try {
   await Effect.runPromise(runMigrations(config.database));
 } catch (error) {

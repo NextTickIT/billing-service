@@ -1,9 +1,7 @@
-import { Effect } from 'effect';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, expect, test } from 'vitest';
 
 import { buildApp } from '@/app.js';
-import { TaskRegistry } from '@/infra/task-registry.js';
 
 /**
  * `/health` is a DB-backed readiness probe, so with no reachable database it must
@@ -32,11 +30,4 @@ test('GET /health is 503 when the database is unreachable', async () => {
   const response = await app.inject({ method: 'GET', url: '/health' });
   expect(response.statusCode).toBe(503);
   expect(response.json()).toEqual({ status: 'unavailable' });
-});
-
-test('TaskRegistry is wired but has no handlers (health subscribes to none)', () => {
-  const handlers = app.runtime.runSync(
-    Effect.flatMap(TaskRegistry, (registry) => registry.handlers()),
-  );
-  expect(handlers.size).toBe(0);
 });

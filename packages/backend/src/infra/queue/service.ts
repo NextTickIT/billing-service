@@ -17,9 +17,8 @@ import { TaskRegistry } from '@/infra/task-registry.js';
  * Queue — the durable-queue seam (docs/09) as an Effect service. `enqueue` is the
  * one idempotent write every event source uses (webhook, poller, our own charge
  * result); `run` is the worker's dispatch loop, driven by the handlers modules
- * registered on the {@link TaskRegistry}. Requires a `SqlClient`, so it lives in
- * the DB-backed runtimes only (the worker and, later, the HTTP DB runtime for
- * enqueue-from-route), never the DB-less `AppLayer`.
+ * registered on the {@link TaskRegistry}. Requires a `SqlClient`, so it lives in the
+ * worker runtime (HTTP routes that need to enqueue call `enqueue(sql)` directly).
  */
 export interface QueueService {
   readonly enqueue: (
