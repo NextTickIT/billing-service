@@ -8,6 +8,7 @@ import {
 import { Effect, Option } from 'effect';
 
 import { columnList } from '@/infra/db/columns.js';
+import { requireRow } from '@/infra/db/rows.js';
 
 /** New billing terms applied when a checkout extends an existing subscription. */
 export interface ExtendSubscription {
@@ -69,13 +70,6 @@ export interface SubscriptionRepo {
 }
 
 const COLUMNS = columnList(Subscription.fields);
-
-const requireRow = <A>(rows: readonly A[]): Effect.Effect<A> => {
-  const [row] = rows;
-  return row === undefined
-    ? Effect.dieMessage('expected a RETURNING row')
-    : Effect.succeed(row);
-};
 
 const findActiveByExternalUser =
   (sql: SqlClient.SqlClient) => (externalUserId: string) =>

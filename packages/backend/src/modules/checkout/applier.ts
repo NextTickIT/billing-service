@@ -14,6 +14,7 @@ const recToken = (payload: Record<string, unknown>): string | null =>
     ? payload['recToken']
     : null;
 
+// Move to domain
 /**
  * Checkout applier (FR-003): a matched checkout payment creates or extends the
  * user's subscription (storing the card token) and marks the session completed.

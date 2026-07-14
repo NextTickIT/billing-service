@@ -7,9 +7,11 @@ import { Schema } from 'effect';
  * per-sink outcome the operator watches.
  */
 
+// THis is public API - hence miove to shared
 /** Durable per-sink delivery outcome. */
 export type DeliveryStatus = 'pending' | 'delivered' | 'failed';
 
+// mut be od proper domain  type
 /** Queue message type that drives one delivery attempt. */
 export const DELIVER_EVENT = 'deliver_event';
 

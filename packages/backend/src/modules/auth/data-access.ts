@@ -10,6 +10,8 @@ import type {
 } from '@billing-service/shared';
 import { Context, Effect, Layer, Option } from 'effect';
 
+import { onUniqueViolation } from '@/infra/db/pg-errors.js';
+import { requireRow } from '@/infra/db/rows.js';
 import { Conflict } from '@/infra/http/errors.js';
 
 /** An operator plus its secret password hash — the hash lives here and in SQL
@@ -53,31 +55,6 @@ export class AuthRepo extends Context.Tag('AuthRepo')<
   AuthRepo,
   AuthRepoService
 >() {}
-
-const pgErrorCode = (error: SqlError.SqlError): string | undefined => {
-  const { cause } = error;
-  if (typeof cause === 'object' && cause !== null && 'code' in cause) {
-    const { code } = cause;
-    return typeof code === 'string' ? code : undefined;
-  }
-  return undefined;
-};
-
-const onUniqueViolation =
-  (field: string) =>
-  (
-    error: SqlError.SqlError,
-  ): Effect.Effect<never, Conflict | SqlError.SqlError> =>
-    pgErrorCode(error) === '23505'
-      ? Effect.fail(new Conflict({ field }))
-      : Effect.fail(error);
-
-const requireRow = <A>(rows: readonly A[]): Effect.Effect<A> => {
-  const [row] = rows;
-  return row === undefined
-    ? Effect.dieMessage('expected a RETURNING row')
-    : Effect.succeed(row);
-};
 
 const insertAuthToken = (sql: SqlClient.SqlClient) => (input: NewAuthToken) =>
   sql<AuthToken>`

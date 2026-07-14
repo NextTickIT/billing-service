@@ -14,6 +14,7 @@ import {
   hmacMd5Hex,
 } from '@/modules/wayforpay/signature.js';
 
+// wayfor pay callnack processing must be in  way fro pay module, not in checkout
 /**
  * WayForPay serviceUrl callback processing (docs/14). The callback is verified
  * against the 8-field HMAC, normalized into a standard incoming event (so it flows

@@ -9,6 +9,8 @@ import { Effect, Schema } from 'effect';
  * logic ([15] D4).
  */
 
+//  Usse enum,s value from sahred modules for events, do not hardcode them here
+
 /** Queue message type for a normalized incoming payment awaiting processing. */
 export const PAYMENT_EVENT_RECEIVED = 'payment_event_received';
 
@@ -32,6 +34,7 @@ export const RebindPayload = Schema.Struct({
 
 export type RebindPayload = Schema.Schema.Type<typeof RebindPayload>;
 
+//thi is public api - move to sahred
 /** Normalized status of an incoming payment, provider-agnostic. */
 export const PAYMENT_EVENT_STATUSES = [
   'succeeded',

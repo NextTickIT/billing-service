@@ -13,7 +13,8 @@ export interface PurchaseForm {
   readonly action: string;
   readonly fields: Record<string, unknown>;
 }
-
+// way for pay logic, mut be located in a way fro pay module, as we will ahve whitepay moduel in the futurem it is possible to  make them  nested modules under the paymnet an-or checkout modules as they are detail of realiasstion,
+// they would need to expoe the similar public integface in the future to make the processor-agnostic chackoput-payment pipeline
 /**
  * Build a signed WayForPay Purchase (docs/14 flow A). No `regularMode`: we take
  * the recToken from the callback and run our own billing cycle, so we must not let

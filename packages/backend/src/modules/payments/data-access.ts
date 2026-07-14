@@ -2,6 +2,7 @@ import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
 import { Effect, Option } from 'effect';
 
+import { requireRow } from '@/infra/db/rows.js';
 import type {
   IncomingPaymentEvent,
   PaymentEventStatus,
@@ -86,13 +87,6 @@ export interface PaymentsRepo {
     entry: AuditEntry,
   ) => Effect.Effect<void, SqlError.SqlError>;
 }
-
-const requireRow = <A>(rows: readonly A[]): Effect.Effect<A> => {
-  const [row] = rows;
-  return row === undefined
-    ? Effect.dieMessage('expected a RETURNING row')
-    : Effect.succeed(row);
-};
 
 const upsertIncomingEvent =
   (sql: SqlClient.SqlClient) => (event: IncomingPaymentEvent) =>

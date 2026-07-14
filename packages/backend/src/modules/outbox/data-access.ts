@@ -3,6 +3,7 @@ import type { SqlError } from '@effect/sql';
 import type { DomainEvent, StoredEvent } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
+import { requireRow } from '@/infra/db/rows.js';
 import type { ErrorDetail } from '@/infra/queue/policy.js';
 import type {
   DeliveryStatus,
@@ -50,13 +51,6 @@ export interface OutboxRepo {
     status: DeliveryStatus,
   ) => Effect.Effect<readonly EventDeliveryRow[], SqlError.SqlError>;
 }
-
-const requireRow = <A>(rows: readonly A[]): Effect.Effect<A> => {
-  const [row] = rows;
-  return row === undefined
-    ? Effect.dieMessage('expected a RETURNING row')
-    : Effect.succeed(row);
-};
 
 interface DeliveryEventJoin {
   readonly deliveryId: string;

@@ -11,6 +11,8 @@ import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
  * unknown ref, fall through to quarantine (FR-009). Poller/legacy events never
  * match here (no session), so they quarantine until the recurring matcher (M6).
  */
+
+// move to domain
 export const makeCheckoutMatcher =
   (repo: CheckoutRepo): PaymentMatcher =>
   (event) =>

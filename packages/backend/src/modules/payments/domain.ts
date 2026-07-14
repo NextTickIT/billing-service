@@ -151,6 +151,8 @@ const process = (deps: HandleDeps, event: IncomingPaymentEvent) =>
   Effect.gen(function* () {
     const incomingId = yield* deps.repo.upsertIncomingEvent(event);
     const match = yield* deps.matcher(event);
+    // prefer sshort circuits and early exists in cases ssuch as this
+    // if not matche - add quarantine and retuirn
     if (match.matched) {
       const applied = yield* deps.applier(event, match);
       yield* deps.repo.insertPayment({
@@ -197,6 +199,7 @@ export const handlePaymentEvent =
  * payment_succeeded — the matched path, with the match supplied by hand (FR-009).
  * Idempotent (payment ON CONFLICT, deterministic event id) so replays are safe.
  */
+// incoming unmathced event can POSIBLY be a failed payment taht we need to bind to someone, so @bind@ only ned to check the newest even for said person and proicerss it, It can be that we have two fails and once success for same external user id simultaneonly oin the quarantine
 const rebind =
   (deps: HandleDeps) =>
   (bind: RebindPayload): Effect.Effect<void, SqlError.SqlError> =>
