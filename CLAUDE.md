@@ -58,8 +58,9 @@ interval with a visible tail metric · AC8 new provider/sink without core change
   must never pull `SqlLive`, so `/health` stays hermetic) and a lazy DB-backed layer
   built on first use. The worker runtime is DB-backed and eager.
 - **Autoload**: only `routes.ts` (and optional `*.plugin.ts`) are autoloaded;
-  `domain.ts` / `data-access.ts` are plain imports. Migrations run at startup from
-  `.sql` files.
+  `domain.ts` / `data-access.ts` are plain imports. Migrations are typed `.ts` modules
+  in `src/migrations/`, applied at startup by the server (or `npm run db:migrate`),
+  never by the worker.
 - **Async backbone**: a durable **Postgres-only** work queue (docs/09); the worker
   polls it. No external broker.
 - **Config** comes from env; secrets are `Redacted` and never live in source.
@@ -168,6 +169,9 @@ hoist nested callbacks. Run `npm run lint` and `npm run typecheck`.
 - One active subscription per `externalUserId` (extend in place — interview decision,
   docs/18). Retry schedule is fixed: `RETRY_SCHEDULE_DAYS = [0,1,3,5,7]` (owned by the
   subscription slice).
+- Billing dates advance by whole periods and **clamp to the last valid day** of the
+  target month (e.g. Jan 31 → Feb 28), computed in the canonical billing timezone
+  (`subscription/period.ts`; docs/04, docs/17).
 
 ## 7. Events & outbox (docs/07, docs/00 §6)
 
@@ -197,10 +201,11 @@ sub_<subscriptionId>_<…>`; charge idemKey `w4p:<orderReference>|CHARGE|<create
   is a valid response the scheduler branches on, not an Effect error.
 - **Rate-limit** every WayForPay call (docs/03 Capacity).
 - The migration poller is a **long-lived** component (monitoring, alerts, a
-  migration-tail metric visible to operators), not a stopgap. Migration happens only by
-  user action (re-tokenizing via checkout); the old-recurrent tail may live for years;
-  it is never force-cancelled. Poller and scheduler ship **gated off**
-  (`W4P_POLLER_ENABLED`, `SCHEDULER_ENABLED`) pending production access.
+  migration-tail metric visible to operators), not a stopgap; a separate
+  operator-triggered backfill reads the journal in ≤ 31-day chunks until it runs dry.
+  Migration happens only by user action (re-tokenizing via checkout); the old-recurrent
+  tail may live for years and is never force-cancelled. Poller and scheduler ship
+  **gated off** (`W4P_POLLER_ENABLED`, `SCHEDULER_ENABLED`) pending production access.
 
 ## 9. API & security (docs/06, docs/03)
 
@@ -227,6 +232,7 @@ sub_<subscriptionId>_<…>`; charge idemKey `w4p:<orderReference>|CHARGE|<create
   failed / pending payments, retries, callback errors, scheduler errors, quarantine
   size, undelivered events, subscriptions in retry, poller freshness, and migration
   tail. **Each operator queue has an alert.**
+- **Backup**: daily backup to external storage is acceptable for MVP.
 
 ## 11. Testing
 
