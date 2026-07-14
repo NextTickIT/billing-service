@@ -1,15 +1,18 @@
 # Engineering Conventions (project-wide decisions)
 
 These are the cross-cutting rules the codebase is held to. They were distilled
-from review feedback on the first real module (`auth`) and apply to every module
+from review feedback on the `auth` and payments modules and apply to every module
 that follows. Where a rule supersedes an earlier spec/plan, that is noted.
 
 ## 1. Comments answer WHY, not WHAT
 
-- No file-header / banner comments. Comment an entity (a class or a function)
-  only when there is a non-obvious reason a reader needs.
-- If a comment restates what the code already says, delete it. Naming and
-  structure carry the "what".
+- WHAT is carried by the name, the structure, and the file location; HOW is carried
+  by the function body. A comment exists only for a WHY that none of those can
+  express — and, in rare extreme cases, a HOW note when the body is unavoidably
+  subtle.
+- No file-header / banner comments. Comment an entity (a class or a function) only
+  when there is a non-obvious reason a reader needs.
+- If a comment restates the name, the structure, or the body, delete it.
 
 ## 2. Domain code takes domain commands — never transport types
 
@@ -54,6 +57,11 @@ that follows. Where a rule supersedes an earlier spec/plan, that is noted.
   `PaymentMethod` / `Currency` → subscription, `RETRY_SCHEDULE_DAYS` →
   subscription, `SINK_DELIVERY_SLA_SECONDS` → event).
 - Types are always **derived** from schemas; never hand-written.
+- A **public** shape — anything that crosses a boundary (an API request/response, a
+  domain event, a persisted entity) — lives in its shared entity slice, never in a
+  module. A module's `contracts.ts` is only for shapes that must NOT be public, e.g.
+  auth's secret-carrying request bodies (`Redacted` passwords/tokens), which stay
+  backend-only (docs/13).
 
 ## 7. Errors own their HTTP mapping
 
@@ -76,3 +84,25 @@ that follows. Where a rule supersedes an earlier spec/plan, that is noted.
   public shape plus its secret (`OperatorRow = Operator & { passwordHash }`); a
   request is the public create shape plus its secret
   (`CreateOperatorRequest = Schema.extend(CreateOperator, { password })`).
+- Never hand-write an interface that mirrors a shape that already has a schema;
+  derive it (`NewCheckoutSession = CheckoutSession.omit(...)`).
+- A SQL column list is derived from the schema's keys (`columnList(Schema.fields)`),
+  not hand-typed — one source of truth for a table's columns, so the SQL cannot drift
+  from the schema.
+
+## 10. Domain events are a discriminated union
+
+- `DomainEvent` is a union of per-`name` variants (docs/07), each fixing its own
+  payload schema — never `payload: Record<string, unknown>`. A builder cannot emit a
+  malformed payload, and a consumer narrows on `name`. The event read back from
+  storage for delivery is a separate `StoredEvent` (envelope + opaque payload):
+  after a jsonb round-trip the sink only forwards the stored payload, so it is not
+  re-narrowed.
+
+## 11. Domain steps are functions, not injected services
+
+- A domain step (a matcher, an applier, …) is a plain function the domain calls; its
+  type lives in the module, its implementations are composed as plain values and
+  passed in as parameters. Reach for a `Context.Tag` + `Layer` only for a real
+  runtime resource (Sql, the queue, the outbox) or a genuine swap boundary —
+  pluggability alone (AC8) is satisfied by passing a function.

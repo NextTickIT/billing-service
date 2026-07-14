@@ -32,19 +32,19 @@ canonical convention in `docs/16`.
 - **SQL column lists are derived from the schema's keys, not hand-typed strings.**
   `Object.keys(TheSchema.fields)` mapped to quoted names — one source of truth for
   "the columns of this table," so a schema change cannot silently drift from the
-  SQL. (Flagged on the checkout `COLUMNS` constant.)
+  SQL. (docs/16 §9. Flagged on the checkout `COLUMNS` constant.)
 - **A domain event is a discriminated union on `name`, one typed payload schema per
   variant** — not `payload: Record<string, unknown>`. Each event's payload shape is
   part of the contract and must be enforced by the type system, so a builder cannot
-  emit a malformed payload and a consumer can narrow on `name`. (docs/07. Flagged on
-  the payments event builders.)
+  emit a malformed payload and a consumer can narrow on `name`. (docs/16 §10,
+  docs/07. Flagged on the payments event builders.)
 - **Domain steps are plain functions, not injected `Context.Tag` services.** A
   matcher / applier / any domain step is a function the domain calls: keep its
   _types_ in the module, compose the implementations as plain values, pass them in
   as parameters. Reach for a `Context.Tag` + `Layer` only for a real runtime
   resource (Sql, the queue) or a genuine swap boundary — pluggability alone (AC8) is
-  satisfied by passing a function. (Flagged: the separate `PaymentMatcher` /
-  `PaymentApplier` services.)
+  satisfied by passing a function. (docs/16 §11. Flagged: the separate
+  `PaymentMatcher` / `PaymentApplier` services.)
 - **Server-rendered HTML is a temporary stub and belongs in the frontend.** Keep it
   minimal and mark it `TODO(frontend)`. (Flagged on the checkout `pageHtml`.)
 

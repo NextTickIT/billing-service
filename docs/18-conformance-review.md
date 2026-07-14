@@ -35,7 +35,7 @@ AC, and scenario below is traceable to a module and a commit.
 
 AC2 (idempotency), AC3 (raw journal), AC4 (retry ladder), AC5 (checkout →
 subscription + token), AC6 (quarantine → bind → reprocess), AC8 (new provider/sink
-without core change — `Sink` set + `PaymentMatcher`/`PaymentApplier` ports), AC9
+without core change — the `Sink` set plus composable matcher/applier functions), AC9
 (externalUserId carried verbatim, never transformed) — all proven by unit tests and
 the real-Postgres e2e (16 scenarios). AC1 (SendPulse ≤60s) and AC7 (poller lag) are
 proven for the *mechanism* (delivery loop, poll loop); their live end-to-end depends
