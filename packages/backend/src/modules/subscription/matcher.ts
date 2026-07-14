@@ -1,6 +1,6 @@
 import { Effect, Option } from 'effect';
 
-import type { PaymentMatcherService } from '@/modules/payments/contracts.js';
+import type { PaymentMatcher } from '@/modules/payments/contracts.js';
 import type { SubscriptionRepo } from '@/modules/subscription/data-access.js';
 
 /** Our recurring-charge orderReference format: `sub_<subscriptionId>_<...>`. */
@@ -12,10 +12,9 @@ const OUR_REF = /^sub_([0-9a-fA-F-]+)_/;
  * ours — they carry no gateway subscription yet and fall through to quarantine
  * (the migration tail; docs/15).
  */
-export const makeRecurringMatcher = (
-  repo: SubscriptionRepo,
-): PaymentMatcherService => ({
-  match: (event) =>
+export const makeRecurringMatcher =
+  (repo: SubscriptionRepo): PaymentMatcher =>
+  (event) =>
     Effect.gen(function* () {
       if (event.status !== 'succeeded') {
         return { matched: false };
@@ -37,5 +36,4 @@ export const makeRecurringMatcher = (
         period: sub.period,
         method: sub.method,
       };
-    }),
-});
+    });

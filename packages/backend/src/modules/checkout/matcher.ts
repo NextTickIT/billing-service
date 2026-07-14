@@ -1,15 +1,8 @@
-import { SqlClient } from '@effect/sql';
 import { PaymentMethod } from '@billing-service/shared';
-import { Effect, Layer, Option } from 'effect';
+import { Effect, Option } from 'effect';
 
-import {
-  PaymentMatcher,
-  type PaymentMatcherService,
-} from '@/modules/payments/contracts.js';
-import {
-  type CheckoutRepo,
-  makeCheckoutRepo,
-} from '@/modules/checkout/data-access.js';
+import type { PaymentMatcher } from '@/modules/payments/contracts.js';
+import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 
 /**
  * Checkout matcher: a succeeded incoming event whose `externalRef` is a known
@@ -18,10 +11,9 @@ import {
  * unknown ref, fall through to quarantine (FR-009). Poller/legacy events never
  * match here (no session), so they quarantine until the recurring matcher (M6).
  */
-export const makeCheckoutMatcher = (
-  repo: CheckoutRepo,
-): PaymentMatcherService => ({
-  match: (event) =>
+export const makeCheckoutMatcher =
+  (repo: CheckoutRepo): PaymentMatcher =>
+  (event) =>
     Effect.gen(function* () {
       if (event.status !== 'succeeded') {
         return { matched: false };
@@ -39,12 +31,4 @@ export const makeCheckoutMatcher = (
         period: session.period,
         method: session.method ?? PaymentMethod.Card,
       };
-    }),
-});
-
-export const CheckoutMatcherLive = Layer.effect(
-  PaymentMatcher,
-  Effect.map(SqlClient.SqlClient, (sql) =>
-    makeCheckoutMatcher(makeCheckoutRepo(sql)),
-  ),
-);
+    });

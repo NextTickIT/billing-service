@@ -57,35 +57,29 @@ const event = (
 });
 
 it.effect('matches our sub_<id>_ orderReference to the subscription', () =>
-  makeRecurringMatcher(repo(sub))
-    .match(event(`sub_${sub.id}_1700000000`))
-    .pipe(
-      Effect.map((result) => {
-        expect(result.matched).toBe(true);
-        if (result.matched) {
-          expect(result.kind).toBe('recurring');
-          expect(result.subscriptionId).toBe(sub.id);
-        }
-      }),
-    ),
+  makeRecurringMatcher(repo(sub))(event(`sub_${sub.id}_1700000000`)).pipe(
+    Effect.map((result) => {
+      expect(result.matched).toBe(true);
+      if (result.matched) {
+        expect(result.kind).toBe('recurring');
+        expect(result.subscriptionId).toBe(sub.id);
+      }
+    }),
+  ),
 );
 
 it.effect('does not match a legacy _WFPREG reference', () =>
-  makeRecurringMatcher(repo(sub))
-    .match(event('order_WFPREG-123-1'))
-    .pipe(
-      Effect.map((result) => {
-        expect(result.matched).toBe(false);
-      }),
-    ),
+  makeRecurringMatcher(repo(sub))(event('order_WFPREG-123-1')).pipe(
+    Effect.map((result) => {
+      expect(result.matched).toBe(false);
+    }),
+  ),
 );
 
 it.effect('does not match a non-succeeded charge', () =>
-  makeRecurringMatcher(repo(sub))
-    .match(event(`sub_${sub.id}_1`, 'failed'))
-    .pipe(
-      Effect.map((result) => {
-        expect(result.matched).toBe(false);
-      }),
-    ),
+  makeRecurringMatcher(repo(sub))(event(`sub_${sub.id}_1`, 'failed')).pipe(
+    Effect.map((result) => {
+      expect(result.matched).toBe(false);
+    }),
+  ),
 );

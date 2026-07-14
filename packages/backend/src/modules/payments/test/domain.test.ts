@@ -9,8 +9,8 @@ import {
   type IncomingPaymentEvent,
   type MatchResult,
   PAYMENT_EVENT_RECEIVED,
-  type PaymentApplierService,
-  type PaymentMatcherService,
+  type PaymentApplier,
+  type PaymentMatcher,
 } from '@/modules/payments/contracts.js';
 import type { PaymentsRepo } from '@/modules/payments/data-access.js';
 import {
@@ -98,18 +98,19 @@ const makeFakeRepo = () => {
   return { repo, payments, quarantines, matchResults, resolved };
 };
 
-const matcherOf = (result: MatchResult): PaymentMatcherService => ({
-  match: () => Effect.succeed(result),
-});
+const matcherOf =
+  (result: MatchResult): PaymentMatcher =>
+  () =>
+    Effect.succeed(result);
 
-const applierOf = (result: AppliedPayment): PaymentApplierService => ({
-  apply: () => Effect.succeed(result),
-});
+const applierOf =
+  (result: AppliedPayment): PaymentApplier =>
+  () =>
+    Effect.succeed(result);
 
-/** Applier for paths where no match occurs, so apply must never be called. */
-const noApplier: PaymentApplierService = {
-  apply: () => Effect.die('applier called on an unmatched path'),
-};
+/** Applier for paths where no match occurs, so it must never be called. */
+const noApplier: PaymentApplier = () =>
+  Effect.die('applier called on an unmatched path');
 
 const recordingPublish = () => {
   const events: DomainEvent[] = [];

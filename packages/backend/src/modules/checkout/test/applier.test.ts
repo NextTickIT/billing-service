@@ -78,10 +78,7 @@ it.effect(
         method: 0,
       };
 
-      const result = yield* makeCheckoutApplier(subs, checkout).apply(
-        event,
-        match,
-      );
+      const result = yield* makeCheckoutApplier(subs, checkout)(event, match);
 
       expect(result).toEqual({ subscriptionId: 'sub_1', created: true });
       expect(insertedToken).toBe('tok');
@@ -92,18 +89,16 @@ it.effect(
 it.effect(
   'a recurring match reports the existing subscription, touching nothing',
   () =>
-    makeCheckoutApplier(unusedSubs, unusedCheckout)
-      .apply(event, {
-        matched: true,
-        kind: 'recurring',
-        subscriptionId: 'sub_x',
-        externalUserId: 'sp:1',
-        period: 'P1M',
-        method: 0,
-      })
-      .pipe(
-        Effect.map((result) => {
-          expect(result).toEqual({ subscriptionId: 'sub_x', created: false });
-        }),
-      ),
+    makeCheckoutApplier(unusedSubs, unusedCheckout)(event, {
+      matched: true,
+      kind: 'recurring',
+      subscriptionId: 'sub_x',
+      externalUserId: 'sp:1',
+      period: 'P1M',
+      method: 0,
+    }).pipe(
+      Effect.map((result) => {
+        expect(result).toEqual({ subscriptionId: 'sub_x', created: false });
+      }),
+    ),
 );

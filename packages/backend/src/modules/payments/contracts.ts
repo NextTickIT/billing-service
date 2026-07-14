@@ -1,6 +1,6 @@
 import type { SqlError } from '@effect/sql';
 import { CurrencySchema } from '@billing-service/shared';
-import { Context, Effect, Layer, Schema } from 'effect';
+import { Effect, Schema } from 'effect';
 
 /**
  * Payment-pipeline contracts (FR-007). Every source normalizes its event into an
@@ -91,40 +91,28 @@ export type MatchResult =
 export type Match = Extract<MatchResult, { readonly matched: true }>;
 
 /**
- * Matching port — the seam a real matcher (checkout session / subscription
- * lookup, M5/M6) plugs into without touching the pipeline (AC8). The MVP default
- * matches nothing, so every real payment quarantines until a matcher is wired.
+ * A matcher resolves an incoming event to a subscription match, or to no match
+ * (→ quarantine). It is a plain function the pipeline calls; the concrete matchers
+ * (checkout session, recurring charge) are composed in the composition root, so a
+ * new one plugs in without touching the pipeline (AC8).
  */
-export interface PaymentMatcherService {
-  readonly match: (
-    event: IncomingPaymentEvent,
-  ) => Effect.Effect<MatchResult, SqlError.SqlError>;
-}
-
-export class PaymentMatcher extends Context.Tag('PaymentMatcher')<
-  PaymentMatcher,
-  PaymentMatcherService
->() {}
-
-export const NoMatchLive = Layer.succeed(PaymentMatcher, {
-  match: () => Effect.succeed({ matched: false }),
-});
+export type PaymentMatcher = (
+  event: IncomingPaymentEvent,
+) => Effect.Effect<MatchResult, SqlError.SqlError>;
 
 /** Try each matcher in order; the first match wins (checkout, then recurring). */
-export const makeCompositeMatcher = (
-  matchers: readonly PaymentMatcherService[],
-): PaymentMatcherService => ({
-  match: (event) =>
+export const makeCompositeMatcher =
+  (matchers: readonly PaymentMatcher[]): PaymentMatcher =>
+  (event) =>
     Effect.gen(function* () {
       for (const matcher of matchers) {
-        const result = yield* matcher.match(event);
+        const result = yield* matcher(event);
         if (result.matched) {
           return result;
         }
       }
       return { matched: false };
-    }),
-});
+    });
 
 /** The subscription a matched payment resolved to, and whether it was just born. */
 export interface AppliedPayment {
@@ -133,24 +121,12 @@ export interface AppliedPayment {
 }
 
 /**
- * Applier port — the domain follow-up for a matched payment (FR-003): create or
- * extend the subscription and store the token. Kept out of the pipeline so the
- * pipeline stays generic (AC8). The default refuses: it is only reachable if a
- * matcher matched without an applier wired, which is a misconfiguration.
+ * An applier is the domain follow-up for a matched payment (FR-003): create or
+ * extend the subscription and store the token. A plain function the pipeline calls
+ * after a match; a `recurring` match already has its subscription, so its applier
+ * just reports it. Kept out of the pipeline so the pipeline stays generic (AC8).
  */
-export interface PaymentApplierService {
-  readonly apply: (
-    event: IncomingPaymentEvent,
-    match: Match,
-  ) => Effect.Effect<AppliedPayment, SqlError.SqlError>;
-}
-
-export class PaymentApplier extends Context.Tag('PaymentApplier')<
-  PaymentApplier,
-  PaymentApplierService
->() {}
-
-export const NoApplyLive = Layer.succeed(PaymentApplier, {
-  apply: () =>
-    Effect.dieMessage('no PaymentApplier configured for a matched payment'),
-});
+export type PaymentApplier = (
+  event: IncomingPaymentEvent,
+  match: Match,
+) => Effect.Effect<AppliedPayment, SqlError.SqlError>;

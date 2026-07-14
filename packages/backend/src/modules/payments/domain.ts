@@ -15,10 +15,8 @@ import {
   type Match,
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
-  PaymentApplier,
-  type PaymentApplierService,
-  PaymentMatcher,
-  type PaymentMatcherService,
+  type PaymentApplier,
+  type PaymentMatcher,
   RebindPayload,
 } from '@/modules/payments/contracts.js';
 import {
@@ -142,8 +140,8 @@ export const ingest =
 
 interface HandleDeps {
   readonly repo: PaymentsRepo;
-  readonly matcher: PaymentMatcherService;
-  readonly applier: PaymentApplierService;
+  readonly matcher: PaymentMatcher;
+  readonly applier: PaymentApplier;
   readonly publish: (
     event: DomainEvent,
   ) => Effect.Effect<void, SqlError.SqlError>;
@@ -152,9 +150,9 @@ interface HandleDeps {
 const process = (deps: HandleDeps, event: IncomingPaymentEvent) =>
   Effect.gen(function* () {
     const incomingId = yield* deps.repo.upsertIncomingEvent(event);
-    const match = yield* deps.matcher.match(event);
+    const match = yield* deps.matcher(event);
     if (match.matched) {
-      const applied = yield* deps.applier.apply(event, match);
+      const applied = yield* deps.applier(event, match);
       yield* deps.repo.insertPayment({
         incomingEventId: incomingId,
         subscriptionId: applied.subscriptionId,
@@ -253,20 +251,33 @@ export class PaymentPipeline extends Context.Tag('PaymentPipeline')<
   PaymentPipelineService
 >() {}
 
-export const PaymentPipelineLive = Layer.effect(
-  PaymentPipeline,
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const matcher = yield* PaymentMatcher;
-    const applier = yield* PaymentApplier;
-    const outbox = yield* Outbox;
-    const queue = yield* Queue;
-    const repo = makePaymentsRepo(sql);
-    const handleDeps = { repo, matcher, applier, publish: outbox.publish };
-    return {
-      ingest: ingest({ enqueue: queue.enqueue }),
-      handleFromPayload: handlePaymentEvent(handleDeps),
-      rebindFromPayload: rebindFromPayload(handleDeps),
-    };
-  }),
-);
+/**
+ * The pipeline as a layer, given how to build its matcher and applier from `sql`.
+ * The matcher/applier are plain functions the pipeline calls — they are composed in
+ * the composition root (runtime) and passed in, not resolved as separate services,
+ * so the pipeline needs no context beyond its real resources (Sql, Outbox, Queue).
+ */
+export const makePaymentPipelineLayer = (
+  makeMatcher: (sql: SqlClient.SqlClient) => PaymentMatcher,
+  makeApplier: (sql: SqlClient.SqlClient) => PaymentApplier,
+) =>
+  Layer.effect(
+    PaymentPipeline,
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const outbox = yield* Outbox;
+      const queue = yield* Queue;
+      const repo = makePaymentsRepo(sql);
+      const handleDeps = {
+        repo,
+        matcher: makeMatcher(sql),
+        applier: makeApplier(sql),
+        publish: outbox.publish,
+      };
+      return {
+        ingest: ingest({ enqueue: queue.enqueue }),
+        handleFromPayload: handlePaymentEvent(handleDeps),
+        rebindFromPayload: rebindFromPayload(handleDeps),
+      };
+    }),
+  );

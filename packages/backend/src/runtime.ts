@@ -1,5 +1,4 @@
-import { SqlClient } from '@effect/sql';
-import { Effect, Layer, ManagedRuntime } from 'effect';
+import { Layer, ManagedRuntime } from 'effect';
 
 import type { AppConfig } from '@/config.js';
 import { DatabaseLive, SqlLive } from '@/infra/db.js';
@@ -11,29 +10,15 @@ import { TaskRegistryLive } from '@/infra/task-registry.js';
 import { makeAuthConfig } from '@/modules/auth/domain.js';
 import { AuthRepoLive } from '@/modules/auth/data-access.js';
 import { OutboxLive } from '@/modules/outbox/domain.js';
-import {
-  makeCompositeMatcher,
-  PaymentMatcher,
-} from '@/modules/payments/contracts.js';
-import { PaymentPipelineLive } from '@/modules/payments/domain.js';
-import { CheckoutApplierLive } from '@/modules/checkout/applier.js';
+import { makeCompositeMatcher } from '@/modules/payments/contracts.js';
+import { makePaymentPipelineLayer } from '@/modules/payments/domain.js';
+import { makeCheckoutApplier } from '@/modules/checkout/applier.js';
 import { makeCheckoutMatcher } from '@/modules/checkout/matcher.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import { makeRecurringMatcher } from '@/modules/subscription/matcher.js';
 import { makeSubscriptionRepo } from '@/modules/subscription/data-access.js';
 import { WayForPayLive } from '@/modules/wayforpay/client.js';
 import { makeW4pConfig } from '@/modules/wayforpay/config.js';
-
-/** The live payment matcher: try checkout (session), then recurring (our charges). */
-const CompositeMatcherLive = Layer.effect(
-  PaymentMatcher,
-  Effect.map(SqlClient.SqlClient, (sql) =>
-    makeCompositeMatcher([
-      makeCheckoutMatcher(makeCheckoutRepo(sql)),
-      makeRecurringMatcher(makeSubscriptionRepo(sql)),
-    ]),
-  ),
-);
 
 /**
  * Two runtimes, by design (see docs/13 ADR):
@@ -108,16 +93,22 @@ export const makeWorkerLayer = (config: AppConfig) => {
     SqlLive(config.database),
     wayForPayLayer(config),
   );
-  // The composite matcher + checkout applier are the live PaymentMatcher/
-  // PaymentApplier; both need SqlClient (from base). Legacy _WFPREG charges match
-  // nothing here and quarantine (the migration tail).
-  const withMatch = Layer.provideMerge(
-    Layer.mergeAll(CompositeMatcherLive, CheckoutApplierLive),
-    base,
+  // The pipeline's matcher tries checkout (session) then recurring (our charges);
+  // its applier creates/extends the subscription. Both are plain functions built
+  // from `sql` here at the composition root — legacy _WFPREG charges match nothing
+  // and quarantine (the migration tail).
+  const pipeline = makePaymentPipelineLayer(
+    (sql) =>
+      makeCompositeMatcher([
+        makeCheckoutMatcher(makeCheckoutRepo(sql)),
+        makeRecurringMatcher(makeSubscriptionRepo(sql)),
+      ]),
+    (sql) =>
+      makeCheckoutApplier(makeSubscriptionRepo(sql), makeCheckoutRepo(sql)),
   );
-  const withQueue = Layer.provideMerge(QueueLive, withMatch);
+  const withQueue = Layer.provideMerge(QueueLive, base);
   const withOutbox = Layer.provideMerge(OutboxLive, withQueue);
-  return Layer.provideMerge(PaymentPipelineLive, withOutbox);
+  return Layer.provideMerge(pipeline, withOutbox);
 };
 
 export const makeWorkerRuntime = (config: AppConfig) =>

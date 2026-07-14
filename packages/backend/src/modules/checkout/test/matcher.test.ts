@@ -41,36 +41,30 @@ const event = (over: Partial<IncomingPaymentEvent>): IncomingPaymentEvent => ({
 });
 
 it.effect('matches a succeeded event to a known session', () =>
-  makeCheckoutMatcher(repoWith(session))
-    .match(event({}))
-    .pipe(
-      Effect.map((result) => {
-        expect(result.matched).toBe(true);
-        if (result.matched) {
-          expect(result.kind).toBe('checkout');
-          expect(result.externalUserId).toBe('sp:1');
-          expect(result.period).toBe('P1M');
-        }
-      }),
-    ),
+  makeCheckoutMatcher(repoWith(session))(event({})).pipe(
+    Effect.map((result) => {
+      expect(result.matched).toBe(true);
+      if (result.matched) {
+        expect(result.kind).toBe('checkout');
+        expect(result.externalUserId).toBe('sp:1');
+        expect(result.period).toBe('P1M');
+      }
+    }),
+  ),
 );
 
 it.effect('does not match a non-succeeded event', () =>
-  makeCheckoutMatcher(repoWith(session))
-    .match(event({ status: 'failed' }))
-    .pipe(
-      Effect.map((result) => {
-        expect(result.matched).toBe(false);
-      }),
-    ),
+  makeCheckoutMatcher(repoWith(session))(event({ status: 'failed' })).pipe(
+    Effect.map((result) => {
+      expect(result.matched).toBe(false);
+    }),
+  ),
 );
 
 it.effect('does not match an unknown order reference', () =>
-  makeCheckoutMatcher(repoWith(null))
-    .match(event({}))
-    .pipe(
-      Effect.map((result) => {
-        expect(result.matched).toBe(false);
-      }),
-    ),
+  makeCheckoutMatcher(repoWith(null))(event({})).pipe(
+    Effect.map((result) => {
+      expect(result.matched).toBe(false);
+    }),
+  ),
 );
