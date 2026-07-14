@@ -62,6 +62,10 @@ that follows. Where a rule supersedes an earlier spec/plan, that is noted.
   module. A module's `contracts.ts` is only for shapes that must NOT be public, e.g.
   auth's secret-carrying request bodies (`Redacted` passwords/tokens), which stay
   backend-only (docs/13).
+- Cross-module vocabularies that aren't a single entity also live in `shared`, not
+  per module: the domain event names (`event.ts`) and the queue message types
+  (`message.ts`). A module references the one shared definition (re-exporting it is
+  fine) rather than hardcoding the string.
 
 ## 7. Errors own their HTTP mapping
 
