@@ -8,6 +8,11 @@
 >
 > **Status:** ready for planning. Depends on the committed skeleton (docs `10`/`11`).
 > Execution target: worktree/branch `project-setup`.
+>
+> **Superseded (single runtime):** the DB-less-health / two-runtime approach this
+> spec assumes was later collapsed to a single application runtime; `/health` is a
+> readiness probe (`SELECT 1`, 200/503) on it, and `buildApp()`/the unit gate stay
+> hermetic because the runtime is lazy. See CLAUDE.md §2.
 
 ## Goal
 
