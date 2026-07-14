@@ -106,6 +106,15 @@ A module mirrors `auth`: `data-access.ts` / `domain.ts` / `routes.ts` / `contrac
     plain function composed at the runtime root and passed in; reach for `Context.Tag` +
     `Layer` only for a real resource (Sql, the queue, the outbox) or a genuine swap
     boundary.
+12. **Provider-specific code lives in the provider module** — signing, callback
+    parsing, the hosted Purchase form, the API client live in `wayforpay` (future
+    `whitepay`); `checkout` and the pipeline stay processor-agnostic and import the
+    provider surface. A new provider is a new module (AC8), not edits across
+    `checkout` / `payments`.
+13. **Extract shared logic; keep domain functions in `domain.ts`** — logic used by
+    more than one module goes to a common `infra/` home, never copy-pasted (e.g.
+    `requireRow`, the PG error mapping in `infra/db`); a module's matchers / appliers /
+    builders live in its `domain.ts`, not one-function files.
 
 ## 4. Type system & lint (both are hard gates — run before claiming done)
 
@@ -189,6 +198,9 @@ hoist nested callbacks. Run `npm run lint` and `npm run typecheck`.
 
 ## 8. Payments & WayForPay (docs/14, docs/15)
 
+- Provider logic (signing, callback parsing, the Purchase form, the API client) lives
+  in the `wayforpay` module; `checkout` and the FR-007 pipeline are
+  **processor-agnostic** and import the provider surface (docs/16 §12).
 - **We own the billing cycle**: the Purchase is built **without** `regularMode` — we
   hold the token and run our own schedule; WayForPay must not create a managed one.
 - **Deterministic keys** so re-observation dedupes (FR-006): `orderReference =

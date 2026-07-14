@@ -112,3 +112,21 @@ that follows. Where a rule supersedes an earlier spec/plan, that is noted.
   passed in as parameters. Reach for a `Context.Tag` + `Layer` only for a real
   runtime resource (Sql, the queue, the outbox) or a genuine swap boundary —
   pluggability alone (AC8) is satisfied by passing a function.
+
+## 12. Provider-specific code lives in the provider module
+
+- A payment provider's details — request signing, callback parsing, the hosted
+  Purchase form, the API client — live in that provider's module (`wayforpay`; a
+  future `whitepay`). The `checkout` module and the FR-007 pipeline stay
+  **processor-agnostic**: they orchestrate and import the provider surface, never
+  embed it. A new provider is a new module exposing the same shape (AC8), not edits
+  scattered across `checkout` / `payments`.
+
+## 13. Extract shared logic; keep domain functions in `domain.ts`
+
+- Logic used by more than one module is extracted to a common home under `infra/`,
+  never copy-pasted per module (e.g. `requireRow` and the Postgres error mapping in
+  `infra/db`).
+- A module's domain functions — matchers, appliers, event builders — live in its
+  `domain.ts`. Add a separate file only for a genuinely distinct concern, not for a
+  single function.
