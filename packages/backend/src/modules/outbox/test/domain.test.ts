@@ -17,7 +17,13 @@ const event = (id: string): DomainEvent => ({
   correlationId: 'corr-1',
   externalUserId: 'sendpulse:123',
   aggregateId: 'sub_1',
-  payload: { amount: 30000 },
+  payload: {
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    source: 'test',
+  },
 });
 
 interface DeliveryState {

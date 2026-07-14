@@ -1,6 +1,11 @@
 import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
-import type { DomainEvent } from '@billing-service/shared';
+import type {
+  DomainEvent,
+  PaymentSucceededEvent,
+  SubscriptionCreatedEvent,
+  UnknownPaymentQuarantinedEvent,
+} from '@billing-service/shared';
 import { Context, Effect, Layer, Option, Schema } from 'effect';
 
 import { Queue } from '@/infra/queue/service.js';
@@ -39,7 +44,7 @@ export const paymentSucceeded = (
   event: IncomingPaymentEvent,
   match: Match,
   subscriptionId: string,
-): DomainEvent => ({
+): PaymentSucceededEvent => ({
   id: eventId(event.idemKey, 'succeeded'),
   name: 'payment_succeeded',
   occurredAt: event.occurredAt,
@@ -60,7 +65,7 @@ export const subscriptionCreated = (
   event: IncomingPaymentEvent,
   match: Match,
   subscriptionId: string,
-): DomainEvent => ({
+): SubscriptionCreatedEvent => ({
   id: eventId(event.idemKey, 'subscription'),
   name: 'subscription_created',
   occurredAt: event.occurredAt,
@@ -79,7 +84,7 @@ export const quarantined = (
   event: IncomingPaymentEvent,
   quarantineId: string,
   incomingEventId: string,
-): DomainEvent => ({
+): UnknownPaymentQuarantinedEvent => ({
   id: eventId(event.idemKey, 'quarantined'),
   name: 'unknown_payment_quarantined',
   occurredAt: event.occurredAt,
@@ -101,7 +106,7 @@ export const quarantined = (
 export const boundPaymentSucceeded = (
   event: IncomingPaymentEvent,
   bind: RebindPayload,
-): DomainEvent => ({
+): PaymentSucceededEvent => ({
   id: eventId(event.idemKey, 'succeeded'),
   name: 'payment_succeeded',
   occurredAt: event.occurredAt,

@@ -1,4 +1,8 @@
-import type { DomainEvent, Subscription } from '@billing-service/shared';
+import type {
+  ChargeRetryFailedEvent,
+  RenewalFailedEvent,
+  Subscription,
+} from '@billing-service/shared';
 
 import type { IncomingPaymentEvent } from '@/modules/payments/contracts.js';
 import type { W4pChargeResponse } from '@/modules/wayforpay/contracts.js';
@@ -44,7 +48,7 @@ export const chargeRetryFailed = (
   sub: Subscription,
   failure: RetryFailure,
   now: Date,
-): DomainEvent => ({
+): ChargeRetryFailedEvent => ({
   id: `evt_sub_${sub.id}_retry_${failure.attempt.toString()}`,
   name: 'charge_retry_failed',
   occurredAt: now,
@@ -62,7 +66,7 @@ export const renewalFailed = (
   sub: Subscription,
   reason: string,
   now: Date,
-): DomainEvent => ({
+): RenewalFailedEvent => ({
   id: `evt_sub_${sub.id}_renewal_failed`,
   name: 'renewal_failed',
   occurredAt: now,

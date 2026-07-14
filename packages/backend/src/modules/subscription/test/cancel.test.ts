@@ -17,7 +17,7 @@ describe('subscriptionCancelled', () => {
     expect(event.name).toBe('subscription_cancelled');
     expect(event.externalUserId).toBe('sp:1');
     expect(event.aggregateId).toBe('sub_1');
-    expect(event.payload['reason']).toBe('operator');
+    expect(event.payload.reason).toBe('operator');
   });
 });
 

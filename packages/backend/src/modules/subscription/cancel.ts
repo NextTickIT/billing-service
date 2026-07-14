@@ -1,5 +1,8 @@
 import type { SqlError } from '@effect/sql';
-import type { DomainEvent } from '@billing-service/shared';
+import type {
+  DomainEvent,
+  SubscriptionCancelledEvent,
+} from '@billing-service/shared';
 import { Clock, Effect, Schema } from 'effect';
 
 import {
@@ -11,7 +14,7 @@ import {
 export const subscriptionCancelled = (
   notify: CancelNotify,
   now: Date,
-): DomainEvent => ({
+): SubscriptionCancelledEvent => ({
   id: `evt_sub_${notify.subscriptionId}_cancelled`,
   name: 'subscription_cancelled',
   occurredAt: now,

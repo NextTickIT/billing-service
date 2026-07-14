@@ -1,4 +1,4 @@
-import type { DomainEvent } from '@billing-service/shared';
+import type { StoredEvent } from '@billing-service/shared';
 import { Context, Data, Effect, Layer } from 'effect';
 
 /**
@@ -15,7 +15,7 @@ export class SinkError extends Data.TaggedError('SinkError')<{
 
 export interface Sink {
   readonly name: string;
-  readonly deliver: (event: DomainEvent) => Effect.Effect<void, SinkError>;
+  readonly deliver: (event: StoredEvent) => Effect.Effect<void, SinkError>;
 }
 
 /** The connected sinks. The outbox fans an event out to one delivery per sink. */

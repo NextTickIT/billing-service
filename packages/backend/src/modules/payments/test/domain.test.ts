@@ -278,5 +278,5 @@ it('quarantined carries a null user and references the quarantine record', () =>
   const event = quarantined(decodedEvent('k5'), 'q_1', 'inc_1');
   expect(event.externalUserId).toBeNull();
   expect(event.aggregateId).toBe('q_1');
-  expect(event.payload['incomingEventId']).toBe('inc_1');
+  expect(event.payload.incomingEventId).toBe('inc_1');
 });

@@ -1,6 +1,6 @@
 import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
-import type { DomainEvent } from '@billing-service/shared';
+import type { DomainEvent, StoredEvent } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
 import type { ErrorDetail } from '@/infra/queue/policy.js';
@@ -14,7 +14,7 @@ export interface DeliveryWithEvent {
   readonly deliveryId: string;
   readonly sink: string;
   readonly status: DeliveryStatus;
-  readonly event: DomainEvent;
+  readonly event: StoredEvent;
 }
 
 /**
