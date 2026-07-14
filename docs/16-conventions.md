@@ -90,14 +90,20 @@ that follows. Where a rule supersedes an earlier spec/plan, that is noted.
   not hand-typed — one source of truth for a table's columns, so the SQL cannot drift
   from the schema.
 
-## 10. Domain events are a discriminated union
+## 10. Shapes that vary by a discriminant are a discriminated union
 
-- `DomainEvent` is a union of per-`name` variants (docs/07), each fixing its own
-  payload schema — never `payload: Record<string, unknown>`. A builder cannot emit a
-  malformed payload, and a consumer narrows on `name`. The event read back from
-  storage for delivery is a separate `StoredEvent` (envelope + opaque payload):
-  after a jsonb round-trip the sink only forwards the stored payload, so it is not
-  re-narrowed.
+- When a value's fields are determined by a kind/name/tag, model it as a
+  discriminated union (a `Schema.Union` of per-variant structs, or a TS union) — not
+  a wide base with optional fields or a `payload: Record<string, unknown>`. The type
+  system then enforces each variant and consumers narrow on the discriminant. So it
+  is with `DomainEvent` (on `name`, docs/07), `MatchResult` (on `matched` / `kind`),
+  and the typed errors (on `_tag`, via `Data.TaggedError`).
+- Carve-out: a deliberately OPAQUE payload stays `Record<string, unknown>` — raw
+  provider data kept verbatim (`IncomingPaymentEvent.payload`, the WayForPay callback
+  body and the purchase form) and an event read back from storage for delivery
+  (`StoredEvent`: after a jsonb round-trip the sink only forwards the stored payload,
+  so it is not re-narrowed). These are boundary bags, not domain shapes to
+  discriminate.
 
 ## 11. Domain steps are functions, not injected services
 
