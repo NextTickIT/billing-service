@@ -12,9 +12,11 @@ import { AuthRepoLive } from '@/modules/auth/data-access.js';
 import { OutboxLive } from '@/modules/outbox/domain.js';
 import { makeCompositeMatcher } from '@/modules/payments/contracts.js';
 import { makePaymentPipelineLayer } from '@/modules/payments/domain.js';
-import { makeCheckoutApplier } from '@/modules/checkout/applier.js';
-import { makeCheckoutMatcher } from '@/modules/checkout/matcher.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
+import {
+  makeCheckoutApplier,
+  makeCheckoutMatcher,
+} from '@/modules/checkout/domain.js';
 import { makeRecurringMatcher } from '@/modules/subscription/matcher.js';
 import { makeSubscriptionRepo } from '@/modules/subscription/data-access.js';
 import { WayForPayLive } from '@/modules/wayforpay/client.js';

@@ -2,7 +2,7 @@ import { it } from '@effect/vitest';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
-import { makeCheckoutApplier } from '@/modules/checkout/applier.js';
+import { makeCheckoutApplier } from '@/modules/checkout/domain.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import type {
   IncomingPaymentEvent,
