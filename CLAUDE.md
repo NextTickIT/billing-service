@@ -11,6 +11,43 @@ types). New modules mirror `auth`'s shape: `data-access` / `domain` / `routes` /
 Deep specs when you touch these areas: queue `docs/09`, events `docs/07`,
 WayForPay `docs/14`/`docs/15`, requirements `docs/02`, conformance map `docs/18`.
 
+## Contracts, types, schemas — the rules I keep breaking (from review)
+
+These are direct review feedback on this branch — the "same error, again" list.
+Read them **before** adding a type, a schema, or a service. Each links to the
+canonical convention in `docs/16`.
+
+- **Public contracts live in `packages/shared/src/schemas/{entity}.ts`, never inside
+  a module.** If a shape crosses a boundary — an API request/response, a domain
+  event, a persisted entity — it is public: it goes in the shared entity slice and
+  the backend imports it. Do not define it in `modules/{x}/contracts.ts` and leave
+  it there. (docs/16 §6. Flagged on the checkout contracts and the route response
+  schema.)
+- **Never hand-write a type/interface that mirrors a shape that already has a
+  schema. Derive it.** "An existing entity minus/plus a field" → `Schema.omit` /
+  `Schema.pick` / `Schema.extend` at the schema level, or `Omit` / `Pick` at the
+  type level, off the canonical schema. A standalone `interface NewX { … }` that
+  restates fields is the defect that recurs. (docs/16 §9. Flagged: `NewCheckoutSession`
+  redefined instead of derived from `CheckoutSession`.)
+- **SQL column lists are derived from the schema's keys, not hand-typed strings.**
+  `Object.keys(TheSchema.fields)` mapped to quoted names — one source of truth for
+  "the columns of this table," so a schema change cannot silently drift from the
+  SQL. (Flagged on the checkout `COLUMNS` constant.)
+- **A domain event is a discriminated union on `name`, one typed payload schema per
+  variant** — not `payload: Record<string, unknown>`. Each event's payload shape is
+  part of the contract and must be enforced by the type system, so a builder cannot
+  emit a malformed payload and a consumer can narrow on `name`. (docs/07. Flagged on
+  the payments event builders.)
+- **Domain steps are plain functions, not injected `Context.Tag` services.** A
+  matcher / applier / any domain step is a function the domain calls: keep its
+  _types_ in the module, compose the implementations as plain values, pass them in
+  as parameters. Reach for a `Context.Tag` + `Layer` only for a real runtime
+  resource (Sql, the queue) or a genuine swap boundary — pluggability alone (AC8) is
+  satisfied by passing a function. (Flagged: the separate `PaymentMatcher` /
+  `PaymentApplier` services.)
+- **Server-rendered HTML is a temporary stub and belongs in the frontend.** Keep it
+  minimal and mark it `TODO(frontend)`. (Flagged on the checkout `pageHtml`.)
+
 ## Guardrails — mistakes made here, do not repeat them
 
 **Type traps (all ON in `tsconfig.base.json`):**
@@ -69,11 +106,12 @@ Run `npm run lint` **and** `npm run typecheck` before saying done. Both are hard
 
 ## Load-bearing invariants — breaking one reintroduces a real bug
 
-- **Three-layer idempotency.** (1) ingest dedup: `UNIQUE(messageType, idemKey)` +
-  `INSERT … ON CONFLICT DO NOTHING`; (2) claim exclusivity: `FOR UPDATE SKIP LOCKED`
-  + a same-statement flip to `in_progress`; (3) handler idempotency: deterministic
-  ids so an at-least-once redelivery (the reaper requeues dead in-progress rows) is
-  safe. Remove any layer and you get double-processing / double-charge.
+- **Three-layer idempotency.** One, ingest dedup via `UNIQUE(messageType, idemKey)`
+  and `INSERT … ON CONFLICT DO NOTHING`. Two, claim exclusivity via
+  `FOR UPDATE SKIP LOCKED` and a same-statement flip to `in_progress`. Three,
+  handler idempotency via deterministic ids, so an at-least-once redelivery (the
+  reaper requeues dead in-progress rows) is safe. Remove any layer and you get
+  double-processing / double-charge.
 - **Mutable working row, append-only logs.** `messages` carries the current
   `status` cache; `raw_events` / `attempts` / `message_status_events` are
   append-only. Read the cache for current state — never scan a log. Every status
