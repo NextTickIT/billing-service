@@ -151,33 +151,29 @@ const process = (deps: HandleDeps, event: IncomingPaymentEvent) =>
   Effect.gen(function* () {
     const incomingId = yield* deps.repo.upsertIncomingEvent(event);
     const match = yield* deps.matcher(event);
-    // prefer sshort circuits and early exists in cases ssuch as this
-    // if not matche - add quarantine and retuirn
-    if (match.matched) {
-      const applied = yield* deps.applier(event, match);
-      yield* deps.repo.insertPayment({
-        incomingEventId: incomingId,
-        subscriptionId: applied.subscriptionId,
-        externalUserId: match.externalUserId,
-        amount: event.amount,
-        currency: event.currency,
-        source: event.source,
-        occurredAt: event.occurredAt,
-      });
-      yield* deps.repo.setMatchResult(incomingId, 'matched');
-      if (applied.created) {
-        yield* deps.publish(
-          subscriptionCreated(event, match, applied.subscriptionId),
-        );
-      }
-      yield* deps.publish(
-        paymentSucceeded(event, match, applied.subscriptionId),
-      );
+    if (!match.matched) {
+      const quarantineId = yield* deps.repo.upsertQuarantine(incomingId);
+      yield* deps.repo.setMatchResult(incomingId, 'quarantined');
+      yield* deps.publish(quarantined(event, quarantineId, incomingId));
       return;
     }
-    const quarantineId = yield* deps.repo.upsertQuarantine(incomingId);
-    yield* deps.repo.setMatchResult(incomingId, 'quarantined');
-    yield* deps.publish(quarantined(event, quarantineId, incomingId));
+    const applied = yield* deps.applier(event, match);
+    yield* deps.repo.insertPayment({
+      incomingEventId: incomingId,
+      subscriptionId: applied.subscriptionId,
+      externalUserId: match.externalUserId,
+      amount: event.amount,
+      currency: event.currency,
+      source: event.source,
+      occurredAt: event.occurredAt,
+    });
+    yield* deps.repo.setMatchResult(incomingId, 'matched');
+    if (applied.created) {
+      yield* deps.publish(
+        subscriptionCreated(event, match, applied.subscriptionId),
+      );
+    }
+    yield* deps.publish(paymentSucceeded(event, match, applied.subscriptionId));
   });
 
 /** The `payment_event_received` handler: decode the queue payload, then process. */
@@ -194,12 +190,14 @@ export const handlePaymentEvent =
     );
 
 /**
- * Reprocess an operator-bound quarantine: load the incoming event, record the
- * payment against the operator-supplied user, resolve the quarantine, and emit
- * payment_succeeded — the matched path, with the match supplied by hand (FR-009).
- * Idempotent (payment ON CONFLICT, deterministic event id) so replays are safe.
+ * Reprocess an operator-bound quarantine (FR-009). The operator binds a SPECIFIC
+ * incoming event by id: one user may have several quarantined events at once (e.g.
+ * two failed attempts and one success), so a human — not a heuristic — chooses which
+ * to bind. Load that event, record the payment against the operator-supplied user,
+ * resolve the quarantine, and emit payment_succeeded (the matched path, match supplied
+ * by hand). Idempotent (payment ON CONFLICT, deterministic event id) so replays are
+ * safe.
  */
-// incoming unmathced event can POSIBLY be a failed payment taht we need to bind to someone, so @bind@ only ned to check the newest even for said person and proicerss it, It can be that we have two fails and once success for same external user id simultaneonly oin the quarantine
 const rebind =
   (deps: HandleDeps) =>
   (bind: RebindPayload): Effect.Effect<void, SqlError.SqlError> =>
