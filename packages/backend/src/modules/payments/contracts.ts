@@ -1,21 +1,26 @@
 import type { SqlError } from '@effect/sql';
-import { CurrencySchema } from '@billing-service/shared';
+import {
+  CurrencySchema,
+  PaymentEventStatus,
+  PAYMENT_EVENT_STATUSES,
+  PAYMENT_EVENT_RECEIVED,
+  PAYMENT_REBIND,
+} from '@billing-service/shared';
 import { Effect, Schema } from 'effect';
 
 /**
  * Payment-pipeline contracts (FR-007). Every source normalizes its event into an
  * `IncomingPaymentEvent` and hands it to the pipeline; the pipeline is the single
  * place that matches, records, quarantines, and emits — sources carry no domain
- * logic ([15] D4).
+ * logic ([15] D4). The public payment status vocabulary and the queue message types
+ * live in shared; they are re-exported here for the pipeline's callers.
  */
-
-//  Usse enum,s value from sahred modules for events, do not hardcode them here
-
-/** Queue message type for a normalized incoming payment awaiting processing. */
-export const PAYMENT_EVENT_RECEIVED = 'payment_event_received';
-
-/** Queue message type for an operator-bound quarantine, reprocessed by the worker. */
-export const PAYMENT_REBIND = 'payment_rebind';
+export {
+  PaymentEventStatus,
+  PAYMENT_EVENT_STATUSES,
+  PAYMENT_EVENT_RECEIVED,
+  PAYMENT_REBIND,
+};
 
 /**
  * Operator bind decision (FR-009): reprocess a quarantined event AS IF matched to
@@ -33,20 +38,6 @@ export const RebindPayload = Schema.Struct({
 });
 
 export type RebindPayload = Schema.Schema.Type<typeof RebindPayload>;
-
-//thi is public api - move to sahred
-/** Normalized status of an incoming payment, provider-agnostic. */
-export const PAYMENT_EVENT_STATUSES = [
-  'succeeded',
-  'failed',
-  'refunded',
-  'pending',
-  'unknown',
-] as const;
-
-export const PaymentEventStatus = Schema.Literal(...PAYMENT_EVENT_STATUSES);
-
-export type PaymentEventStatus = Schema.Schema.Type<typeof PaymentEventStatus>;
 
 /**
  * A normalized incoming payment. `idemKey` is the source's dedup key (e.g.

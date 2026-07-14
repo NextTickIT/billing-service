@@ -1,12 +1,13 @@
 import { Schema } from 'effect';
 
+export { SUBSCRIPTION_CANCEL } from '@billing-service/shared';
+
 /**
  * Subscription cancellation contracts (FR-012). The support endpoint stays thin —
  * it marks the subscription cancelled and enqueues a `subscription_cancel`, and the
  * worker turns that into the outgoing `subscription_cancelled` event (the outbox
- * lives in the worker runtime).
+ * lives in the worker runtime). The message type lives in shared.
  */
-export const SUBSCRIPTION_CANCEL = 'subscription_cancel';
 
 export const CancelNotify = Schema.Struct({
   subscriptionId: Schema.String,
