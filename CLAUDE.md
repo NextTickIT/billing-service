@@ -134,7 +134,15 @@ Run `npm run lint` **and** `npm run typecheck` before saying done. Both are hard
 
 ## Process
 
+- **Comments answer WHY.** WHAT is carried by the name, the structure, and the file
+  location; HOW is carried by the function body. A comment exists only for a WHY that
+  none of those can express — and, in rare extreme cases, a HOW note when the body is
+  unavoidably subtle. If a comment restates the name, the structure, or the body,
+  delete it. (docs/16 §1.)
+- **Never amend or rewrite git history.** Only add a new commit, or `git revert` one.
+  No `git commit --amend`, no history-rewriting rebase/reset — not even to fix a
+  mistake in my own previous commit; make a follow-up commit instead. If an amend is
+  actually wanted, the user does it. (I broke this here: an `--amend` for a doc file
+  silently swallowed an unrelated staged deletion and left HEAD broken.)
 - Commit every document, finding, and code change incrementally (session standing
-  directive). Keep commits squashable.
-- Comments answer WHY. The name answers WHAT, the body answers HOW. If a comment
-  restates either, delete it.
+  directive).
