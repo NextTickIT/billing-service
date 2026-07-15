@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { setLocale } from '../i18n/index.js';
 
 type Locale = 'en' | 'ru' | 'uk';
 const LOCALES: Locale[] = ['en', 'ru', 'uk'];
@@ -13,7 +12,8 @@ const current = computed(() => locale.value as Locale);
 function cycle(): void {
   const idx = LOCALES.indexOf(current.value);
   const next = LOCALES[(idx + 1) % LOCALES.length] ?? 'en';
-  setLocale(next);
+  locale.value = next;
+  localStorage.setItem('lang', next);
 }
 </script>
 

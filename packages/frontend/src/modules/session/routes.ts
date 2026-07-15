@@ -4,7 +4,7 @@ function hasCookie(): boolean {
   return document.cookie.includes('bss=');
 }
 
-const guard = async (): Promise<string | true> => {
+const guard = (): string | true => {
   if (hasCookie()) return true;
   return '/operator/login';
 };

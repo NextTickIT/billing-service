@@ -8,7 +8,7 @@ export interface QuarantineRecord {
 
 export async function listQuarantine(): Promise<QuarantineRecord[]> {
   const res = await fetch('/api/quarantine', { credentials: 'include' });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
   return res.json() as Promise<QuarantineRecord[]>;
 }
 
@@ -19,5 +19,5 @@ export async function bindQuarantine(id: string, paymentId: string): Promise<voi
     body: JSON.stringify({ paymentId }),
     credentials: 'include',
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
 }

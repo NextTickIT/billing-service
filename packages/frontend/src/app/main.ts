@@ -8,6 +8,7 @@ import { initTheme } from './theme.js';
 
 initTheme();
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-argument
 const app = createApp(App);
 app.use(createPinia());
 app.use(router);

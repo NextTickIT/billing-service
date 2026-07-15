@@ -35,13 +35,13 @@ export async function listPayments(
     ? `/api/payment?externalUserId=${encodeURIComponent(externalUserId)}`
     : '/api/payment';
   const res = await fetch(url, { credentials: 'include' });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
   return res.json() as Promise<PaymentRecord[]>;
 }
 
 export async function getPayment(id: string): Promise<PaymentRecord> {
   const res = await fetch(`/api/payment/${id}`, { credentials: 'include' });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
   return res.json() as Promise<PaymentRecord>;
 }
 
@@ -55,7 +55,7 @@ export async function cancelPayment(
     body: JSON.stringify({ reason }),
     credentials: 'include',
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
 }
 
 export async function createPayment(
@@ -67,6 +67,6 @@ export async function createPayment(
     body: JSON.stringify(body),
     credentials: 'include',
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
   return res.json() as Promise<PaymentRecord>;
 }

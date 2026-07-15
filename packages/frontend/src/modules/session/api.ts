@@ -5,5 +5,5 @@ export async function login(username: string, password: string): Promise<void> {
     body: JSON.stringify({ username, password }),
     credentials: 'include',
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
 }
