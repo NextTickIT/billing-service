@@ -16,6 +16,10 @@ const addMonthsClamped = (date: Date, monthSpan: number): void => {
   date.setUTCFullYear(year, month, Math.min(date.getUTCDate(), lastDay));
 };
 
+/** Whether `period` is an ISO-8601 duration `addPeriod` accepts (a non-empty `P…`). */
+export const isValidPeriod = (period: string): boolean =>
+  DURATION.test(period) && period !== 'P';
+
 export const addPeriod = (date: Date, period: string): Date => {
   const match = DURATION.exec(period);
   if (match === null || period === 'P') {

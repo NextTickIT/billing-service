@@ -19,6 +19,13 @@ const CURRENCY_OPTIONS = [
   { value: 0, label: 'UAH' }, { value: 1, label: 'USD' }, { value: 2, label: 'EUR' },
 ];
 const METHOD_OPTIONS = [{ value: 0, label: 'Card' }];
+const PERIOD_OPTIONS = [
+  { value: 'P1W', label: 'Weekly (P1W)' },
+  { value: 'P1M', label: 'Monthly (P1M)' },
+  { value: 'P3M', label: 'Quarterly (P3M)' },
+  { value: 'P6M', label: 'Half-yearly (P6M)' },
+  { value: 'P1Y', label: 'Yearly (P1Y)' },
+];
 
 const { t } = useI18n();
 const router = useRouter();
@@ -154,7 +161,7 @@ async function onCreate(): Promise<void> {
         </div>
         <div class="form-field">
           <label class="form-label">{{ t('common.period') }}</label>
-          <BaseInput v-model="createPeriod" placeholder="P1M" />
+          <BaseSelect v-model="createPeriod" :options="PERIOD_OPTIONS" />
         </div>
         <div class="form-field">
           <label class="form-label">{{ t('common.method') }}</label>

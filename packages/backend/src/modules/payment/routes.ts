@@ -23,7 +23,7 @@ import { authenticate, requireRole } from '@/modules/auth/domain.js';
 import { makeChargeRepo } from '@/modules/charge/data-access.js';
 import { PAYMENT_CANCEL } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
-import { addPeriod } from '@/modules/payment/period.js';
+import { addPeriod, isValidPeriod } from '@/modules/payment/period.js';
 
 const CancelAccepted = Schema.Struct({ status: Schema.Literal('cancelled') });
 const CreateAccepted = Schema.Struct({ id: Schema.String });
@@ -114,6 +114,13 @@ const createPayment = (
     const sql = yield* SqlClient.SqlClient;
     const nowMs = yield* Clock.currentTimeMillis;
     const paidAt = new Date(nowMs);
+    if (!isValidPeriod(body.period)) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({
+          reason: `unsupported billing period '${body.period}'`,
+        }),
+      );
+    }
     const currentPeriodEnd = addPeriod(paidAt, body.period);
     const payment = yield* makePaymentRepo(sql).insert({
       externalUserId: body.externalUserId,
