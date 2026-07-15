@@ -6,6 +6,8 @@ import { useSessionStore } from './store.js';
 import BasePanel from '../../components/BasePanel.vue';
 import BaseInput from '../../components/BaseInput.vue';
 import BaseButton from '../../components/BaseButton.vue';
+import LangSwitch from '../../components/LangSwitch.vue';
+import ThemeToggle from '../../components/ThemeToggle.vue';
 
 const { t } = useI18n();
 const router = useRouter();
@@ -22,6 +24,10 @@ async function onSubmit(): Promise<void> {
 
 <template>
   <div class="login-wrap">
+    <div class="page-controls">
+      <LangSwitch />
+      <ThemeToggle />
+    </div>
     <BasePanel :title="t('session.loginTitle')">
       <form class="login-form" @submit.prevent="onSubmit">
         <div class="login-field">
@@ -56,11 +62,21 @@ async function onSubmit(): Promise<void> {
 
 <style scoped>
 .login-wrap {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 100vh;
   padding: 20px;
+}
+
+.page-controls {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .login-wrap > * {

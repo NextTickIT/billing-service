@@ -2,45 +2,58 @@
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 
-type Locale = 'en' | 'ru' | 'uk';
-const LOCALES: Locale[] = ['en', 'ru', 'uk'];
+type Locale = 'uk' | 'en' | 'ru';
+const LOCALES: Locale[] = ['uk', 'en', 'ru'];
 
-const { locale, t } = useI18n();
-
+const { locale } = useI18n();
 const current = computed(() => locale.value as Locale);
 
-function cycle(): void {
-  const idx = LOCALES.indexOf(current.value);
-  const next = LOCALES[(idx + 1) % LOCALES.length] ?? 'en';
-  locale.value = next;
-  localStorage.setItem('lang', next);
+function select(l: Locale): void {
+  locale.value = l;
+  localStorage.setItem('lang', l);
 }
 </script>
 
 <template>
-  <button class="lang-switch" type="button" @click="cycle">
-    {{ t(`common.lang.${current}`) }}
-  </button>
+  <div class="lang-switch">
+    <button
+      v-for="l in LOCALES"
+      :key="l"
+      class="ls-opt"
+      :class="{ on: current === l }"
+      type="button"
+      @click="select(l)"
+    >
+      {{ l.toUpperCase() }}
+    </button>
+  </div>
 </template>
 
 <style scoped>
 .lang-switch {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 5px 9px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  gap: 2px;
 }
-
-.lang-switch:hover {
+.ls-opt {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 5px 7px;
+  border-radius: 2px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  opacity: 0.75;
+  cursor: pointer;
+  transition:
+    opacity 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+.ls-opt:hover,
+.ls-opt.on {
+  opacity: 1;
   color: var(--green);
   border-color: var(--green);
 }
