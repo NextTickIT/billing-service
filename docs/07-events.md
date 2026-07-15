@@ -11,9 +11,9 @@ Minimal vocabulary per 00 §6, extensible.
 | `payment_succeeded` | successful payment fixed (checkout, own billing cycle, external source) | external_user_id, amount, currency, method, period, source |
 | `charge_retry_failed` | failed intermediate charge attempt | external_user_id, attempt number, next retry date, provider reason |
 | `renewal_failed` | final failure of the retry cycle (day 7) | external_user_id, reason |
-| `subscription_created` | new gateway subscription appeared | external_user_id, amount, period |
-| `subscription_cancelled` | subscription stopped (operator / provider event) | external_user_id, reason |
-| `unknown_payment_quarantined` | incoming event went to quarantine | quarantine record reference |
+| `payment_created` | new gateway Payment record appeared | external_user_id, amount, period |
+| `payment_cancelled` | Payment stopped (operator / provider event) | external_user_id, reason |
+| `unknown_payment_quarantined` | incoming charge went to quarantine | quarantine record reference |
 
 ## Event envelope
 
@@ -24,7 +24,7 @@ Minimal vocabulary per 00 §6, extensible.
   "occurredAt": "2026-01-01T00:00:00.000Z",
   "correlationId": "...",
   "externalUserId": "sendpulse:123",
-  "aggregateId": "subscription_...",
+  "aggregateId": "payment_...",
   "payload": {}
 }
 ```

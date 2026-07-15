@@ -9,7 +9,8 @@ Public and support HTTP surface. Authentication requirements are noted per secti
 ## Checkout sessions
 
 - `POST /api/checkout-sessions` (auth: service token)
-- `GET /checkout/:sessionId` (auth: none — public checkout page, unguessable session ID)
+- `GET /api/checkout-sessions/:id` (auth: service token) — read a session by ID
+- `GET /checkout/:sessionId` (auth: none — public checkout page on `bill.nexttick.it`, unguessable session ID)
 
 ### `POST /api/checkout-sessions`
 
@@ -26,22 +27,24 @@ Request body:
 
 Response: session ID, payment link URL, expiry.
 
-## Subscriptions
+## Payment (gateway billing record)
 
-- `GET /api/subscriptions/:id` (auth: service token)
-- `GET /api/subscriptions?externalUserId=...` (auth: service token)
+- `GET /api/payment/:id` (auth: service token)
+- `GET /api/payment?externalUserId=...` (auth: service token)
+
+The `Payment` entity fields include `currentPeriodStart`, `currentPeriodEnd` (the anchor for drift-free date advancement), and `nextPaymentDate`. `paid_till` is external (owned by SendPulse) and is not returned here.
 
 ## Provider callbacks
 
 - `POST /api/providers/:provider/callback` (auth: provider signature)
 
-## Support / operator
+## Operator console
 
-All support endpoints require authentication (support token) and are audited.
+All operator endpoints require authentication (operator/support token) and are audited. Routes are served under `/operator/*`.
 
-- `GET /api/support/subscriptions?externalUserId=...`
-- `GET /api/support/subscriptions/:id/events`
-- `POST /api/support/subscriptions/:id/cancel`
-- `GET /api/support/quarantine`
-- `POST /api/support/quarantine/:id/bind` — bind an unmatched payment to a subscription (or create one); the event is then reprocessed normally
-- `GET /api/support/deliveries?status=failed` — undelivered outgoing events
+- `GET /operator/payment?externalUserId=...`
+- `GET /operator/payment/:id/events`
+- `POST /operator/payment/:id/cancel`
+- `GET /operator/quarantine`
+- `POST /operator/quarantine/:id/bind` — bind an unmatched charge to a Payment (or create one); the charge is then reprocessed normally
+- `GET /operator/deliveries?status=failed` — undelivered outgoing events

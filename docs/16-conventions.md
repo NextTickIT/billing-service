@@ -54,8 +54,8 @@ that follows. Where a rule supersedes an earlier spec/plan, that is noted.
   its schemas, the enums it owns, and its constants. There is no separate
   `enums/` or `constants/` bucket.
 - Every enum and constant is owned by exactly one entity (e.g. `Role` → auth,
-  `PaymentMethod` / `Currency` → subscription, `RETRY_SCHEDULE_DAYS` →
-  subscription, `SINK_DELIVERY_SLA_SECONDS` → event).
+  `PaymentMethod` / `Currency` → payment, `RETRY_SCHEDULE_DAYS` →
+  payment, `SINK_DELIVERY_SLA_SECONDS` → event).
 - Types are always **derived** from schemas; never hand-written.
 - A **public** shape — anything that crosses a boundary (an API request/response, a
   domain event, a persisted entity) — lives in its shared entity slice, never in a
@@ -103,7 +103,7 @@ that follows. Where a rule supersedes an earlier spec/plan, that is noted.
   is with `DomainEvent` (on `name`, docs/07), `MatchResult` (on `matched` / `kind`),
   and the typed errors (on `_tag`, via `Data.TaggedError`).
 - Carve-out: a deliberately OPAQUE payload stays `Record<string, unknown>` — raw
-  provider data kept verbatim (`IncomingPaymentEvent.payload`, the WayForPay callback
+  provider data kept verbatim (`Charge.payload`, the WayForPay callback
   body and the purchase form) and an event read back from storage for delivery
   (`StoredEvent`: after a jsonb round-trip the sink only forwards the stored payload,
   so it is not re-narrowed). These are boundary bags, not domain shapes to

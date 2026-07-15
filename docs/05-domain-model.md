@@ -1,15 +1,12 @@
 # Domain Model
 
-There is no `User` entity. The gateway carries an opaque `external_user_id` (supplied by the calling system) on checkout sessions, subscriptions, and all outgoing events, without transformation (00 §2).
+There is no `User` entity. The gateway carries an opaque `external_user_id` (supplied by the calling system) on checkout sessions, payments, and all outgoing events, without transformation (00 §2).
 
 ## Entities
 
 - `CheckoutSession` payment intent of the external system: `external_user_id`, amount, currency, period, chosen method
-- `Subscription` gateway billing agreement: `external_user_id`, amount, currency, period, next charge date, retry state, token reference
-- `BillingPeriod` paid or due period for a subscription
-- `PaymentIntent` internal intent to collect payment
-- `PaymentAttempt` single charge attempt against an intent
-- `IncomingPaymentEvent` raw incoming event: source, idempotency key, amount, status, raw payload, match result
+- `Payment` gateway billing agreement: `external_user_id`, amount, currency, period, `currentPeriodStart`, `currentPeriodEnd` (the anchor from which the next payment is calculated — drift-free), `nextPaymentDate` (derived from the anchor; replaces any "next charge date" concept), retry state, token reference. `paid_till` is external (owned by SendPulse), not a field here.
+- `Charge` raw incoming event: source, idempotency key, amount, status, raw payload, match result (stored in the `charges` table; the fixation record written on success lives in `charge_fixations`)
 - `QuarantineRecord` unmatched incoming event awaiting operator decision, with audit trail
 - `PaymentProvider` adapter boundary for WayForPay, Whitepay, etc.
 - `RecurringToken` provider token reference for recurring charges
@@ -18,11 +15,11 @@ There is no `User` entity. The gateway carries an opaque `external_user_id` (sup
 - `EventDelivery` outbox delivery record for a domain event per sink
 - `AuditLog` support and compliance audit trail
 
-## Subscription statuses
+## Payment statuses
 
 - `active` paid and in good standing; next charge scheduled
 - `past_due` charge failed; inside the retry window (days 0–7)
-- `renewal_failed` final retry failed; gateway takes no further action (a new checkout payment creates/extends a subscription)
+- `renewal_failed` final retry failed; gateway takes no further action (a new checkout payment creates/extends a Payment record)
 - `cancelled` ended by operator or provider event
 
 ## Checkout session statuses
@@ -32,30 +29,10 @@ There is no `User` entity. The gateway carries an opaque `external_user_id` (sup
 - `completed` payment succeeded
 - `expired` session timed out
 
-## Payment intent statuses
-
-- `created` intent recorded, not yet sent to provider
-- `pending` awaiting provider result
-- `succeeded` payment completed
-- `failed` payment failed
-- `cancelled` intent cancelled before completion
-- `expired` link or intent timed out
-- `unknown` provider state not yet reconciled
-
-## Payment attempt statuses
-
-- `created` attempt recorded
-- `pending` in flight with provider
-- `succeeded` charge succeeded
-- `failed` charge failed
-- `cancelled` attempt cancelled
-- `expired` attempt no longer valid
-- `unknown` awaiting callback or reconciliation
-
 ## Quarantine record statuses
 
 - `open` awaiting operator decision
-- `resolved` bound to a subscription (or a subscription was created) and reprocessed normally
+- `resolved` bound to a Payment (or a Payment was created) and reprocessed normally
 
 ## Recurring token statuses
 
@@ -65,3 +42,7 @@ There is no `User` entity. The gateway carries an opaque `external_user_id` (sup
 - `cancelled` token cancelled
 - `expired` token expired at provider
 - `invalid` token rejected or unusable
+
+## Date model
+
+`currentPeriodStart` and `currentPeriodEnd` are set when a payment is fixed. `nextPaymentDate` is always derived from `currentPeriodEnd` (the anchor) — never accumulated from the previous `nextPaymentDate` — so drift is structurally impossible. Dates clamp to the last valid day of the target month (e.g. Jan 31 → Feb 28/29).

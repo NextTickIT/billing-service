@@ -22,8 +22,8 @@ access, identity, CRM, or analytics — it reports facts about money; an externa
 ### The flows (docs/00 §5, docs/02; conformance map docs/18)
 
 1. **Checkout** — a session (`externalUserId`, amount, period) → a minimal hosted page
-   (method choice only, no `paid_till`) → provider webhook → record the payment,
-   create/extend the gateway subscription, emit `payment_succeeded`. (FR-001/002/003,
+   (method choice only, no `paid_till`) → provider webhook → record the charge,
+   create/extend the gateway Payment, emit `payment_succeeded`. (FR-001/002/003,
    AC5)
 2. **Incoming recurrent events** — provider webhooks and the migration poller normalize
    into one pipeline: raw log → idempotency → match → outgoing event. All sources are
@@ -39,8 +39,8 @@ access, identity, CRM, or analytics — it reports facts about money; an externa
 ### Acceptance criteria (docs/00 §9) — every change keeps all nine
 
 AC1 sink updated ≤ 60 s after a success · AC2 duplicate webhook → no double payment or
-event · AC3 every event stored raw, subscription state replayable · AC4 retry ladder
-0/1/3/5/7 then final · AC5 checkout → subscription + token · AC6 quarantine → bind →
+event · AC3 every event stored raw, Payment state replayable · AC4 retry ladder
+0/1/3/5/7 then final · AC5 checkout → Payment + token · AC6 quarantine → bind →
 reprocess, permanent-unmatched counter 0 · AC7 unmigrated payments appear ≤ poll
 interval with a visible tail metric · AC8 new provider/sink without core change · AC9
 `externalUserId` carried verbatim.
@@ -160,34 +160,38 @@ hoist nested callbacks. Run `npm run lint` and `npm run typecheck`.
   - The dispatcher captures `exit` (typed failures **and** defects), so a throwing
     handler is recorded as a failed attempt, never a process crash.
 - **Raw journal of everything, before processing** (append-only) — every incoming and
-  outgoing event is stored raw so any subscription is replayable and any incident
+  outgoing event is stored raw so any Payment is replayable and any incident
   auditable. (docs/00 §8, AC3)
-- **Consistency**: one clear current status per subscription; never two successful
-  charges for one period by internal logic; subscription state is updated **before**
+- **Consistency**: one clear current status per Payment; never two successful
+  charges for one period by internal logic; Payment state is updated **before**
   events are emitted. (docs/03)
 
 ## 6. Domain model (docs/05)
 
 - No `User` entity; `externalUserId` is opaque and carried verbatim.
-- Live entities: `CheckoutSession`, `Subscription`, `IncomingPaymentEvent`,
-  `QuarantineRecord`, the recurring token (inline as `recurringTokenRef`),
-  `DomainEvent`, `EventDelivery`, `AuditLog`. `PaymentIntent` / `PaymentAttempt` /
-  `BillingPeriod` from docs/05 are not separate tables — their behavior is covered by
-  `incoming_payment_events` + `payments` + the queue's `attempts` (docs/18).
-- Subscription status: `active` / `past_due` (retry window) / `renewal_failed`
-  (terminal; a new checkout creates/extends) / `cancelled`. Checkout status: `created`
-  / `pending` / `completed` / `expired`.
-- One active subscription per `externalUserId` (extend in place — interview decision,
+- Live entities: `CheckoutSession`, `Payment` (gateway billing record; table `payments`),
+  `Charge` (raw incoming event; table `charges`), `QuarantineRecord`, the recurring token
+  (inline as `recurringTokenRef`), `DomainEvent`, `EventDelivery`, `AuditLog`.
+  `PaymentIntent` / `PaymentAttempt` / `BillingPeriod` from docs/05 are not separate
+  tables — their behavior is covered by `charges` + `charge_fixations` + the queue's
+  `attempts` (docs/18).
+- Payment status (`PaymentStatus`): `active` / `past_due` (retry window) /
+  `renewal_failed` (terminal; a new checkout creates/extends) / `cancelled`. Checkout
+  status: `created` / `pending` / `completed` / `expired`.
+- One active Payment per `externalUserId` (extend in place — interview decision,
   docs/18). Retry schedule is fixed: `RETRY_SCHEDULE_DAYS = [0,1,3,5,7]` (owned by the
-  subscription slice).
-- Billing dates advance by whole periods and **clamp to the last valid day** of the
-  target month (e.g. Jan 31 → Feb 28), computed in the canonical billing timezone
-  (`subscription/period.ts`; docs/04, docs/17).
+  payment slice).
+- **Date model**: `currentPeriodStart` and `currentPeriodEnd` are set on each successful
+  charge; `nextPaymentDate` is always derived from `currentPeriodEnd` (the anchor) —
+  never from the previous `nextPaymentDate` — so drift is structurally impossible. Dates
+  clamp to the last valid day of the target month (e.g. Jan 31 → Feb 28), computed in
+  the canonical billing timezone (`payment/period.ts`; docs/04, docs/17). `paid_till` is
+  external (owned by SendPulse), not a field on the Payment entity.
 
 ## 7. Events & outbox (docs/07, docs/00 §6)
 
 - Vocabulary (extensible): `payment_succeeded`, `charge_retry_failed`,
-  `renewal_failed`, `subscription_created`, `subscription_cancelled`,
+  `renewal_failed`, `payment_created`, `payment_cancelled`,
   `unknown_payment_quarantined`. `DomainEvent` is a discriminated union on `name` with a
   typed payload per variant; `externalUserId` is null only for a quarantine.
 - **Outbox**: publishing stores the event and fans out one `EventDelivery` per sink; the
@@ -204,7 +208,7 @@ hoist nested callbacks. Run `npm run lint` and `npm run typecheck`.
 - **We own the billing cycle**: the Purchase is built **without** `regularMode` — we
   hold the token and run our own schedule; WayForPay must not create a managed one.
 - **Deterministic keys** so re-observation dedupes (FR-006): `orderReference =
-sub_<subscriptionId>_<…>`; charge idemKey `w4p:<orderReference>|CHARGE|<createdDate>`;
+pay_<paymentId>_<…>`; charge idemKey `w4p:<orderReference>|CHARGE|<createdDate>`;
   callback idemKey `w4pcb:<orderReference>|<status>`. The scheduler and the poller derive
   the same key.
 - HMAC-MD5 signing uses explicit, sourced field-order tables — never reorder them.
@@ -223,10 +227,11 @@ sub_<subscriptionId>_<…>`; charge idemKey `w4p:<orderReference>|CHARGE|<create
 
 ## 9. API & security (docs/06, docs/03)
 
-- Endpoints: `GET /health` (none); `POST /api/checkout-sessions` (service token) and
-  `GET /checkout/:id` (public, unguessable id); `GET /api/subscriptions/:id` and
+- Endpoints: `GET /health` (none); `POST /api/checkout-sessions` and
+  `GET /api/checkout-sessions/:id` (service token); `GET /checkout/:id` (public,
+  unguessable id, on `bill.nexttick.it`); `GET /api/payment/:id` and
   `?externalUserId=` (service token); `POST /api/providers/:provider/callback` (provider
-  signature); `/api/support/*` (support token, **audited**) — subscriptions read/cancel,
+  signature); `/operator/*` (operator token, **audited**) — Payment read/cancel,
   quarantine list/bind, deliveries.
 - Admin and support APIs require authentication; service-to-service requires a token;
   provider callbacks are verified by signature. Secrets stay outside source.
@@ -238,13 +243,13 @@ sub_<subscriptionId>_<…>`; charge idemKey `w4p:<orderReference>|CHARGE|<create
 - **Performance**: support UI 1–2 s; status API < 500 ms–1 s; callback accept+store
   < 2 s; delivery ≤ 60 s; the scheduler drains all due within 24 h even if all 100k fall
   due the same day.
-- **Reliability**: no loss of payment, callback, attempt, subscription, or event state
+- **Reliability**: no loss of payment, callback, attempt, Payment, or event state
   across restart; the scheduler is restart-safe; duplicate callbacks never corrupt state.
-- **Auditability**: audit payment attempts, callbacks, subscription status changes, retry
+- **Auditability**: audit payment attempts, callbacks, Payment status changes, retry
   scheduling, manual operator actions, and checkout creation.
 - **Observability**: structured logs and correlation ids; metrics for successful /
   failed / pending payments, retries, callback errors, scheduler errors, quarantine
-  size, undelivered events, subscriptions in retry, poller freshness, and migration
+  size, undelivered events, Payments in retry, poller freshness, and migration
   tail. **Each operator queue has an alert.**
 - **Backup**: daily backup to external storage is acceptable for MVP.
 
@@ -275,10 +280,10 @@ sub_<subscriptionId>_<…>`; charge idemKey `w4p:<orderReference>|CHARGE|<create
 
 Refunds and `payment_refunded`; mid-cycle card change; a user-initiated cancel channel
 (operator cancel is done); currency fixed at creation (assumed yes); multiple
-subscriptions per user (decision: one active, extend in place); checkout-link security
-bounds; operator role boundaries. The real SendPulse sink (stub now). Live-only until
-production WayForPay access lands: recurring CHARGE, real `recToken` issuance, and the
-regularApi migration-tail metric.
+Payments per user (decision: one active Payment, extend in place); checkout-link
+security bounds; operator role boundaries. The real SendPulse sink (stub now).
+Live-only until production WayForPay access lands: recurring CHARGE, real `recToken`
+issuance, and the regularApi migration-tail metric.
 
 ## 14. Deep specs
 

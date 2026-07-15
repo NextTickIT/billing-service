@@ -20,21 +20,21 @@ AC, and scenario below is traceable to a module and a commit.
 |----|--------|-------|
 | FR-001 checkout session creation | ✅ | `checkout/routes` POST /api/checkout-sessions |
 | FR-002 minimal checkout page | ✅ | `checkout/routes` GET /checkout/:id (method choice, no paid_till) |
-| FR-003 first payment processing | ✅ | `checkout/applier` (record payment, store recToken, create/extend sub, emit) |
-| FR-004 recurring billing | ✅ | `billing/scheduler` (charge due, advance, payment_succeeded) |
-| FR-005 retry schedule 0/1/3/5/7 | ✅ | `subscription/retry` + `billing/scheduler` |
+| FR-003 first payment processing | ✅ | `checkout/applier` (record charge, store recToken, create/extend Payment, emit) |
+| FR-004 recurring billing | ✅ | `billing/scheduler` (charge due, advance nextPaymentDate from anchor, payment_succeeded) |
+| FR-005 retry schedule 0/1/3/5/7 | ✅ | `payment/retry` + `billing/scheduler` |
 | FR-006 duplicate-charge protection | ✅ | deterministic orderReference + queue idem key + advance-on-success |
 | FR-007 incoming-event pipeline | ✅ | `infra/queue` + `modules/payments` (raw → idempotency → match → outbox) |
 | FR-008 migration poller | ✅ | `wayforpay/poller` (freshness metrics; migration-tail = phase 2, needs merchantPassword) |
-| FR-009 quarantine | ✅ | `payments` quarantine + `support` bind → reprocess |
+| FR-009 quarantine | ✅ | `payments` quarantine + `support` bind Charge → Payment → reprocess |
 | FR-010 provider callbacks | ✅ | `checkout/callback` (8-field HMAC verify, idempotent, tolerant parse) |
 | FR-011 outbox + sink delivery | ✅ mechanism | `modules/outbox` + `infra/sinks` (LoggingSink stub; real SendPulse deferred by interview) |
-| FR-012 cancellation | ✅ operator | `subscription` cancel (operator + provider-event ready; user channel is §11.3 open) |
+| FR-012 cancellation | ✅ operator | `payment` cancel (operator + provider-event ready; user channel is §11.3 open) |
 
 ## Acceptance criteria (`00-tz` §9)
 
 AC2 (idempotency), AC3 (raw journal), AC4 (retry ladder), AC5 (checkout →
-subscription + token), AC6 (quarantine → bind → reprocess), AC8 (new provider/sink
+Payment + token), AC6 (quarantine → bind → reprocess), AC8 (new provider/sink
 without core change — the `Sink` set plus composable matcher/applier functions), AC9
 (externalUserId carried verbatim, never transformed) — all proven by unit tests and
 the real-Postgres e2e (16 scenarios). AC1 (SendPulse ≤60s) and AC7 (poller lag) are
@@ -48,15 +48,15 @@ on the SendPulse connector and production WayForPay access respectively.
   subscription effect and the refund event are out of this scope.
 - Mid-cycle card change (§11.2); user-initiated cancel channel (§11.3, operator
   cancel is done); currency-fixed-at-creation (§11.4, assumed yes); multiple
-  subscriptions per user (§11.5 — interview decision: one active, extend in place);
+  Payments per user (§11.5 — interview decision: one active Payment, extend in place);
   operator role boundaries (§11.7 — any valid token authorizes support, audited).
 - Real SendPulse sink (interview decision: stub now, connect later — no core change).
 
 ## Deviations from the domain model (`05-domain-model.md`)
 
 - `PaymentIntent` / `PaymentAttempt` are not separate tables; their behaviour is
-  covered by `incoming_payment_events` + `payments` + the queue's `attempts`.
-- `RecurringToken` is stored inline on the subscription (`recurringTokenRef`) rather
+  covered by `charges` + `charge_fixations` + the queue's `attempts`.
+- `RecurringToken` is stored inline on the Payment (`recurringTokenRef`) rather
   than as its own entity with a status lifecycle — sufficient for AC5 and the
   scheduler; the lifecycle (cancel/expire) can be promoted to a table if needed.
 
