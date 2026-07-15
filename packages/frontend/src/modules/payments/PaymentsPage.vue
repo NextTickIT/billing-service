@@ -176,12 +176,13 @@ async function onCreate(): Promise<void> {
 .payments-empty { color: var(--dim); padding: 8px 0; }
 .payments-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .payments-table th {
-  padding: 6px 10px; text-align: left; color: var(--dim);
+  padding: 8px 12px; text-align: left; color: var(--muted);
   border-bottom: 1px solid var(--line); white-space: nowrap;
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
 }
-.payments-table td { padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.payments-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); color: var(--text); }
 .payments-row { cursor: pointer; }
-.payments-row:hover td { background: var(--panel-2); }
+.payments-row:hover td { background: var(--surface-2); }
 .status--active { color: var(--green); }
 .status--past_due { color: var(--amber); }
 .status--failed, .status--cancelled { color: var(--red); }

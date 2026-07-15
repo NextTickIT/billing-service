@@ -45,21 +45,24 @@ defineProps<Props>();
 }
 
 .base-table th {
-  padding: 6px 10px;
+  padding: 8px 12px;
   text-align: left;
-  color: var(--dim);
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
   border-bottom: 1px solid var(--line);
-  font-weight: 500;
   white-space: nowrap;
 }
 
 .base-table td {
-  padding: 7px 10px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--line);
-  color: var(--txt);
+  color: var(--text);
 }
 
-.base-table tbody tr:hover {
-  background: var(--panel-2);
+.base-table tbody tr:hover td {
+  background: var(--surface-2);
 }
 </style>

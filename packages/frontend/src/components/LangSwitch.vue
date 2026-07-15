@@ -25,17 +25,23 @@ function cycle(): void {
 
 <style scoped>
 .lang-switch {
-  background: none;
-  border: 1px solid var(--line-2);
-  color: var(--dim);
-  padding: 4px 10px;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 9px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
 }
 
 .lang-switch:hover {
-  color: var(--txt);
-  border-color: var(--line);
+  color: var(--green);
+  border-color: var(--green);
 }
 </style>

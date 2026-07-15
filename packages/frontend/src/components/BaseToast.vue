@@ -23,15 +23,17 @@ withDefaults(defineProps<Props>(), {
 <style scoped>
 .toast {
   position: fixed;
-  bottom: 20px;
-  right: 20px;
-  padding: 10px 16px;
+  bottom: 24px;
+  right: 24px;
+  padding: 12px 18px;
   border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--txt);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
   font-size: 13px;
   z-index: 2000;
   max-width: 360px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 
 .toast--success {

@@ -1,3 +1,5 @@
+import { apiFetch } from '../../infra/apiFetch.js';
+
 export interface QuarantineRecord {
   id: string;
   externalRef: string | null;
@@ -7,17 +9,16 @@ export interface QuarantineRecord {
 }
 
 export async function listQuarantine(): Promise<QuarantineRecord[]> {
-  const res = await fetch('/api/quarantine', { credentials: 'include' });
+  const res = await apiFetch('/api/quarantine');
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
   return res.json() as Promise<QuarantineRecord[]>;
 }
 
 export async function bindQuarantine(id: string, paymentId: string): Promise<void> {
-  const res = await fetch(`/api/quarantine/${id}/bind`, {
+  const res = await apiFetch(`/api/quarantine/${id}/bind`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paymentId }),
-    credentials: 'include',
   });
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
 }

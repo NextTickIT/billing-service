@@ -26,20 +26,29 @@ function onClick(): void {
     type="button"
     @click="onClick"
   >
-    <span v-if="loading" class="btn__spinner">[…]</span>
+    <span v-if="loading" class="btn__spinner" aria-hidden="true" />
     <span v-else>{{ label }}</span>
   </button>
 </template>
 
 <style scoped>
 .btn {
-  padding: 6px 14px;
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 7px 16px;
   border: 1px solid var(--line);
-  background: transparent;
-  color: var(--txt);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--sans);
   font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
 }
 
 .btn:disabled {
@@ -48,35 +57,49 @@ function onClick(): void {
 }
 
 .btn--primary {
+  background: var(--green);
   border-color: var(--green);
-  color: var(--green);
+  color: var(--bg);
+  font-weight: 800;
 }
 
 .btn--primary:hover:not(:disabled) {
-  color: var(--green-hover);
+  background: var(--green-hover);
   border-color: var(--green-hover);
 }
 
 .btn--danger {
+  background: transparent;
   border-color: var(--red);
   color: var(--red);
 }
 
 .btn--danger:hover:not(:disabled) {
-  opacity: 0.8;
+  background: var(--red);
+  color: var(--bg);
 }
 
 .btn--ghost {
-  border-color: var(--line-2);
-  color: var(--dim);
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--muted);
 }
 
 .btn--ghost:hover:not(:disabled) {
-  color: var(--txt);
+  color: var(--text);
   border-color: var(--line-2);
 }
 
 .btn__spinner {
-  color: var(--dim);
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 </style>

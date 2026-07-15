@@ -2,6 +2,12 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { login as apiLogin, logout as apiLogout } from './api.js';
 
+const AUTH_KEY = 'operator_authed';
+
+export function isAuthed(): boolean {
+  return localStorage.getItem(AUTH_KEY) === '1';
+}
+
 export const useSessionStore = defineStore('session', () => {
   const loading = ref(false);
   const error = ref<string | null>(null);
@@ -11,6 +17,7 @@ export const useSessionStore = defineStore('session', () => {
     error.value = null;
     try {
       await apiLogin(username, password);
+      localStorage.setItem(AUTH_KEY, '1');
       return true;
     } catch {
       error.value = 'invalid';
@@ -21,6 +28,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function logout(): Promise<void> {
+    localStorage.removeItem(AUTH_KEY);
     await apiLogout();
   }
 

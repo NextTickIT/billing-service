@@ -1,3 +1,5 @@
+import { apiFetch } from '../../infra/apiFetch.js';
+
 export interface ChargeRecord {
   id: string;
   amount: number;
@@ -34,13 +36,13 @@ export async function listPayments(
   const url = externalUserId
     ? `/api/payment?externalUserId=${encodeURIComponent(externalUserId)}`
     : '/api/payment';
-  const res = await fetch(url, { credentials: 'include' });
+  const res = await apiFetch(url);
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
   return res.json() as Promise<PaymentRecord[]>;
 }
 
 export async function getPayment(id: string): Promise<PaymentRecord> {
-  const res = await fetch(`/api/payment/${id}`, { credentials: 'include' });
+  const res = await apiFetch(`/api/payment/${id}`);
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
   return res.json() as Promise<PaymentRecord>;
 }
@@ -49,11 +51,10 @@ export async function cancelPayment(
   id: string,
   reason: string,
 ): Promise<void> {
-  const res = await fetch(`/api/payment/${id}/cancel`, {
+  const res = await apiFetch(`/api/payment/${id}/cancel`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reason }),
-    credentials: 'include',
   });
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
 }
@@ -61,11 +62,10 @@ export async function cancelPayment(
 export async function createPayment(
   body: CreatePaymentBody,
 ): Promise<PaymentRecord> {
-  const res = await fetch('/api/payment', {
+  const res = await apiFetch('/api/payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    credentials: 'include',
   });
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
   return res.json() as Promise<PaymentRecord>;

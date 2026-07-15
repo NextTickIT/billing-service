@@ -92,10 +92,11 @@ async function doBind(): Promise<void> {
 .q-empty { color: var(--dim); padding: 8px 0; }
 .q-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .q-table th {
-  padding: 6px 10px; text-align: left; color: var(--dim);
-  border-bottom: 1px solid var(--line); white-space: nowrap; font-size: 12px;
+  padding: 8px 12px; text-align: left; color: var(--muted);
+  border-bottom: 1px solid var(--line); white-space: nowrap;
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
 }
-.q-table td { padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.q-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); color: var(--text); }
 .bind-form { display: flex; flex-direction: column; gap: 10px; }
 .bind-label { color: var(--dim); font-size: 12px; }
 .bind-error { color: var(--red); font-size: 13px; }

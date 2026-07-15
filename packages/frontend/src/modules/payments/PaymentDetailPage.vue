@@ -113,23 +113,23 @@ async function handleCancel(): Promise<void> {
 
 <style scoped>
 .detail-page { padding: 20px; max-width: 800px; }
-.back-link { display: inline-block; margin-bottom: 16px; color: var(--dim); }
-.back-link:hover { color: var(--txt); }
+.back-link { display: inline-block; margin-bottom: 16px; color: var(--muted); }
+.back-link:hover { color: var(--text); }
 .detail-center { text-align: center; padding: 20px 0; }
 .detail-error { color: var(--red); }
 .info-grid { margin-bottom: 20px; }
 .info-row {
   display: flex; justify-content: space-between;
-  padding: 7px 0; border-bottom: 1px solid var(--line);
+  padding: 8px 0; border-bottom: 1px solid var(--line);
 }
-.lbl { color: var(--dim); }
-.section-title { font-size: 13px; color: var(--dim); margin: 16px 0 8px; text-transform: uppercase; }
+.lbl { color: var(--muted); }
+.section-title { font-size: 11px; color: var(--muted); margin: 20px 0 8px; text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--mono); }
 .charges-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 20px; }
 .charges-table th {
-  text-align: left; padding: 6px 10px;
-  border-bottom: 1px solid var(--line); color: var(--dim); font-size: 12px;
+  text-align: left; padding: 8px 12px;
+  border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
 }
-.charges-table td { padding: 6px 10px; border-bottom: 1px solid var(--line); }
-.cancel-section { padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.charges-table td { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.cancel-section { padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
 .cancel-row { display: flex; gap: 8px; margin-top: 10px; }
 </style>

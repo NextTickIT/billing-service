@@ -29,17 +29,19 @@ const emit = defineEmits<{ 'update:modelValue': [value: string] }>();
 <style scoped>
 .base-input {
   width: 100%;
-  padding: 6px 10px;
+  padding: 8px 12px;
   background: var(--bg);
   border: 1px solid var(--line);
-  color: var(--txt);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: var(--sans);
   font-size: 13px;
   outline: none;
   transition: border-color 0.15s;
 }
 
 .base-input::placeholder {
-  color: var(--muted);
+  color: var(--dim);
 }
 
 .base-input:focus {

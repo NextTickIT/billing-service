@@ -1,11 +1,8 @@
 import type { RouteRecordRaw } from 'vue-router';
-
-function hasCookie(): boolean {
-  return document.cookie.includes('bss=');
-}
+import { isAuthed } from './store.js';
 
 const guard = (): string | true => {
-  if (hasCookie()) return true;
+  if (isAuthed()) return true;
   return '/operator/login';
 };
 
