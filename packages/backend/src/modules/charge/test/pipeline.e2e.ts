@@ -425,7 +425,9 @@ const driveScheduler = Effect.gen(function* () {
     method: 0,
     period: 'P1M',
     status: 0,
-    nextChargeDate: new Date('2026-01-01T00:00:00Z'),
+    currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
+    nextPaymentDate: new Date('2026-01-01T00:00:00Z'),
     recurringTokenRef: 'tok',
     firstFailureAt: null,
     retryAttempt: 0,
@@ -455,7 +457,7 @@ const assertScheduler = async (
 ): Promise<void> => {
   await eq(
     query,
-    `SELECT to_char("nextChargeDate", 'YYYY-MM-DD') FROM payments`,
+    `SELECT to_char("nextPaymentDate", 'YYYY-MM-DD') FROM payments`,
     '2026-02-01',
     'next charge advanced by the period (FR-004)',
   );
@@ -505,7 +507,9 @@ const driveCancel = Effect.gen(function* () {
     method: 0,
     period: 'P1M',
     status: 0,
-    nextChargeDate: new Date('2030-01-01T00:00:00Z'),
+    currentPeriodStart: new Date('2029-12-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2030-01-01T00:00:00Z'),
+    nextPaymentDate: new Date('2030-01-01T00:00:00Z'),
     recurringTokenRef: 'tok',
     firstFailureAt: null,
     retryAttempt: 0,

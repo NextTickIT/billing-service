@@ -16,7 +16,9 @@ export interface ExtendPayment {
   readonly currency: number;
   readonly method: number;
   readonly period: string;
-  readonly nextChargeDate: Date;
+  readonly currentPeriodStart: Date;
+  readonly currentPeriodEnd: Date;
+  readonly nextPaymentDate: Date;
   readonly recurringTokenRef: string | null;
 }
 
@@ -24,7 +26,14 @@ export interface ExtendPayment {
 export interface RetryState {
   readonly firstFailureAt: Date;
   readonly retryAttempt: number;
-  readonly nextChargeDate: Date;
+  readonly nextPaymentDate: Date;
+}
+
+/** Anchor pair written on a successful charge advance. */
+export interface AdvanceAnchor {
+  readonly currentPeriodStart: Date;
+  readonly currentPeriodEnd: Date;
+  readonly nextPaymentDate: Date;
 }
 
 /**
@@ -53,7 +62,7 @@ export interface PaymentRepo {
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly advanceAfterSuccess: (
     id: string,
-    nextChargeDate: Date,
+    anchor: AdvanceAnchor,
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly recordRetry: (
     id: string,
@@ -87,9 +96,9 @@ const findDue = (sql: SqlClient.SqlClient) => (now: Date, limit: number) =>
   sql<Payment>`
     SELECT ${sql.unsafe(COLUMNS)} FROM payments
     WHERE status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
-      AND "nextChargeDate" <= ${now}
+      AND "nextPaymentDate" <= ${now}
       AND "recurringTokenRef" IS NOT NULL
-    ORDER BY "nextChargeDate"
+    ORDER BY "nextPaymentDate"
     LIMIT ${limit}
   `;
 
@@ -97,10 +106,12 @@ const insert = (sql: SqlClient.SqlClient) => (input: CreatePayment) =>
   sql<Payment>`
     INSERT INTO payments
       ("externalUserId", amount, currency, method, period, status,
-       "nextChargeDate", "recurringTokenRef", "firstFailureAt", "retryAttempt")
+       "currentPeriodStart", "currentPeriodEnd", "nextPaymentDate",
+       "recurringTokenRef", "firstFailureAt", "retryAttempt")
     VALUES
       (${input.externalUserId}, ${input.amount}, ${input.currency}, ${input.method},
-       ${input.period}, ${input.status}, ${input.nextChargeDate},
+       ${input.period}, ${input.status}, ${input.currentPeriodStart},
+       ${input.currentPeriodEnd}, ${input.nextPaymentDate},
        ${input.recurringTokenRef}, ${input.firstFailureAt}, ${input.retryAttempt})
     RETURNING ${sql.unsafe(COLUMNS)}
   `.pipe(Effect.flatMap(requireRow));
@@ -111,17 +122,22 @@ const extend =
       UPDATE payments
       SET amount = ${input.amount}, currency = ${input.currency}, method = ${input.method},
           period = ${input.period}, status = ${PaymentStatus.Active},
-          "nextChargeDate" = ${input.nextChargeDate},
+          "currentPeriodStart" = ${input.currentPeriodStart},
+          "currentPeriodEnd" = ${input.currentPeriodEnd},
+          "nextPaymentDate" = ${input.nextPaymentDate},
           "recurringTokenRef" = ${input.recurringTokenRef},
           "firstFailureAt" = NULL, "retryAttempt" = 0, "updatedAt" = now()
       WHERE id = ${id}
     `.pipe(Effect.asVoid);
 
 const advanceAfterSuccess =
-  (sql: SqlClient.SqlClient) => (id: string, nextChargeDate: Date) =>
+  (sql: SqlClient.SqlClient) => (id: string, anchor: AdvanceAnchor) =>
     sql`
       UPDATE payments
-      SET status = ${PaymentStatus.Active}, "nextChargeDate" = ${nextChargeDate},
+      SET status = ${PaymentStatus.Active},
+          "currentPeriodStart" = ${anchor.currentPeriodStart},
+          "currentPeriodEnd" = ${anchor.currentPeriodEnd},
+          "nextPaymentDate" = ${anchor.nextPaymentDate},
           "firstFailureAt" = NULL, "retryAttempt" = 0, "updatedAt" = now()
       WHERE id = ${id}
     `.pipe(Effect.asVoid);
@@ -133,7 +149,7 @@ const recordRetry =
       SET status = ${PaymentStatus.PastDue},
           "firstFailureAt" = ${state.firstFailureAt},
           "retryAttempt" = ${state.retryAttempt},
-          "nextChargeDate" = ${state.nextChargeDate}, "updatedAt" = now()
+          "nextPaymentDate" = ${state.nextPaymentDate}, "updatedAt" = now()
       WHERE id = ${id}
     `.pipe(Effect.asVoid);
 

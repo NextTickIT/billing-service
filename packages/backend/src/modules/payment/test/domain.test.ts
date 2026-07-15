@@ -30,7 +30,9 @@ const activePayment: Payment = {
   method: 0,
   period: 'P1M',
   status: PaymentStatus.Active,
-  nextChargeDate: new Date('2026-01-15T00:00:00Z'),
+  currentPeriodStart: new Date('2025-12-15T00:00:00Z'),
+  currentPeriodEnd: new Date('2026-01-15T00:00:00Z'),
+  nextPaymentDate: new Date('2026-01-15T00:00:00Z'),
   recurringTokenRef: 'tok_old',
   firstFailureAt: null,
   retryAttempt: 0,
@@ -77,9 +79,20 @@ it.effect('creates a payment when the user has none active', () =>
 
     expect(result.created).toBe(true);
     expect(result.subscriptionId).toBe('sub_new');
-    // next charge = paid date + period.
-    const inserted = fake.getInserted() as { nextChargeDate: Date };
-    expect(inserted.nextChargeDate.toISOString().slice(0, 10)).toBe(
+    const inserted = fake.getInserted() as {
+      currentPeriodStart: Date;
+      currentPeriodEnd: Date;
+      nextPaymentDate: Date;
+    };
+    // currentPeriodStart = paidAt
+    expect(inserted.currentPeriodStart.toISOString().slice(0, 10)).toBe(
+      '2026-01-15',
+    );
+    // currentPeriodEnd = nextPaymentDate = paidAt + period
+    expect(inserted.currentPeriodEnd.toISOString().slice(0, 10)).toBe(
+      '2026-02-15',
+    );
+    expect(inserted.nextPaymentDate.toISOString().slice(0, 10)).toBe(
       '2026-02-15',
     );
   }),
@@ -96,7 +109,7 @@ it.effect('extends the existing active payment in place', () =>
     const extended = fake.getExtended();
     expect(extended?.id).toBe('sub_1');
     expect(extended?.input.recurringTokenRef).toBe('tok_1');
-    expect(extended?.input.nextChargeDate.toISOString().slice(0, 10)).toBe(
+    expect(extended?.input.nextPaymentDate.toISOString().slice(0, 10)).toBe(
       '2026-02-15',
     );
   }),

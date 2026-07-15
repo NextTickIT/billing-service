@@ -15,7 +15,7 @@ export interface RetryPlan {
   /** The attempt number this failure represents (1 = first, at day 0). */
   readonly attempt: number;
   /** When to charge next; null when final. */
-  readonly nextChargeDate: Date | null;
+  readonly nextPaymentDate: Date | null;
 }
 
 /**
@@ -28,12 +28,12 @@ export const planRetry = (
 ): RetryPlan => {
   const attempt = priorFailures + 1;
   if (attempt >= RETRY_SCHEDULE_DAYS.length) {
-    return { final: true, attempt, nextChargeDate: null };
+    return { final: true, attempt, nextPaymentDate: null };
   }
   const offsetDays = RETRY_SCHEDULE_DAYS[attempt] ?? 0;
   return {
     final: false,
     attempt,
-    nextChargeDate: new Date(firstFailureAt.getTime() + offsetDays * DAY_MS),
+    nextPaymentDate: new Date(firstFailureAt.getTime() + offsetDays * DAY_MS),
   };
 };

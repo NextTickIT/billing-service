@@ -33,7 +33,9 @@ export const createOrExtend =
     params: ApplyPaymentParams,
   ): Effect.Effect<ApplyPaymentResult, SqlError.SqlError> =>
     Effect.gen(function* () {
-      const nextChargeDate = addPeriod(params.paidAt, params.period);
+      const currentPeriodStart = params.paidAt;
+      const currentPeriodEnd = addPeriod(params.paidAt, params.period);
+      const nextPaymentDate = currentPeriodEnd;
       const existing = yield* repo.findActiveByExternalUser(
         params.externalUserId,
       );
@@ -43,7 +45,9 @@ export const createOrExtend =
           currency: params.currency,
           method: params.method,
           period: params.period,
-          nextChargeDate,
+          currentPeriodStart,
+          currentPeriodEnd,
+          nextPaymentDate,
           recurringTokenRef: params.recurringTokenRef,
         });
         return { subscriptionId: existing.value.id, created: false };
@@ -55,7 +59,9 @@ export const createOrExtend =
         method: params.method,
         period: params.period,
         status: PaymentStatus.Active,
-        nextChargeDate,
+        currentPeriodStart,
+        currentPeriodEnd,
+        nextPaymentDate,
         recurringTokenRef: params.recurringTokenRef,
         firstFailureAt: null,
         retryAttempt: 0,

@@ -8,7 +8,11 @@ import { Effect } from 'effect';
 import { expect } from 'vitest';
 
 import type { Charge } from '@/modules/charge/contracts.js';
-import type { RetryState, PaymentRepo } from '@/modules/payment/data-access.js';
+import type {
+  AdvanceAnchor,
+  RetryState,
+  PaymentRepo,
+} from '@/modules/payment/data-access.js';
 import type { W4pChargeResponse } from '@/modules/wayforpay/contracts.js';
 import {
   scheduleTick,
@@ -25,7 +29,9 @@ const baseSub: Payment = {
   method: 0,
   period: 'P1M',
   status: PaymentStatus.Active,
-  nextChargeDate: new Date('2026-02-01T00:00:00Z'),
+  currentPeriodStart: new Date('2026-01-01T00:00:00Z'),
+  currentPeriodEnd: new Date('2026-02-01T00:00:00Z'),
+  nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
   recurringTokenRef: 'tok',
   firstFailureAt: null,
   retryAttempt: 0,
@@ -37,7 +43,7 @@ const die = () => Effect.die('unused');
 
 const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
   const calls = {
-    advanced: null as { id: string; next: Date } | null,
+    advanced: null as { id: string; anchor: AdvanceAnchor } | null,
     retry: null as { id: string; state: RetryState } | null,
     renewalFailed: false,
     ingested: [] as Charge[],
@@ -45,9 +51,9 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
   };
   const subs: PaymentRepo = {
     findDue: () => Effect.succeed([sub]),
-    advanceAfterSuccess: (id, next) =>
+    advanceAfterSuccess: (id, anchor) =>
       Effect.sync(() => {
-        calls.advanced = { id, next };
+        calls.advanced = { id, anchor };
       }),
     recordRetry: (id, state) =>
       Effect.sync(() => {
@@ -91,9 +97,9 @@ it.effect(
       yield* scheduleTick(deps, config);
 
       expect(calls.advanced?.id).toBe('sub-1');
-      expect(calls.advanced?.next.toISOString().slice(0, 10)).toBe(
-        '2026-03-01',
-      );
+      expect(
+        calls.advanced?.anchor.nextPaymentDate.toISOString().slice(0, 10),
+      ).toBe('2026-03-01');
       expect(calls.ingested).toHaveLength(1);
       expect(calls.published).toHaveLength(0);
     }),
@@ -137,29 +143,24 @@ it.effect('a declined charge on the final attempt emits renewal_failed', () =>
 );
 
 /**
- * AC-8 "before" pin: documents the CURRENT (buggy) retry-success drift.
- *
- * The subscription was due on 2026-02-01 (the anchor). It failed and a retry is
- * scheduled for 2026-02-08 (7 days later). When the retry succeeds, the current
- * code calls `advanceAfterSuccess(id, addPeriod(sub.nextChargeDate, period))` —
- * `nextChargeDate` is the retry date 2026-02-08, so the next charge is set to
- * 2026-03-08, gifting the user 7 extra days.
- *
- * Phase 4 will flip this test: the correct behaviour anchors on
- * `currentPeriodEnd` (2026-02-01), so the next charge must be 2026-03-01.
+ * AC-8: a retry-success must advance from the period ANCHOR (`currentPeriodEnd`),
+ * not from `nextPaymentDate` (the retry date). The payment was due 2026-02-01
+ * (anchor). After a failure + 7-day retry at 2026-02-08, success must still yield
+ * nextPaymentDate = 2026-03-01 (anchor + period), not 2026-03-08 (retry + period).
  */
 it.effect(
-  'AC-8 BEFORE: retry-success advances from retry date, not anchor (current drift)',
+  'AC-8: retry-success advances from the anchor, not the retry date',
   () =>
     Effect.gen(function* () {
-      // Subscription was originally due 2026-02-01 (the anchor).
-      // It failed; nextChargeDate was moved to the day-7 retry: 2026-02-08.
       const sub: Payment = {
         ...baseSub,
         status: PaymentStatus.PastDue,
-        nextChargeDate: new Date('2026-02-08T00:00:00Z'),
+        // anchor stays at 2026-02-01 (currentPeriodEnd)
+        currentPeriodEnd: new Date('2026-02-01T00:00:00Z'),
+        // retry scheduled for 7 days later
+        nextPaymentDate: new Date('2026-02-08T00:00:00Z'),
         firstFailureAt: new Date('2026-02-01T00:00:00Z'),
-        retryAttempt: 4, // last retry attempt (day 7)
+        retryAttempt: 4,
       };
       const { deps, calls } = makeDeps(sub, {
         transactionStatus: 'Approved',
@@ -168,10 +169,42 @@ it.effect(
 
       yield* scheduleTick(deps, config);
 
-      // BUG: advances from the retry date (2026-02-08) → 2026-03-08 (7 days gifted).
-      // Phase 4 fix: must advance from anchor (2026-02-01) → 2026-03-01 instead.
-      expect(calls.advanced?.next.toISOString().slice(0, 10)).toBe(
-        '2026-03-08',
-      );
+      // Must advance from anchor (2026-02-01) → 2026-03-01, NOT from retry date
+      expect(
+        calls.advanced?.anchor.nextPaymentDate.toISOString().slice(0, 10),
+      ).toBe('2026-03-01');
+      expect(
+        calls.advanced?.anchor.currentPeriodStart.toISOString().slice(0, 10),
+      ).toBe('2026-02-01');
+      expect(
+        calls.advanced?.anchor.currentPeriodEnd.toISOString().slice(0, 10),
+      ).toBe('2026-03-01');
+    }),
+);
+
+/**
+ * F-D: a fresh checkout sets currentPeriodStart=paidAt, currentPeriodEnd=nextPaymentDate.
+ */
+it.effect(
+  'AC-8 fresh-checkout: new payment has non-null anchors from paidAt',
+  () =>
+    Effect.gen(function* () {
+      const sub: Payment = {
+        ...baseSub,
+        currentPeriodStart: new Date('2026-01-15T00:00:00Z'),
+        currentPeriodEnd: new Date('2026-02-15T00:00:00Z'),
+        nextPaymentDate: new Date('2026-02-15T00:00:00Z'),
+      };
+      const { deps, calls } = makeDeps(sub, {
+        transactionStatus: 'Approved',
+        createdDate: '1700000000',
+      });
+
+      yield* scheduleTick(deps, config);
+
+      // Advances from the anchor (2026-02-15) → 2026-03-15
+      expect(
+        calls.advanced?.anchor.nextPaymentDate.toISOString().slice(0, 10),
+      ).toBe('2026-03-15');
     }),
 );

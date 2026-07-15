@@ -16,11 +16,9 @@ import {
 
 /**
  * The recurring billing scheduler (docs/00 §5.3, FR-004/005/006). Each tick finds
- * due subscriptions and charges the stored token. Success advances the next charge
- * and feeds the result through the pipeline (payment + payment_succeeded); failure
- * walks the fixed 0/1/3/5/7 retry ladder, emitting charge_retry_failed and finally
- * renewal_failed. The orderReference is deterministic per attempt, so a crash-retry
- * is a no-op at WayForPay (duplicate ref) and in our pipeline (idem key).
+ * due payments and charges the stored token. Success advances the next charge
+ * from the period ANCHOR (`currentPeriodEnd`), never the retry date — this is the
+ * drift fix (AC-8). Failure walks the fixed 0/1/3/5/7 retry ladder.
  */
 export interface SchedulerDeps {
   readonly subs: PaymentRepo;
@@ -38,7 +36,7 @@ export interface SchedulerConfig {
 
 /** Deterministic per attempt: the timestamp changes only when the schedule moves. */
 const orderReferenceFor = (sub: Payment): string =>
-  `${PAYMENT_ORDER_PREFIX}${sub.id}_${sub.nextChargeDate.getTime().toString()}`;
+  `${PAYMENT_ORDER_PREFIX}${sub.id}_${sub.nextPaymentDate.getTime().toString()}`;
 
 const onFailure = (
   deps: SchedulerDeps,
@@ -49,7 +47,7 @@ const onFailure = (
   Effect.gen(function* () {
     const firstFailureAt = sub.firstFailureAt ?? now;
     const plan = planRetry(sub.retryAttempt, firstFailureAt);
-    if (plan.final || plan.nextChargeDate === null) {
+    if (plan.final || plan.nextPaymentDate === null) {
       yield* deps.subs.markRenewalFailed(sub.id);
       yield* deps.publish(renewalFailed(sub, reason, now));
       return;
@@ -57,12 +55,12 @@ const onFailure = (
     yield* deps.subs.recordRetry(sub.id, {
       firstFailureAt,
       retryAttempt: plan.attempt,
-      nextChargeDate: plan.nextChargeDate,
+      nextPaymentDate: plan.nextPaymentDate,
     });
     yield* deps.publish(
       chargeRetryFailed(
         sub,
-        { attempt: plan.attempt, nextRetryDate: plan.nextChargeDate, reason },
+        { attempt: plan.attempt, nextRetryDate: plan.nextPaymentDate, reason },
         now,
       ),
     );
@@ -83,10 +81,12 @@ const chargeOne = (deps: SchedulerDeps, sub: Payment, now: Date) =>
       productName: `Payment ${sub.period}`,
     });
     if (response.transactionStatus === 'Approved') {
-      yield* deps.subs.advanceAfterSuccess(
-        sub.id,
-        addPeriod(sub.nextChargeDate, sub.period),
-      );
+      const newEnd = addPeriod(sub.currentPeriodEnd, sub.period);
+      yield* deps.subs.advanceAfterSuccess(sub.id, {
+        currentPeriodStart: sub.currentPeriodEnd,
+        currentPeriodEnd: newEnd,
+        nextPaymentDate: newEnd,
+      });
       yield* deps.ingest(
         chargeIncomingEvent(sub, orderReference, response, now),
       );
@@ -102,7 +102,7 @@ export const scheduleTick = (
   Effect.gen(function* () {
     const now = new Date(yield* Clock.currentTimeMillis);
     const due = yield* deps.subs.findDue(now, config.batchSize);
-    // Isolate each subscription: one failed charge must not abort the batch.
+    // Isolate each payment: one failed charge must not abort the batch.
     yield* Effect.forEach(
       due,
       (sub) =>
@@ -110,7 +110,7 @@ export const scheduleTick = (
           Effect.catchAllCause((cause) =>
             Effect.logError('scheduler: charge failed').pipe(
               Effect.annotateLogs({
-                subscriptionId: sub.id,
+                paymentId: sub.id,
                 cause: Cause.pretty(cause),
               }),
             ),

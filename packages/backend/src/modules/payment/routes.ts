@@ -110,7 +110,7 @@ const createPayment = (
     const sql = yield* SqlClient.SqlClient;
     const nowMs = yield* Clock.currentTimeMillis;
     const paidAt = new Date(nowMs);
-    const nextChargeDate = addPeriod(paidAt, body.period);
+    const currentPeriodEnd = addPeriod(paidAt, body.period);
     const payment = yield* makePaymentRepo(sql).insert({
       externalUserId: body.externalUserId,
       amount: body.amount,
@@ -118,7 +118,9 @@ const createPayment = (
       method: body.method ?? PaymentMethod.Card,
       period: body.period,
       status: PaymentStatus.Active,
-      nextChargeDate,
+      currentPeriodStart: paidAt,
+      currentPeriodEnd,
+      nextPaymentDate: currentPeriodEnd,
       recurringTokenRef: null,
       firstFailureAt: null,
       retryAttempt: 0,
