@@ -6,9 +6,10 @@ export const DeliveryStatus = Schema.Literal('pending', 'delivered', 'failed');
 export type DeliveryStatus = Schema.Schema.Type<typeof DeliveryStatus>;
 
 /**
- * An outbox delivery of a domain event to one sink — one row per (event, sink),
- * operator-facing via GET /api/support/deliveries. `status` is the durable outcome
- * the operator watches; `attemptCount` grows on each retry.
+ * An outbox delivery of a domain event to one sink — one row per (event, sink).
+ * `status` is the durable outcome; `attemptCount` grows on each retry. (No operator
+ * read route in the MVP — deliveries are outbox-driven; a deliveries screen + route
+ * are re-added when scoped.)
  */
 export const EventDeliveryRow = Schema.Struct({
   id: Schema.String,
