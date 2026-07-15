@@ -4,11 +4,8 @@ import { expect } from 'vitest';
 
 import { makeCheckoutApplier } from '@/modules/checkout/domain.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
-import type {
-  Charge,
-  Match,
-} from '@/modules/charge/contracts.js';
-import type { SubscriptionRepo } from '@/modules/subscription/data-access.js';
+import type { Charge, Match } from '@/modules/charge/contracts.js';
+import type { PaymentRepo } from '@/modules/payment/data-access.js';
 
 const event: Charge = {
   source: 'wayforpay_callback',
@@ -23,7 +20,7 @@ const event: Charge = {
 };
 
 /** A repo whose every method fails the test if called (the recurring path). */
-const unusedSubs: SubscriptionRepo = {
+const unusedSubs: PaymentRepo = {
   findActiveByExternalUser: () => Effect.die('unused'),
   findById: () => Effect.die('unused'),
   findDue: () => Effect.die('unused'),
@@ -48,7 +45,7 @@ it.effect(
     Effect.gen(function* () {
       let insertedToken: string | null = 'unset';
       let completed = false;
-      const subs: SubscriptionRepo = {
+      const subs: PaymentRepo = {
         ...unusedSubs,
         findActiveByExternalUser: () => Effect.succeed(Option.none()),
         insert: (input) =>

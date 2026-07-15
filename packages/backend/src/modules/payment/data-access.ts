@@ -1,17 +1,17 @@
 import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
 import {
-  type CreateSubscription,
-  Subscription,
-  SubscriptionStatus,
+  type CreatePayment,
+  Payment,
+  PaymentStatus,
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
 import { columnList } from '@/infra/db/columns.js';
 import { requireRow } from '@/infra/db/rows.js';
 
-/** New billing terms applied when a checkout extends an existing subscription. */
-export interface ExtendSubscription {
+/** New billing terms applied when a checkout extends an existing payment. */
+export interface ExtendPayment {
   readonly amount: number;
   readonly currency: number;
   readonly method: number;
@@ -28,28 +28,28 @@ export interface RetryState {
 }
 
 /**
- * Subscription persistence (FR-003/004/005). Same `(sql) => (input)` shape as the
+ * Payment persistence (FR-003/004/005). Same `(sql) => (input)` shape as the
  * other repos; columns are the shared field names verbatim. `extend`/`advanceAfter
  * Success` reset the retry state (a good payment restores standing).
  */
-export interface SubscriptionRepo {
+export interface PaymentRepo {
   readonly findActiveByExternalUser: (
     externalUserId: string,
-  ) => Effect.Effect<Option.Option<Subscription>, SqlError.SqlError>;
+  ) => Effect.Effect<Option.Option<Payment>, SqlError.SqlError>;
   readonly findById: (
     id: string,
-  ) => Effect.Effect<Option.Option<Subscription>, SqlError.SqlError>;
-  /** Subscriptions due to be charged now (active or in the retry window). */
+  ) => Effect.Effect<Option.Option<Payment>, SqlError.SqlError>;
+  /** Payments due to be charged now (active or in the retry window). */
   readonly findDue: (
     now: Date,
     limit: number,
-  ) => Effect.Effect<readonly Subscription[], SqlError.SqlError>;
+  ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
   readonly insert: (
-    input: CreateSubscription,
-  ) => Effect.Effect<Subscription, SqlError.SqlError>;
+    input: CreatePayment,
+  ) => Effect.Effect<Payment, SqlError.SqlError>;
   readonly extend: (
     id: string,
-    input: ExtendSubscription,
+    input: ExtendPayment,
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly advanceAfterSuccess: (
     id: string,
@@ -64,38 +64,38 @@ export interface SubscriptionRepo {
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly findByExternalUser: (
     externalUserId: string,
-  ) => Effect.Effect<readonly Subscription[], SqlError.SqlError>;
+  ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
   /** Cancel unless already ended; returns false if it was already cancelled. */
   readonly cancel: (id: string) => Effect.Effect<boolean, SqlError.SqlError>;
 }
 
-const COLUMNS = columnList(Subscription.fields);
+const COLUMNS = columnList(Payment.fields);
 
 const findActiveByExternalUser =
   (sql: SqlClient.SqlClient) => (externalUserId: string) =>
-    sql<Subscription>`
-      SELECT ${sql.unsafe(COLUMNS)} FROM subscriptions
-      WHERE "externalUserId" = ${externalUserId} AND status = ${SubscriptionStatus.Active}
+    sql<Payment>`
+      SELECT ${sql.unsafe(COLUMNS)} FROM payments
+      WHERE "externalUserId" = ${externalUserId} AND status = ${PaymentStatus.Active}
     `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
 const findById = (sql: SqlClient.SqlClient) => (id: string) =>
-  sql<Subscription>`
-    SELECT ${sql.unsafe(COLUMNS)} FROM subscriptions WHERE id = ${id}
+  sql<Payment>`
+    SELECT ${sql.unsafe(COLUMNS)} FROM payments WHERE id = ${id}
   `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
 const findDue = (sql: SqlClient.SqlClient) => (now: Date, limit: number) =>
-  sql<Subscription>`
-    SELECT ${sql.unsafe(COLUMNS)} FROM subscriptions
-    WHERE status IN (${SubscriptionStatus.Active}, ${SubscriptionStatus.PastDue})
+  sql<Payment>`
+    SELECT ${sql.unsafe(COLUMNS)} FROM payments
+    WHERE status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
       AND "nextChargeDate" <= ${now}
       AND "recurringTokenRef" IS NOT NULL
     ORDER BY "nextChargeDate"
     LIMIT ${limit}
   `;
 
-const insert = (sql: SqlClient.SqlClient) => (input: CreateSubscription) =>
-  sql<Subscription>`
-    INSERT INTO subscriptions
+const insert = (sql: SqlClient.SqlClient) => (input: CreatePayment) =>
+  sql<Payment>`
+    INSERT INTO payments
       ("externalUserId", amount, currency, method, period, status,
        "nextChargeDate", "recurringTokenRef", "firstFailureAt", "retryAttempt")
     VALUES
@@ -106,11 +106,11 @@ const insert = (sql: SqlClient.SqlClient) => (input: CreateSubscription) =>
   `.pipe(Effect.flatMap(requireRow));
 
 const extend =
-  (sql: SqlClient.SqlClient) => (id: string, input: ExtendSubscription) =>
+  (sql: SqlClient.SqlClient) => (id: string, input: ExtendPayment) =>
     sql`
-      UPDATE subscriptions
+      UPDATE payments
       SET amount = ${input.amount}, currency = ${input.currency}, method = ${input.method},
-          period = ${input.period}, status = ${SubscriptionStatus.Active},
+          period = ${input.period}, status = ${PaymentStatus.Active},
           "nextChargeDate" = ${input.nextChargeDate},
           "recurringTokenRef" = ${input.recurringTokenRef},
           "firstFailureAt" = NULL, "retryAttempt" = 0, "updatedAt" = now()
@@ -120,8 +120,8 @@ const extend =
 const advanceAfterSuccess =
   (sql: SqlClient.SqlClient) => (id: string, nextChargeDate: Date) =>
     sql`
-      UPDATE subscriptions
-      SET status = ${SubscriptionStatus.Active}, "nextChargeDate" = ${nextChargeDate},
+      UPDATE payments
+      SET status = ${PaymentStatus.Active}, "nextChargeDate" = ${nextChargeDate},
           "firstFailureAt" = NULL, "retryAttempt" = 0, "updatedAt" = now()
       WHERE id = ${id}
     `.pipe(Effect.asVoid);
@@ -129,8 +129,8 @@ const advanceAfterSuccess =
 const recordRetry =
   (sql: SqlClient.SqlClient) => (id: string, state: RetryState) =>
     sql`
-      UPDATE subscriptions
-      SET status = ${SubscriptionStatus.PastDue},
+      UPDATE payments
+      SET status = ${PaymentStatus.PastDue},
           "firstFailureAt" = ${state.firstFailureAt},
           "retryAttempt" = ${state.retryAttempt},
           "nextChargeDate" = ${state.nextChargeDate}, "updatedAt" = now()
@@ -139,28 +139,26 @@ const recordRetry =
 
 const markRenewalFailed = (sql: SqlClient.SqlClient) => (id: string) =>
   sql`
-    UPDATE subscriptions SET status = ${SubscriptionStatus.RenewalFailed},
+    UPDATE payments SET status = ${PaymentStatus.RenewalFailed},
       "updatedAt" = now() WHERE id = ${id}
   `.pipe(Effect.asVoid);
 
 const findByExternalUser =
   (sql: SqlClient.SqlClient) => (externalUserId: string) =>
-    sql<Subscription>`
-      SELECT ${sql.unsafe(COLUMNS)} FROM subscriptions
+    sql<Payment>`
+      SELECT ${sql.unsafe(COLUMNS)} FROM payments
       WHERE "externalUserId" = ${externalUserId}
       ORDER BY "createdAt" DESC
     `;
 
 const cancel = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<{ readonly id: string }>`
-    UPDATE subscriptions SET status = ${SubscriptionStatus.Cancelled}, "updatedAt" = now()
-    WHERE id = ${id} AND status <> ${SubscriptionStatus.Cancelled}
+    UPDATE payments SET status = ${PaymentStatus.Cancelled}, "updatedAt" = now()
+    WHERE id = ${id} AND status <> ${PaymentStatus.Cancelled}
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
 
-export const makeSubscriptionRepo = (
-  sql: SqlClient.SqlClient,
-): SubscriptionRepo => ({
+export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   findActiveByExternalUser: findActiveByExternalUser(sql),
   findById: findById(sql),
   findDue: findDue(sql),

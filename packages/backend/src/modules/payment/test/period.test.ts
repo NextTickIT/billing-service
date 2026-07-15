@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { addPeriod } from '@/modules/subscription/period.js';
+import { addPeriod } from '@/modules/payment/period.js';
 
 const iso = (date: Date): string => date.toISOString().slice(0, 10);
 

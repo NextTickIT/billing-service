@@ -1,9 +1,6 @@
 import { Currency, currencyFromCode } from '@billing-service/shared';
 
-import type {
-  Charge,
-  ChargeStatus,
-} from '@/modules/charge/contracts.js';
+import type { Charge, ChargeStatus } from '@/modules/charge/contracts.js';
 import {
   transactionExternalId,
   type W4pTransaction,
@@ -64,9 +61,7 @@ export const w4pStatus = (
  * is left null: legacy rows carry no reliable identity, so matching happens
  * downstream (orderReference-first, docs/15).
  */
-export const mapTransaction = (
-  tx: W4pTransaction,
-): Charge | null => {
+export const mapTransaction = (tx: W4pTransaction): Charge | null => {
   if (
     tx.transactionType === undefined ||
     !PAYMENT_TYPES.has(tx.transactionType)

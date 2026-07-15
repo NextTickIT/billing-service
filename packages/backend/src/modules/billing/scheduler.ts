@@ -1,11 +1,12 @@
 import type { SqlError } from '@effect/sql';
-import type { DomainEvent, Subscription } from '@billing-service/shared';
+import type { DomainEvent, Payment } from '@billing-service/shared';
 import { Cause, Clock, Duration, Effect } from 'effect';
 
 import type { Charge } from '@/modules/charge/contracts.js';
-import type { SubscriptionRepo } from '@/modules/subscription/data-access.js';
-import { addPeriod } from '@/modules/subscription/period.js';
-import { planRetry } from '@/modules/subscription/retry.js';
+import type { PaymentRepo } from '@/modules/payment/data-access.js';
+import { addPeriod } from '@/modules/payment/period.js';
+import { planRetry } from '@/modules/payment/retry.js';
+import { PAYMENT_ORDER_PREFIX } from '@/modules/payment/matcher.js';
 import type { WayForPayClient } from '@/modules/wayforpay/client.js';
 import {
   chargeIncomingEvent,
@@ -22,11 +23,9 @@ import {
  * is a no-op at WayForPay (duplicate ref) and in our pipeline (idem key).
  */
 export interface SchedulerDeps {
-  readonly subs: SubscriptionRepo;
+  readonly subs: PaymentRepo;
   readonly client: Pick<WayForPayClient, 'charge'>;
-  readonly ingest: (
-    event: Charge,
-  ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly ingest: (event: Charge) => Effect.Effect<void, SqlError.SqlError>;
   readonly publish: (
     event: DomainEvent,
   ) => Effect.Effect<void, SqlError.SqlError>;
@@ -38,12 +37,12 @@ export interface SchedulerConfig {
 }
 
 /** Deterministic per attempt: the timestamp changes only when the schedule moves. */
-const orderReferenceFor = (sub: Subscription): string =>
-  `sub_${sub.id}_${sub.nextChargeDate.getTime().toString()}`;
+const orderReferenceFor = (sub: Payment): string =>
+  `${PAYMENT_ORDER_PREFIX}${sub.id}_${sub.nextChargeDate.getTime().toString()}`;
 
 const onFailure = (
   deps: SchedulerDeps,
-  sub: Subscription,
+  sub: Payment,
   reason: string,
   now: Date,
 ) =>
@@ -69,7 +68,7 @@ const onFailure = (
     );
   });
 
-const chargeOne = (deps: SchedulerDeps, sub: Subscription, now: Date) =>
+const chargeOne = (deps: SchedulerDeps, sub: Payment, now: Date) =>
   Effect.gen(function* () {
     if (sub.recurringTokenRef === null) {
       return; // no token on file — nothing to charge (findDue filters these out)
@@ -81,7 +80,7 @@ const chargeOne = (deps: SchedulerDeps, sub: Subscription, now: Date) =>
       currency: sub.currency,
       recToken: sub.recurringTokenRef,
       orderDate: Math.floor(now.getTime() / 1000),
-      productName: `Subscription ${sub.period}`,
+      productName: `Payment ${sub.period}`,
     });
     if (response.transactionStatus === 'Approved') {
       yield* deps.subs.advanceAfterSuccess(

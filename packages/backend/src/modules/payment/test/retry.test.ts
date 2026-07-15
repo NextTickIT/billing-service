@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { planRetry } from '@/modules/subscription/retry.js';
+import { planRetry } from '@/modules/payment/retry.js';
 
 const firstFailure = new Date('2026-01-01T00:00:00Z');
 const day = (n: number): Date =>

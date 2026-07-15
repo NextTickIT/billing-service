@@ -1,5 +1,5 @@
 import { SqlClient } from '@effect/sql';
-import { Role, Subscription } from '@billing-service/shared';
+import { Payment, Role } from '@billing-service/shared';
 import { Effect, Option, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
@@ -16,8 +16,8 @@ import { makeChargeRepo } from '@/modules/charge/data-access.js';
 import {
   CancelRequest,
   SUBSCRIPTION_CANCEL,
-} from '@/modules/subscription/contracts.js';
-import { makeSubscriptionRepo } from '@/modules/subscription/data-access.js';
+} from '@/modules/payment/contracts.js';
+import { makePaymentRepo } from '@/modules/payment/data-access.js';
 
 const CancelAccepted = Schema.Struct({ status: Schema.Literal('cancelled') });
 
@@ -41,9 +41,9 @@ const getOne = (_input: unknown, request: FastifyRequest) =>
   Effect.gen(function* () {
     yield* authed(request);
     const sql = yield* SqlClient.SqlClient;
-    const found = yield* makeSubscriptionRepo(sql).findById(readId(request));
+    const found = yield* makePaymentRepo(sql).findById(readId(request));
     if (Option.isNone(found)) {
-      return yield* Effect.fail(new NotFound({ resource: 'subscription' }));
+      return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
     return found.value;
   });
@@ -52,7 +52,7 @@ const listForUser = (_input: unknown, request: FastifyRequest) =>
   Effect.gen(function* () {
     yield* authed(request);
     const sql = yield* SqlClient.SqlClient;
-    return yield* makeSubscriptionRepo(sql).findByExternalUser(
+    return yield* makePaymentRepo(sql).findByExternalUser(
       readExternalUser(request),
     );
   });
@@ -63,15 +63,15 @@ const cancel = (body: CancelRequest, request: FastifyRequest) =>
     const actor = yield* authed(request);
     const id = readId(request);
     const sql = yield* SqlClient.SqlClient;
-    const repo = makeSubscriptionRepo(sql);
+    const repo = makePaymentRepo(sql);
     const found = yield* repo.findById(id);
     if (Option.isNone(found)) {
-      return yield* Effect.fail(new NotFound({ resource: 'subscription' }));
+      return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
     const cancelled = yield* repo.cancel(id);
     if (!cancelled) {
       return yield* Effect.fail(
-        new UnprocessableEntity({ reason: 'subscription already cancelled' }),
+        new UnprocessableEntity({ reason: 'payment already cancelled' }),
       );
     }
     const reason = body.reason ?? 'operator';
@@ -94,34 +94,34 @@ const cancel = (body: CancelRequest, request: FastifyRequest) =>
     return { status: 'cancelled' as const };
   });
 
-export default function subscriptions(fastify: FastifyInstance): void {
+export default function payments(fastify: FastifyInstance): void {
   route(fastify, {
     method: 'GET',
-    path: '/api/subscriptions/:id',
+    path: '/api/payments/:id',
     input: Schema.Unknown,
-    output: Subscription,
+    output: Payment,
     handler: getOne,
   });
 
   route(fastify, {
     method: 'GET',
-    path: '/api/subscriptions',
+    path: '/api/payments',
     input: Schema.Unknown,
-    output: Schema.Array(Subscription),
+    output: Schema.Array(Payment),
     handler: listForUser,
   });
 
   route(fastify, {
     method: 'GET',
-    path: '/api/support/subscriptions',
+    path: '/api/support/payments',
     input: Schema.Unknown,
-    output: Schema.Array(Subscription),
+    output: Schema.Array(Payment),
     handler: listForUser,
   });
 
   route(fastify, {
     method: 'POST',
-    path: '/api/support/subscriptions/:id/cancel',
+    path: '/api/support/payments/:id/cancel',
     input: CancelRequest,
     output: CancelAccepted,
     status: 202,

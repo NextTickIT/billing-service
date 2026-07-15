@@ -1,16 +1,16 @@
 import { it } from '@effect/vitest';
-import { type Subscription, SubscriptionStatus } from '@billing-service/shared';
+import { type Payment, PaymentStatus } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
 import type {
-  ExtendSubscription,
-  SubscriptionRepo,
-} from '@/modules/subscription/data-access.js';
+  ExtendPayment,
+  PaymentRepo,
+} from '@/modules/payment/data-access.js';
 import {
   createOrExtend,
   type ApplyPaymentParams,
-} from '@/modules/subscription/domain.js';
+} from '@/modules/payment/domain.js';
 
 const params: ApplyPaymentParams = {
   externalUserId: 'sp:1',
@@ -22,14 +22,14 @@ const params: ApplyPaymentParams = {
   paidAt: new Date('2026-01-15T00:00:00Z'),
 };
 
-const activeSubscription: Subscription = {
+const activePayment: Payment = {
   id: 'sub_1',
   externalUserId: 'sp:1',
   amount: 30000,
   currency: 0,
   method: 0,
   period: 'P1M',
-  status: SubscriptionStatus.Active,
+  status: PaymentStatus.Active,
   nextChargeDate: new Date('2026-01-15T00:00:00Z'),
   recurringTokenRef: 'tok_old',
   firstFailureAt: null,
@@ -38,10 +38,10 @@ const activeSubscription: Subscription = {
   updatedAt: new Date(0),
 };
 
-const makeFakeRepo = (existing: Subscription | null) => {
+const makeFakeRepo = (existing: Payment | null) => {
   let inserted: unknown = null;
-  let extended: { id: string; input: ExtendSubscription } | null = null;
-  const repo: SubscriptionRepo = {
+  let extended: { id: string; input: ExtendPayment } | null = null;
+  const repo: PaymentRepo = {
     findActiveByExternalUser: () =>
       Effect.succeed(existing === null ? Option.none() : Option.some(existing)),
     insert: (input) =>
@@ -69,7 +69,7 @@ const makeFakeRepo = (existing: Subscription | null) => {
   return { repo, getInserted: () => inserted, getExtended: () => extended };
 };
 
-it.effect('creates a subscription when the user has none active', () =>
+it.effect('creates a payment when the user has none active', () =>
   Effect.gen(function* () {
     const fake = makeFakeRepo(null);
 
@@ -85,9 +85,9 @@ it.effect('creates a subscription when the user has none active', () =>
   }),
 );
 
-it.effect('extends the existing active subscription in place', () =>
+it.effect('extends the existing active payment in place', () =>
   Effect.gen(function* () {
-    const fake = makeFakeRepo(activeSubscription);
+    const fake = makeFakeRepo(activePayment);
 
     const result = yield* createOrExtend(fake.repo)(params);
 

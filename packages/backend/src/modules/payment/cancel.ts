@@ -1,22 +1,22 @@
 import type { SqlError } from '@effect/sql';
 import type {
   DomainEvent,
-  SubscriptionCancelledEvent,
+  PaymentCancelledEvent,
 } from '@billing-service/shared';
 import { Clock, Effect, Schema } from 'effect';
 
 import {
   CancelNotify,
   SUBSCRIPTION_CANCEL,
-} from '@/modules/subscription/contracts.js';
+} from '@/modules/payment/contracts.js';
 
-/** subscription_cancelled envelope (docs/07); deterministic id so replays dedupe. */
-export const subscriptionCancelled = (
+/** payment_cancelled envelope (docs/07); deterministic id so replays dedupe. */
+export const paymentCancelled = (
   notify: CancelNotify,
   now: Date,
-): SubscriptionCancelledEvent => ({
+): PaymentCancelledEvent => ({
   id: `evt_sub_${notify.subscriptionId}_cancelled`,
-  name: 'subscription_cancelled',
+  name: 'payment_cancelled',
   occurredAt: now,
   correlationId: notify.subscriptionId,
   externalUserId: notify.externalUserId,
@@ -32,7 +32,7 @@ export const cancelNotify =
       Effect.flatMap((notify) =>
         Clock.currentTimeMillis.pipe(
           Effect.flatMap((ms) =>
-            publish(subscriptionCancelled(notify, new Date(ms))),
+            publish(paymentCancelled(notify, new Date(ms))),
           ),
         ),
       ),

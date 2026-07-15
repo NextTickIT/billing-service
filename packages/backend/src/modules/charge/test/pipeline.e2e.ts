@@ -20,9 +20,9 @@ import { ChargePipeline } from '@/modules/charge/domain.js';
 import { scheduleTick } from '@/modules/billing/scheduler.js';
 import { normalizeCallback } from '@/modules/wayforpay/callback.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
-import { cancelNotify } from '@/modules/subscription/cancel.js';
-import { SUBSCRIPTION_CANCEL } from '@/modules/subscription/contracts.js';
-import { makeSubscriptionRepo } from '@/modules/subscription/data-access.js';
+import { cancelNotify } from '@/modules/payment/cancel.js';
+import { SUBSCRIPTION_CANCEL } from '@/modules/payment/contracts.js';
+import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import type { W4pTransaction } from '@/modules/wayforpay/contracts.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
 import { pollTick } from '@/modules/wayforpay/poller.js';
@@ -199,9 +199,9 @@ const driveBind = Effect.gen(function* () {
 const assertBind = async (query: EffectE2eContext['query']): Promise<void> => {
   await eq(
     query,
-    `SELECT count(*) FROM charge_fixations WHERE "subscriptionId" IS NULL`,
+    `SELECT count(*) FROM charge_fixations WHERE "paymentId" IS NULL`,
     '1',
-    'bound charge fixation recorded without a subscription yet',
+    'bound charge fixation recorded without a payment yet',
   );
   await eq(
     query,
@@ -357,19 +357,19 @@ const assertCheckout = async (
 ): Promise<void> => {
   await eq(
     query,
-    `SELECT count(*) FROM subscriptions WHERE status = 0`,
+    `SELECT count(*) FROM payments WHERE status = 0`,
     '1',
     'an active subscription was created (AC5)',
   );
   await eq(
     query,
-    `SELECT "recurringTokenRef" FROM subscriptions`,
+    `SELECT "recurringTokenRef" FROM payments`,
     'tok_e2e',
     'the card token was stored (AC5)',
   );
   await eq(
     query,
-    `SELECT "externalUserId" FROM subscriptions`,
+    `SELECT "externalUserId" FROM payments`,
     'sp:checkout',
     'external user carried through',
   );
@@ -381,9 +381,9 @@ const assertCheckout = async (
   );
   await eq(
     query,
-    `SELECT count(*) FROM domain_events WHERE name = 'subscription_created'`,
+    `SELECT count(*) FROM domain_events WHERE name = 'payment_created'`,
     '1',
-    'subscription_created emitted',
+    'payment_created emitted',
   );
   await eq(
     query,
@@ -399,8 +399,8 @@ const assertCheckout = async (
   );
 };
 
-const checkoutCreatesSubscription: EffectScenario = {
-  name: 'checkout: a successful charge creates a subscription + events (AC5)',
+const checkoutCreatesPayment: EffectScenario = {
+  name: 'checkout: a successful charge creates a payment + events (AC5)',
   run: async ({ config, query }) => {
     const runtime = makeWorkerRuntime(config);
     try {
@@ -417,7 +417,7 @@ const checkoutCreatesSubscription: EffectScenario = {
 const driveScheduler = Effect.gen(function* () {
   yield* registerHandlers;
   const sql = yield* SqlClient.SqlClient;
-  const subs = makeSubscriptionRepo(sql);
+  const subs = makePaymentRepo(sql);
   yield* subs.insert({
     externalUserId: 'sp:sched',
     amount: 30000,
@@ -455,13 +455,13 @@ const assertScheduler = async (
 ): Promise<void> => {
   await eq(
     query,
-    `SELECT to_char("nextChargeDate", 'YYYY-MM-DD') FROM subscriptions`,
+    `SELECT to_char("nextChargeDate", 'YYYY-MM-DD') FROM payments`,
     '2026-02-01',
     'next charge advanced by the period (FR-004)',
   );
   await eq(
     query,
-    `SELECT status::text FROM subscriptions`,
+    `SELECT status::text FROM payments`,
     '0',
     'subscription stayed active',
   );
@@ -493,11 +493,11 @@ const schedulerChargesDue: EffectScenario = {
 };
 
 /** Cancel an active subscription (like the support route does), then let the
- * worker emit subscription_cancelled — the FR-012 path. */
+ * worker emit payment_cancelled — the FR-012 path. */
 const driveCancel = Effect.gen(function* () {
   yield* registerHandlers;
   const sql = yield* SqlClient.SqlClient;
-  const subs = makeSubscriptionRepo(sql);
+  const subs = makePaymentRepo(sql);
   const created = yield* subs.insert({
     externalUserId: 'sp:cancel',
     amount: 30000,
@@ -528,15 +528,15 @@ const assertCancel = async (
 ): Promise<void> => {
   await eq(
     query,
-    `SELECT status::text FROM subscriptions`,
+    `SELECT status::text FROM payments`,
     '3',
     'subscription is cancelled (FR-012)',
   );
   await eq(
     query,
-    `SELECT count(*) FROM domain_events WHERE name = 'subscription_cancelled'`,
+    `SELECT count(*) FROM domain_events WHERE name = 'payment_cancelled'`,
     '1',
-    'subscription_cancelled emitted',
+    'payment_cancelled emitted',
   );
   await eq(
     query,
@@ -546,8 +546,8 @@ const assertCancel = async (
   );
 };
 
-const cancelSubscription: EffectScenario = {
-  name: 'support: operator cancels a subscription (FR-012)',
+const cancelPayment: EffectScenario = {
+  name: 'support: operator cancels a payment (FR-012)',
   run: async ({ config, query }) => {
     const runtime = makeWorkerRuntime(config);
     try {
@@ -563,7 +563,7 @@ export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
   bindReprocesses,
   pollerIngestsJournal,
-  checkoutCreatesSubscription,
+  checkoutCreatesPayment,
   schedulerChargesDue,
-  cancelSubscription,
+  cancelPayment,
 ];

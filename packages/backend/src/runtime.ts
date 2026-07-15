@@ -17,8 +17,8 @@ import {
   makeCheckoutApplier,
   makeCheckoutMatcher,
 } from '@/modules/checkout/domain.js';
-import { makeRecurringMatcher } from '@/modules/subscription/matcher.js';
-import { makeSubscriptionRepo } from '@/modules/subscription/data-access.js';
+import { makeRecurringMatcher } from '@/modules/payment/matcher.js';
+import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import { WayForPayLive } from '@/modules/wayforpay/client.js';
 import { makeW4pConfig } from '@/modules/wayforpay/config.js';
 
@@ -89,10 +89,9 @@ export const makeWorkerLayer = (config: AppConfig) => {
     (sql) =>
       makeCompositeMatcher([
         makeCheckoutMatcher(makeCheckoutRepo(sql)),
-        makeRecurringMatcher(makeSubscriptionRepo(sql)),
+        makeRecurringMatcher(makePaymentRepo(sql)),
       ]),
-    (sql) =>
-      makeCheckoutApplier(makeSubscriptionRepo(sql), makeCheckoutRepo(sql)),
+    (sql) => makeCheckoutApplier(makePaymentRepo(sql), makeCheckoutRepo(sql)),
   );
   const withQueue = Layer.provideMerge(QueueLive, base);
   const withOutbox = Layer.provideMerge(OutboxLive, withQueue);

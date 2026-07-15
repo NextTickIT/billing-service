@@ -3,18 +3,15 @@ import type { DomainEvent } from '@billing-service/shared';
 import { Effect } from 'effect';
 import { describe, expect, test } from 'vitest';
 
-import {
-  cancelNotify,
-  subscriptionCancelled,
-} from '@/modules/subscription/cancel.js';
+import { cancelNotify, paymentCancelled } from '@/modules/payment/cancel.js';
 
-describe('subscriptionCancelled', () => {
+describe('paymentCancelled', () => {
   test('carries the reason and the external user (docs/07)', () => {
-    const event = subscriptionCancelled(
+    const event = paymentCancelled(
       { subscriptionId: 'sub_1', externalUserId: 'sp:1', reason: 'operator' },
       new Date(0),
     );
-    expect(event.name).toBe('subscription_cancelled');
+    expect(event.name).toBe('payment_cancelled');
     expect(event.externalUserId).toBe('sp:1');
     expect(event.aggregateId).toBe('sub_1');
     expect(event.payload.reason).toBe('operator');
@@ -41,6 +38,6 @@ it.effect('cancelNotify decodes the payload and publishes the event', () =>
     });
 
     expect(pub.events).toHaveLength(1);
-    expect(pub.events[0]?.name).toBe('subscription_cancelled');
+    expect(pub.events[0]?.name).toBe('payment_cancelled');
   }),
 );

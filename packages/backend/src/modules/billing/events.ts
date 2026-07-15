@@ -1,7 +1,7 @@
 import type {
   ChargeRetryFailedEvent,
+  Payment,
   RenewalFailedEvent,
-  Subscription,
 } from '@billing-service/shared';
 
 import type { Charge } from '@/modules/charge/contracts.js';
@@ -16,7 +16,7 @@ import type { W4pChargeResponse } from '@/modules/wayforpay/contracts.js';
 
 /** A successful charge, shaped as a standard incoming event for the pipeline. */
 export const chargeIncomingEvent = (
-  sub: Subscription,
+  sub: Payment,
   orderReference: string,
   response: W4pChargeResponse,
   now: Date,
@@ -45,7 +45,7 @@ export interface RetryFailure {
 }
 
 export const chargeRetryFailed = (
-  sub: Subscription,
+  sub: Payment,
   failure: RetryFailure,
   now: Date,
 ): ChargeRetryFailedEvent => ({
@@ -63,7 +63,7 @@ export const chargeRetryFailed = (
 });
 
 export const renewalFailed = (
-  sub: Subscription,
+  sub: Payment,
   reason: string,
   now: Date,
 ): RenewalFailedEvent => ({

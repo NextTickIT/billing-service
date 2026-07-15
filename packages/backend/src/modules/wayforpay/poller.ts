@@ -18,9 +18,7 @@ import { chunkWindows, type DateWindow } from '@/modules/wayforpay/windows.js';
  */
 export interface PollerDeps {
   readonly client: Pick<WayForPayClient, 'transactionList'>;
-  readonly ingest: (
-    event: Charge,
-  ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly ingest: (event: Charge) => Effect.Effect<void, SqlError.SqlError>;
   readonly state: PollerStateRepo;
 }
 

@@ -1,17 +1,14 @@
 import { it } from '@effect/vitest';
 import {
   type DomainEvent,
-  type Subscription,
-  SubscriptionStatus,
+  type Payment,
+  PaymentStatus,
 } from '@billing-service/shared';
 import { Effect } from 'effect';
 import { expect } from 'vitest';
 
 import type { Charge } from '@/modules/charge/contracts.js';
-import type {
-  RetryState,
-  SubscriptionRepo,
-} from '@/modules/subscription/data-access.js';
+import type { RetryState, PaymentRepo } from '@/modules/payment/data-access.js';
 import type { W4pChargeResponse } from '@/modules/wayforpay/contracts.js';
 import {
   scheduleTick,
@@ -20,14 +17,14 @@ import {
 
 const config = { intervalSeconds: 60, batchSize: 10 };
 
-const baseSub: Subscription = {
+const baseSub: Payment = {
   id: 'sub-1',
   externalUserId: 'sp:1',
   amount: 30000,
   currency: 0,
   method: 0,
   period: 'P1M',
-  status: SubscriptionStatus.Active,
+  status: PaymentStatus.Active,
   nextChargeDate: new Date('2026-02-01T00:00:00Z'),
   recurringTokenRef: 'tok',
   firstFailureAt: null,
@@ -38,7 +35,7 @@ const baseSub: Subscription = {
 
 const die = () => Effect.die('unused');
 
-const makeDeps = (sub: Subscription, response: W4pChargeResponse) => {
+const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
   const calls = {
     advanced: null as { id: string; next: Date } | null,
     retry: null as { id: string; state: RetryState } | null,
@@ -46,7 +43,7 @@ const makeDeps = (sub: Subscription, response: W4pChargeResponse) => {
     ingested: [] as Charge[],
     published: [] as DomainEvent[],
   };
-  const subs: SubscriptionRepo = {
+  const subs: PaymentRepo = {
     findDue: () => Effect.succeed([sub]),
     advanceAfterSuccess: (id, next) =>
       Effect.sync(() => {
@@ -121,9 +118,9 @@ it.effect(
 
 it.effect('a declined charge on the final attempt emits renewal_failed', () =>
   Effect.gen(function* () {
-    const sub: Subscription = {
+    const sub: Payment = {
       ...baseSub,
-      status: SubscriptionStatus.PastDue,
+      status: PaymentStatus.PastDue,
       retryAttempt: 4,
       firstFailureAt: new Date('2026-02-01T00:00:00Z'),
     };
@@ -157,9 +154,9 @@ it.effect(
     Effect.gen(function* () {
       // Subscription was originally due 2026-02-01 (the anchor).
       // It failed; nextChargeDate was moved to the day-7 retry: 2026-02-08.
-      const sub: Subscription = {
+      const sub: Payment = {
         ...baseSub,
-        status: SubscriptionStatus.PastDue,
+        status: PaymentStatus.PastDue,
         nextChargeDate: new Date('2026-02-08T00:00:00Z'),
         firstFailureAt: new Date('2026-02-01T00:00:00Z'),
         retryAttempt: 4, // last retry attempt (day 7)
@@ -173,6 +170,8 @@ it.effect(
 
       // BUG: advances from the retry date (2026-02-08) → 2026-03-08 (7 days gifted).
       // Phase 4 fix: must advance from anchor (2026-02-01) → 2026-03-01 instead.
-      expect(calls.advanced?.next.toISOString().slice(0, 10)).toBe('2026-03-08');
+      expect(calls.advanced?.next.toISOString().slice(0, 10)).toBe(
+        '2026-03-08',
+      );
     }),
 );

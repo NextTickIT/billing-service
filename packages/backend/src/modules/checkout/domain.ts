@@ -7,8 +7,8 @@ import type {
   ChargeMatcher,
 } from '@/modules/charge/contracts.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
-import type { SubscriptionRepo } from '@/modules/subscription/data-access.js';
-import { createOrExtend } from '@/modules/subscription/domain.js';
+import type { PaymentRepo } from '@/modules/payment/data-access.js';
+import { createOrExtend } from '@/modules/payment/domain.js';
 
 /** The public checkout page path for a session id (the CRM prepends the host). */
 export const checkoutPath = (sessionId: string): string =>
@@ -56,7 +56,7 @@ const recToken = (payload: Record<string, unknown>): string | null =>
  * so the applier just reports it.
  */
 export const makeCheckoutApplier =
-  (subscriptions: SubscriptionRepo, checkout: CheckoutRepo): ChargeApplier =>
+  (payments: PaymentRepo, checkout: CheckoutRepo): ChargeApplier =>
   (event, match) => {
     if (match.kind === 'recurring' && match.subscriptionId !== null) {
       const applied: AppliedCharge = {
@@ -65,7 +65,7 @@ export const makeCheckoutApplier =
       };
       return Effect.succeed(applied);
     }
-    return createOrExtend(subscriptions)({
+    return createOrExtend(payments)({
       externalUserId: match.externalUserId,
       amount: event.amount,
       currency: event.currency,

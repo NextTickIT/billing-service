@@ -1,13 +1,13 @@
 import type { SqlError } from '@effect/sql';
-import { SubscriptionStatus } from '@billing-service/shared';
+import { PaymentStatus } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
-import type { SubscriptionRepo } from '@/modules/subscription/data-access.js';
-import { addPeriod } from '@/modules/subscription/period.js';
+import type { PaymentRepo } from '@/modules/payment/data-access.js';
+import { addPeriod } from '@/modules/payment/period.js';
 
 /**
- * The billing terms a successful payment establishes for a user (FR-003). The
- * gateway holds at most one active subscription per external user, so a payment
+ * The billing terms a successful charge establishes for a user (FR-003). The
+ * gateway holds at most one active payment per external user, so a charge
  * either creates it or extends the existing one — the next charge is always the
  * payment date plus the period.
  */
@@ -23,12 +23,12 @@ export interface ApplyPaymentParams {
 
 export interface ApplyPaymentResult {
   readonly subscriptionId: string;
-  /** true when a new subscription was created (drives `subscription_created`). */
+  /** true when a new payment was created (drives `payment_created`). */
   readonly created: boolean;
 }
 
 export const createOrExtend =
-  (repo: SubscriptionRepo) =>
+  (repo: PaymentRepo) =>
   (
     params: ApplyPaymentParams,
   ): Effect.Effect<ApplyPaymentResult, SqlError.SqlError> =>
@@ -54,7 +54,7 @@ export const createOrExtend =
         currency: params.currency,
         method: params.method,
         period: params.period,
-        status: SubscriptionStatus.Active,
+        status: PaymentStatus.Active,
         nextChargeDate,
         recurringTokenRef: params.recurringTokenRef,
         firstFailureAt: null,

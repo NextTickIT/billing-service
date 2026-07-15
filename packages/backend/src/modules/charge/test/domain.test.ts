@@ -146,37 +146,39 @@ it.effect(
     }),
 );
 
-it.effect('a matched charge records a payment and emits payment_succeeded', () =>
-  Effect.gen(function* () {
-    const { repo, payments, quarantines } = makeFakeRepo();
-    const pub = recordingPublish();
+it.effect(
+  'a matched charge records a payment and emits payment_succeeded',
+  () =>
+    Effect.gen(function* () {
+      const { repo, payments, quarantines } = makeFakeRepo();
+      const pub = recordingPublish();
 
-    yield* handleChargeEvent({
-      repo,
-      matcher: matcherOf({
-        matched: true,
-        kind: 'recurring',
-        subscriptionId: 'sub_1',
-        externalUserId: 'sp:1',
-        period: 'P1M',
-        method: 0,
-      }),
-      applier: applierOf({ subscriptionId: 'sub_1', created: false }),
-      publish: pub.publish,
-    })(encodedPayload('k2'));
+      yield* handleChargeEvent({
+        repo,
+        matcher: matcherOf({
+          matched: true,
+          kind: 'recurring',
+          subscriptionId: 'sub_1',
+          externalUserId: 'sp:1',
+          period: 'P1M',
+          method: 0,
+        }),
+        applier: applierOf({ subscriptionId: 'sub_1', created: false }),
+        publish: pub.publish,
+      })(encodedPayload('k2'));
 
-    expect(quarantines.size).toBe(0);
-    expect(payments.size).toBe(1);
-    // No subscription_created when the subscription already existed.
-    expect(pub.events).toHaveLength(1);
-    expect(pub.events[0]?.name).toBe('payment_succeeded');
-    expect(pub.events[0]?.externalUserId).toBe('sp:1');
-    expect(pub.events[0]?.aggregateId).toBe('sub_1');
-    expect(pub.events[0]?.id).toBe('evt_k2:succeeded');
-  }),
+      expect(quarantines.size).toBe(0);
+      expect(payments.size).toBe(1);
+      // No payment_created when the payment already existed.
+      expect(pub.events).toHaveLength(1);
+      expect(pub.events[0]?.name).toBe('payment_succeeded');
+      expect(pub.events[0]?.externalUserId).toBe('sp:1');
+      expect(pub.events[0]?.aggregateId).toBe('sub_1');
+      expect(pub.events[0]?.id).toBe('evt_k2:succeeded');
+    }),
 );
 
-it.effect('a checkout first charge also emits subscription_created', () =>
+it.effect('a checkout first charge also emits payment_created', () =>
   Effect.gen(function* () {
     const { repo } = makeFakeRepo();
     const pub = recordingPublish();
@@ -196,7 +198,7 @@ it.effect('a checkout first charge also emits subscription_created', () =>
     })(encodedPayload('k7'));
 
     expect(pub.events.map((e) => e.name)).toEqual([
-      'subscription_created',
+      'payment_created',
       'payment_succeeded',
     ]);
     expect(pub.events.every((e) => e.aggregateId === 'sub_new')).toBe(true);

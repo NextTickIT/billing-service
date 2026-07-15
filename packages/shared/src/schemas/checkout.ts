@@ -1,6 +1,6 @@
 import { Schema } from 'effect';
 
-import { CurrencySchema, PaymentMethodSchema } from '@/schemas/subscription.js';
+import { CurrencySchema, PaymentMethodSchema } from '@/schemas/payment.js';
 
 /**
  * Checkout session (docs/05/06). The session id doubles as the WayForPay

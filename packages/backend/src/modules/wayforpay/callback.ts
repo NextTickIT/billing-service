@@ -56,9 +56,7 @@ export const verifyCallback = (
  * plus the status, so at-least-once retries of the same transition dedupe while a
  * later status change (e.g. a refund) is its own event.
  */
-export const normalizeCallback = (
-  payload: CallbackPayload,
-): Charge => {
+export const normalizeCallback = (payload: CallbackPayload): Charge => {
   const orderReference = field(payload, 'orderReference');
   const transactionStatus = field(payload, 'transactionStatus');
   return {

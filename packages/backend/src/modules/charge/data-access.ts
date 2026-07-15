@@ -10,8 +10,8 @@ export type MatchOutcome = 'unmatched' | 'matched' | 'quarantined';
 
 export interface NewPayment {
   readonly incomingEventId: string;
-  /** null when bound by an operator without a gateway subscription (yet). */
-  readonly subscriptionId: string | null;
+  /** null when bound by an operator without a gateway payment (yet). */
+  readonly paymentId: string | null;
   readonly externalUserId: string;
   readonly amount: number;
   readonly currency: number;
@@ -78,16 +78,15 @@ export interface ChargeRepo {
   >;
   readonly resolveQuarantine: (
     incomingEventId: string,
-    boundSubscriptionId: string | null,
+    boundPaymentId: string | null,
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly insertAudit: (
     entry: AuditEntry,
   ) => Effect.Effect<void, SqlError.SqlError>;
 }
 
-const upsertIncomingCharge =
-  (sql: SqlClient.SqlClient) => (event: Charge) =>
-    sql<{ readonly id: string }>`
+const upsertIncomingCharge = (sql: SqlClient.SqlClient) => (event: Charge) =>
+  sql<{ readonly id: string }>`
       INSERT INTO charges
         (source, "idemKey", "externalRef", "externalUserId", amount, currency, status, "occurredAt", payload)
       VALUES
@@ -97,9 +96,9 @@ const upsertIncomingCharge =
       ON CONFLICT ("idemKey") DO UPDATE SET "idemKey" = EXCLUDED."idemKey"
       RETURNING id
     `.pipe(
-      Effect.flatMap(requireRow),
-      Effect.map((row) => row.id),
-    );
+    Effect.flatMap(requireRow),
+    Effect.map((row) => row.id),
+  );
 
 const setMatchResult =
   (sql: SqlClient.SqlClient) => (id: string, outcome: MatchOutcome) =>
@@ -110,9 +109,9 @@ const setMatchResult =
 const insertPayment = (sql: SqlClient.SqlClient) => (input: NewPayment) =>
   sql`
     INSERT INTO charge_fixations
-      ("incomingEventId", "subscriptionId", "externalUserId", amount, currency, source, "occurredAt")
+      ("incomingEventId", "paymentId", "externalUserId", amount, currency, source, "occurredAt")
     VALUES
-      (${input.incomingEventId}, ${input.subscriptionId}, ${input.externalUserId},
+      (${input.incomingEventId}, ${input.paymentId}, ${input.externalUserId},
        ${input.amount}, ${input.currency}, ${input.source}, ${input.occurredAt})
     ON CONFLICT ("incomingEventId") DO NOTHING
   `.pipe(Effect.asVoid);
@@ -174,11 +173,11 @@ const getQuarantine = (sql: SqlClient.SqlClient) => (id: string) =>
 
 const resolveQuarantine =
   (sql: SqlClient.SqlClient) =>
-  (incomingEventId: string, boundSubscriptionId: string | null) =>
+  (incomingEventId: string, boundPaymentId: string | null) =>
     sql`
       UPDATE quarantine_records
       SET status = 'resolved',
-          "boundSubscriptionId" = ${boundSubscriptionId},
+          "boundPaymentId" = ${boundPaymentId},
           "resolvedAt" = now()
       WHERE "incomingEventId" = ${incomingEventId}
     `.pipe(Effect.asVoid);

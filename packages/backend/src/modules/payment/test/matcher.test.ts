@@ -1,16 +1,13 @@
 import { it } from '@effect/vitest';
-import type { Subscription } from '@billing-service/shared';
+import type { Payment } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
-import type {
-  Charge,
-  ChargeStatus,
-} from '@/modules/charge/contracts.js';
-import type { SubscriptionRepo } from '@/modules/subscription/data-access.js';
-import { makeRecurringMatcher } from '@/modules/subscription/matcher.js';
+import type { Charge, ChargeStatus } from '@/modules/charge/contracts.js';
+import type { PaymentRepo } from '@/modules/payment/data-access.js';
+import { makeRecurringMatcher } from '@/modules/payment/matcher.js';
 
-const sub: Subscription = {
+const sub: Payment = {
   id: '11111111-1111-1111-1111-111111111111',
   externalUserId: 'sp:1',
   amount: 30000,
@@ -27,7 +24,7 @@ const sub: Subscription = {
 };
 
 const die = () => Effect.die('unused');
-const repo = (found: Subscription | null): SubscriptionRepo => ({
+const repo = (found: Payment | null): PaymentRepo => ({
   findById: () =>
     Effect.succeed(found === null ? Option.none() : Option.some(found)),
   findActiveByExternalUser: die,
@@ -56,7 +53,7 @@ const event = (
   payload: {},
 });
 
-it.effect('matches our sub_<id>_ orderReference to the subscription', () =>
+it.effect('matches our sub_<id>_ orderReference to the payment', () =>
   makeRecurringMatcher(repo(sub))(event(`sub_${sub.id}_1700000000`)).pipe(
     Effect.map((result) => {
       expect(result.matched).toBe(true);

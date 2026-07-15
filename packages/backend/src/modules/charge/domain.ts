@@ -2,8 +2,8 @@ import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
 import type {
   DomainEvent,
+  PaymentCreatedEvent,
   PaymentSucceededEvent,
-  SubscriptionCreatedEvent,
   UnknownPaymentQuarantinedEvent,
 } from '@billing-service/shared';
 import { Context, Effect, Layer, Option, Schema } from 'effect';
@@ -58,14 +58,14 @@ export const paymentSucceeded = (
   },
 });
 
-/** subscription_created envelope for a brand-new gateway subscription (docs/07). */
-export const subscriptionCreated = (
+/** payment_created envelope for a brand-new gateway payment (docs/07). */
+export const paymentCreated = (
   event: Charge,
   match: Match,
   subscriptionId: string,
-): SubscriptionCreatedEvent => ({
+): PaymentCreatedEvent => ({
   id: eventId(event.idemKey, 'subscription'),
-  name: 'subscription_created',
+  name: 'payment_created',
   occurredAt: event.occurredAt,
   correlationId: event.idemKey,
   externalUserId: match.externalUserId,
@@ -160,7 +160,7 @@ const process = (deps: HandleDeps, event: Charge) =>
     const applied = yield* deps.applier(event, match);
     yield* deps.repo.insertPayment({
       incomingEventId: incomingId,
-      subscriptionId: applied.subscriptionId,
+      paymentId: applied.subscriptionId,
       externalUserId: match.externalUserId,
       amount: event.amount,
       currency: event.currency,
@@ -169,9 +169,7 @@ const process = (deps: HandleDeps, event: Charge) =>
     });
     yield* deps.repo.setMatchResult(incomingId, 'matched');
     if (applied.created) {
-      yield* deps.publish(
-        subscriptionCreated(event, match, applied.subscriptionId),
-      );
+      yield* deps.publish(paymentCreated(event, match, applied.subscriptionId));
     }
     yield* deps.publish(paymentSucceeded(event, match, applied.subscriptionId));
   });
@@ -202,14 +200,16 @@ const rebind =
   (deps: HandleDeps) =>
   (bind: RebindPayload): Effect.Effect<void, SqlError.SqlError> =>
     Effect.gen(function* () {
-      const found = yield* deps.repo.getIncomingChargeById(bind.incomingEventId);
+      const found = yield* deps.repo.getIncomingChargeById(
+        bind.incomingEventId,
+      );
       if (Option.isNone(found)) {
         return; // incoming charge vanished — nothing to reprocess
       }
       const event = found.value;
       yield* deps.repo.insertPayment({
         incomingEventId: bind.incomingEventId,
-        subscriptionId: bind.subscriptionId,
+        paymentId: bind.subscriptionId,
         externalUserId: bind.externalUserId,
         amount: event.amount,
         currency: event.currency,
@@ -236,9 +236,7 @@ export const rebindFromPayload =
     );
 
 export interface ChargePipelineService {
-  readonly ingest: (
-    event: Charge,
-  ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly ingest: (event: Charge) => Effect.Effect<void, SqlError.SqlError>;
   readonly handleFromPayload: (
     payload: unknown,
   ) => Effect.Effect<void, SqlError.SqlError>;

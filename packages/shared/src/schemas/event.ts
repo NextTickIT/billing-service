@@ -1,6 +1,6 @@
 import { Schema } from 'effect';
 
-import { CurrencySchema } from '@/schemas/subscription.js';
+import { CurrencySchema } from '@/schemas/payment.js';
 
 /**
  * Outgoing domain events must reach each connected sink within this many seconds
@@ -17,8 +17,8 @@ export const EVENT_NAMES = [
   'payment_succeeded',
   'charge_retry_failed',
   'renewal_failed',
-  'subscription_created',
-  'subscription_cancelled',
+  'payment_created',
+  'payment_cancelled',
   'unknown_payment_quarantined',
 ] as const;
 
@@ -57,10 +57,10 @@ export type PaymentSucceededEvent = Schema.Schema.Type<
   typeof PaymentSucceededEvent
 >;
 
-/** A brand-new gateway subscription created from a first checkout payment. */
-export const SubscriptionCreatedEvent = Schema.Struct({
+/** A brand-new gateway payment created from a first checkout payment. */
+export const PaymentCreatedEvent = Schema.Struct({
   ...envelope,
-  name: Schema.Literal('subscription_created'),
+  name: Schema.Literal('payment_created'),
   externalUserId: Schema.String,
   payload: Schema.Struct({
     amount: Schema.Int,
@@ -69,8 +69,8 @@ export const SubscriptionCreatedEvent = Schema.Struct({
   }),
 });
 
-export type SubscriptionCreatedEvent = Schema.Schema.Type<
-  typeof SubscriptionCreatedEvent
+export type PaymentCreatedEvent = Schema.Schema.Type<
+  typeof PaymentCreatedEvent
 >;
 
 /** A recurring charge that failed but is still inside the retry window (FR-005). */
@@ -99,16 +99,16 @@ export const RenewalFailedEvent = Schema.Struct({
 
 export type RenewalFailedEvent = Schema.Schema.Type<typeof RenewalFailedEvent>;
 
-/** A subscription cancelled by an operator or a provider event (FR-012). */
-export const SubscriptionCancelledEvent = Schema.Struct({
+/** A payment cancelled by an operator or a provider event (FR-012). */
+export const PaymentCancelledEvent = Schema.Struct({
   ...envelope,
-  name: Schema.Literal('subscription_cancelled'),
+  name: Schema.Literal('payment_cancelled'),
   externalUserId: Schema.String,
   payload: Schema.Struct({ reason: Schema.String }),
 });
 
-export type SubscriptionCancelledEvent = Schema.Schema.Type<
-  typeof SubscriptionCancelledEvent
+export type PaymentCancelledEvent = Schema.Schema.Type<
+  typeof PaymentCancelledEvent
 >;
 
 /**
@@ -141,10 +141,10 @@ export type UnknownPaymentQuarantinedEvent = Schema.Schema.Type<
  */
 export const DomainEvent = Schema.Union(
   PaymentSucceededEvent,
-  SubscriptionCreatedEvent,
+  PaymentCreatedEvent,
   ChargeRetryFailedEvent,
   RenewalFailedEvent,
-  SubscriptionCancelledEvent,
+  PaymentCancelledEvent,
   UnknownPaymentQuarantinedEvent,
 );
 

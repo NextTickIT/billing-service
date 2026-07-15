@@ -21,9 +21,9 @@ import {
   type ChargePipelineService,
 } from '@/modules/charge/domain.js';
 import { runScheduler } from '@/modules/billing/scheduler.js';
-import { cancelNotify } from '@/modules/subscription/cancel.js';
-import { SUBSCRIPTION_CANCEL } from '@/modules/subscription/contracts.js';
-import { makeSubscriptionRepo } from '@/modules/subscription/data-access.js';
+import { cancelNotify } from '@/modules/payment/cancel.js';
+import { SUBSCRIPTION_CANCEL } from '@/modules/payment/contracts.js';
+import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import { WayForPay } from '@/modules/wayforpay/client.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
 import { runPoller } from '@/modules/wayforpay/poller.js';
@@ -89,7 +89,7 @@ const startScheduler = (ingest: Ingest, publish: OutboxService['publish']) =>
     const sql = yield* SqlClient.SqlClient;
     yield* Effect.forkDaemon(
       runScheduler(
-        { subs: makeSubscriptionRepo(sql), client, ingest, publish },
+        { subs: makePaymentRepo(sql), client, ingest, publish },
         {
           intervalSeconds: config.scheduler.intervalSeconds,
           batchSize: config.scheduler.batchSize,
