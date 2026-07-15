@@ -138,3 +138,41 @@ it.effect('a declined charge on the final attempt emits renewal_failed', () =>
     expect(calls.published[0]?.name).toBe('renewal_failed');
   }),
 );
+
+/**
+ * AC-8 "before" pin: documents the CURRENT (buggy) retry-success drift.
+ *
+ * The subscription was due on 2026-02-01 (the anchor). It failed and a retry is
+ * scheduled for 2026-02-08 (7 days later). When the retry succeeds, the current
+ * code calls `advanceAfterSuccess(id, addPeriod(sub.nextChargeDate, period))` —
+ * `nextChargeDate` is the retry date 2026-02-08, so the next charge is set to
+ * 2026-03-08, gifting the user 7 extra days.
+ *
+ * Phase 4 will flip this test: the correct behaviour anchors on
+ * `currentPeriodEnd` (2026-02-01), so the next charge must be 2026-03-01.
+ */
+it.effect(
+  'AC-8 BEFORE: retry-success advances from retry date, not anchor (current drift)',
+  () =>
+    Effect.gen(function* () {
+      // Subscription was originally due 2026-02-01 (the anchor).
+      // It failed; nextChargeDate was moved to the day-7 retry: 2026-02-08.
+      const sub: Subscription = {
+        ...baseSub,
+        status: SubscriptionStatus.PastDue,
+        nextChargeDate: new Date('2026-02-08T00:00:00Z'),
+        firstFailureAt: new Date('2026-02-01T00:00:00Z'),
+        retryAttempt: 4, // last retry attempt (day 7)
+      };
+      const { deps, calls } = makeDeps(sub, {
+        transactionStatus: 'Approved',
+        createdDate: '1700000000',
+      });
+
+      yield* scheduleTick(deps, config);
+
+      // BUG: advances from the retry date (2026-02-08) → 2026-03-08 (7 days gifted).
+      // Phase 4 fix: must advance from anchor (2026-02-01) → 2026-03-01 instead.
+      expect(calls.advanced?.next.toISOString().slice(0, 10)).toBe('2026-03-08');
+    }),
+);
