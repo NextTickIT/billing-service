@@ -3,6 +3,7 @@ import { Role } from '@billing-service/shared';
 import { Effect, Option, Redacted, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import { extractBearer } from '@/infra/http/bearer.js';
 import {
   NotFound,
   Unauthorized,
@@ -10,46 +11,9 @@ import {
 } from '@/infra/http/errors.js';
 import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
-import type { DeliveryStatus } from '@/modules/outbox/contracts.js';
-import { makeOutboxRepo } from '@/modules/outbox/data-access.js';
+import { authenticate, requireRole } from '@/modules/auth/domain.js';
 import { PAYMENT_REBIND } from '@/modules/charge/contracts.js';
 import { makeChargeRepo } from '@/modules/charge/data-access.js';
-import { authenticateToken } from '@/modules/auth/domain.js';
-
-/**
- * Support / operator surface (docs/06, all audited). The queue of quarantined
- * payments and undelivered events (00 §8.5), and the manual bind that reprocesses
- * an unmatched payment (FR-009). Bind stays thin: it validates + audits + enqueues
- * a `payment_rebind`; the worker records the payment and emits the event.
- */
-
-const BEARER_PREFIX = 'Bearer ';
-
-const extractBearer = (request: FastifyRequest): Redacted.Redacted | null => {
-  const header = request.headers.authorization;
-  if (header?.startsWith(BEARER_PREFIX) !== true) {
-    return null;
-  }
-  const token = header.slice(BEARER_PREFIX.length);
-  return token.length === 0 ? null : Redacted.make(token);
-};
-
-/** Any valid auth-token authorizes the support surface; role boundaries (who may
- * bind) are an open question (00 §11.7) — for now the action is audited. */
-const supportActor = (request: FastifyRequest) => {
-  const presented = extractBearer(request);
-  return presented === null
-    ? Effect.fail(new Unauthorized({ reason: 'missing bearer token' }))
-    : authenticateToken(presented);
-};
-
-const readId = (request: FastifyRequest): string =>
-  (request.params as { readonly id: string }).id;
-
-const readStatus = (request: FastifyRequest): DeliveryStatus => {
-  const status = (request.query as { readonly status?: string }).status;
-  return status === 'pending' || status === 'delivered' ? status : 'failed';
-};
 
 const QuarantineView = Schema.Struct({
   quarantineId: Schema.String,
@@ -59,16 +23,6 @@ const QuarantineView = Schema.Struct({
   amount: Schema.Int,
   currency: Schema.Int,
   occurredAt: Schema.Date,
-  createdAt: Schema.Date,
-});
-
-const DeliveryView = Schema.Struct({
-  id: Schema.String,
-  eventId: Schema.String,
-  sink: Schema.String,
-  status: Schema.String,
-  attemptCount: Schema.Int,
-  deliveredAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,
 });
 
@@ -85,10 +39,27 @@ type BindBody = Schema.Schema.Type<typeof BindRequest>;
 
 const route = makeRoute((app: FastifyInstance) => app.runtime);
 
-/** Validate the quarantine, audit the operator action, enqueue the reprocessing. */
-const bind = (request: FastifyRequest, body: BindBody) =>
+const operatorActor = (request: FastifyRequest) => {
+  const presented = extractBearer(request);
+  if (presented === null) {
+    return Effect.fail(new Unauthorized({ reason: 'missing bearer token' }));
+  }
+  return authenticate(Redacted.value(presented)).pipe(
+    Effect.mapError(() => new Unauthorized({ reason: 'invalid session' })),
+    Effect.flatMap((session) =>
+      requireRole({ role: session.role }, Role.Operator).pipe(
+        Effect.as({ role: session.role }),
+      ),
+    ),
+  );
+};
+
+const readId = (request: FastifyRequest): string =>
+  (request.params as { readonly id: string }).id;
+
+const bind = (body: BindBody, request: FastifyRequest) =>
   Effect.gen(function* () {
-    const actor = yield* supportActor(request);
+    const actor = yield* operatorActor(request);
     const quarantineId = readId(request);
     const sql = yield* SqlClient.SqlClient;
     const repo = makeChargeRepo(sql);
@@ -125,39 +96,26 @@ const bind = (request: FastifyRequest, body: BindBody) =>
     return { status: 'accepted' as const };
   });
 
-export default function support(fastify: FastifyInstance): void {
+export default function quarantine(fastify: FastifyInstance): void {
   route(fastify, {
     method: 'GET',
-    path: '/api/support/quarantine',
+    path: '/api/quarantine',
     input: Schema.Unknown,
     output: Schema.Array(QuarantineView),
     handler: (_input, request) =>
       Effect.gen(function* () {
-        yield* supportActor(request);
+        yield* operatorActor(request);
         const sql = yield* SqlClient.SqlClient;
         return yield* makeChargeRepo(sql).listOpenQuarantine();
       }),
   });
 
   route(fastify, {
-    method: 'GET',
-    path: '/api/support/deliveries',
-    input: Schema.Unknown,
-    output: Schema.Array(DeliveryView),
-    handler: (_input, request) =>
-      Effect.gen(function* () {
-        yield* supportActor(request);
-        const sql = yield* SqlClient.SqlClient;
-        return yield* makeOutboxRepo(sql).listByStatus(readStatus(request));
-      }),
-  });
-
-  route(fastify, {
     method: 'POST',
-    path: '/api/support/quarantine/:id/bind',
+    path: '/api/quarantine/:id/bind',
     input: BindRequest,
     output: BindAccepted,
     status: 202,
-    handler: (body, request) => bind(request, body),
+    handler: bind,
   });
 }

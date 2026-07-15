@@ -94,6 +94,7 @@ const makeFakeRepo = () => {
         resolved.add(incomingEventId);
       }),
     insertAudit: () => Effect.void,
+    findChargesByPayment: () => Effect.succeed([]),
   };
   return { repo, payments, quarantines, matchResults, resolved };
 };

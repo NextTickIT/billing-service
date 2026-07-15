@@ -8,13 +8,13 @@ import { Schema } from 'effect';
 export const PAYMENT_EVENT_RECEIVED = 'payment_event_received';
 export const PAYMENT_REBIND = 'payment_rebind';
 export const DELIVER_EVENT = 'deliver_event';
-export const SUBSCRIPTION_CANCEL = 'subscription_cancel';
+export const PAYMENT_CANCEL = 'payment_cancel';
 
 export const MESSAGE_TYPES = [
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
   DELIVER_EVENT,
-  SUBSCRIPTION_CANCEL,
+  PAYMENT_CANCEL,
 ] as const;
 
 export const MessageType = Schema.Literal(...MESSAGE_TYPES);

@@ -23,7 +23,7 @@ export const buildPurchase = (
 ): PurchaseForm => {
   const amount = session.amount / 100;
   const currency = CurrencyCode[session.currency];
-  const productName = `Subscription ${session.period}`;
+  const productName = `Payment ${session.period}`;
   const merchantSignature = signPurchase(
     {
       merchantAccount: config.merchantAccount,

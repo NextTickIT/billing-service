@@ -41,7 +41,6 @@ export default Effect.flatMap(SqlClient.SqlClient, (sql) =>
           CONSTRAINT event_deliveries_event_sink_key UNIQUE ("eventId", sink)
         )
       `,
-      // The operator's "undelivered events" view (GET /api/support/deliveries).
       sql`
         CREATE INDEX IF NOT EXISTS event_deliveries_status_idx
           ON event_deliveries (status, "createdAt")

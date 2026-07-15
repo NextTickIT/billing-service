@@ -22,7 +22,7 @@ import {
 } from '@/modules/charge/domain.js';
 import { runScheduler } from '@/modules/billing/scheduler.js';
 import { cancelNotify } from '@/modules/payment/cancel.js';
-import { SUBSCRIPTION_CANCEL } from '@/modules/payment/contracts.js';
+import { PAYMENT_CANCEL } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import { WayForPay } from '@/modules/wayforpay/client.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
@@ -54,7 +54,7 @@ const registerHandlers = (
     yield* registry.register(DELIVER_EVENT, (payload) =>
       outbox.deliverFromPayload(payload),
     );
-    yield* registry.register(SUBSCRIPTION_CANCEL, cancelNotify(outbox.publish));
+    yield* registry.register(PAYMENT_CANCEL, cancelNotify(outbox.publish));
   });
 
 /** Fork the WayForPay migration poller (docs/15) if enabled. */

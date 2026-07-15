@@ -31,6 +31,16 @@ export interface QuarantineListRow {
   readonly createdAt: Date;
 }
 
+export interface ChargeFixation {
+  readonly id: string;
+  readonly incomingEventId: string;
+  readonly externalUserId: string;
+  readonly amount: number;
+  readonly currency: number;
+  readonly source: string;
+  readonly occurredAt: Date;
+}
+
 export interface AuditEntry {
   readonly actor: string;
   readonly action: string;
@@ -83,6 +93,9 @@ export interface ChargeRepo {
   readonly insertAudit: (
     entry: AuditEntry,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly findChargesByPayment: (
+    paymentId: string,
+  ) => Effect.Effect<readonly ChargeFixation[], SqlError.SqlError>;
 }
 
 const upsertIncomingCharge = (sql: SqlClient.SqlClient) => (event: Charge) =>
@@ -189,6 +202,15 @@ const insertAudit = (sql: SqlClient.SqlClient) => (entry: AuditEntry) =>
             ${JSON.stringify(entry.detail)}::jsonb)
   `.pipe(Effect.asVoid);
 
+const findChargesByPayment =
+  (sql: SqlClient.SqlClient) => (paymentId: string) =>
+    sql<ChargeFixation>`
+      SELECT id, "incomingEventId", "externalUserId", amount, currency, source, "occurredAt"
+      FROM charge_fixations
+      WHERE "paymentId" = ${paymentId}
+      ORDER BY "occurredAt" DESC
+    `;
+
 export const makeChargeRepo = (sql: SqlClient.SqlClient): ChargeRepo => ({
   transaction: (effect) => sql.withTransaction(effect),
   upsertIncomingCharge: upsertIncomingCharge(sql),
@@ -200,4 +222,5 @@ export const makeChargeRepo = (sql: SqlClient.SqlClient): ChargeRepo => ({
   getQuarantine: getQuarantine(sql),
   resolveQuarantine: resolveQuarantine(sql),
   insertAudit: insertAudit(sql),
+  findChargesByPayment: findChargesByPayment(sql),
 });

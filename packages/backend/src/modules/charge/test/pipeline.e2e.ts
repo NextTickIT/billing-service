@@ -21,7 +21,7 @@ import { scheduleTick } from '@/modules/billing/scheduler.js';
 import { normalizeCallback } from '@/modules/wayforpay/callback.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import { cancelNotify } from '@/modules/payment/cancel.js';
-import { SUBSCRIPTION_CANCEL } from '@/modules/payment/contracts.js';
+import { PAYMENT_CANCEL } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import type { W4pTransaction } from '@/modules/wayforpay/contracts.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
@@ -70,7 +70,7 @@ const registerHandlers = Effect.gen(function* () {
     pipeline.rebindFromPayload(p),
   );
   yield* registry.register(DELIVER_EVENT, (p) => outbox.deliverFromPayload(p));
-  yield* registry.register(SUBSCRIPTION_CANCEL, cancelNotify(outbox.publish));
+  yield* registry.register(PAYMENT_CANCEL, cancelNotify(outbox.publish));
 });
 
 /** Run the dispatch loop for `seconds`, then stop (the loop is `Effect<never>`). */
@@ -512,7 +512,7 @@ const driveCancel = Effect.gen(function* () {
   });
   yield* subs.cancel(created.id);
   yield* enqueue(sql)({
-    messageType: SUBSCRIPTION_CANCEL,
+    messageType: PAYMENT_CANCEL,
     idemKey: `cancel:${created.id}`,
     payload: {
       subscriptionId: created.id,

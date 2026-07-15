@@ -5,10 +5,7 @@ import type {
 } from '@billing-service/shared';
 import { Clock, Effect, Schema } from 'effect';
 
-import {
-  CancelNotify,
-  SUBSCRIPTION_CANCEL,
-} from '@/modules/payment/contracts.js';
+import { CancelNotify, PAYMENT_CANCEL } from '@/modules/payment/contracts.js';
 
 /** payment_cancelled envelope (docs/07); deterministic id so replays dedupe. */
 export const paymentCancelled = (
@@ -24,7 +21,7 @@ export const paymentCancelled = (
   payload: { reason: notify.reason },
 });
 
-/** The `subscription_cancel` handler: decode the payload, then emit the event. */
+/** The `payment_cancel` handler: decode the payload, then emit the event. */
 export const cancelNotify =
   (publish: (event: DomainEvent) => Effect.Effect<void, SqlError.SqlError>) =>
   (payload: unknown): Effect.Effect<void, SqlError.SqlError> =>
@@ -37,6 +34,6 @@ export const cancelNotify =
         ),
       ),
       Effect.catchTag('ParseError', (error) =>
-        Effect.die(`invalid ${SUBSCRIPTION_CANCEL} payload: ${error.message}`),
+        Effect.die(`invalid ${PAYMENT_CANCEL} payload: ${error.message}`),
       ),
     );
