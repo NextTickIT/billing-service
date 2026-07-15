@@ -73,27 +73,28 @@ async function handleCancel(): Promise<void> {
         </div>
       </div>
 
-      <template v-if="store.current.charges && store.current.charges.length > 0">
-        <h2 class="section-title">{{ t('payments.charges') }}</h2>
-        <table class="charges-table">
-          <thead>
-            <tr>
-              <th>{{ t('payments.chargeDate') }}</th>
-              <th>{{ t('payments.chargeAmount') }}</th>
-              <th>{{ t('payments.chargeStatus') }}</th>
-              <th>{{ t('payments.chargeMatch') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in store.current.charges" :key="c.id">
-              <td>{{ c.chargeDate }}</td>
-              <td>{{ c.amount }} {{ currencyLabel(c.currency) }}</td>
-              <td>{{ c.providerStatus }}</td>
-              <td>{{ c.matchResult ?? '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </template>
+      <h2 class="section-title">{{ t('payments.charges') }}</h2>
+      <table class="charges-table">
+        <thead>
+          <tr>
+            <th>{{ t('payments.chargeDate') }}</th>
+            <th>{{ t('payments.chargeAmount') }}</th>
+            <th>Source</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="!store.current.charges || store.current.charges.length === 0">
+            <td colspan="4" class="charges-empty">{{ t('payments.noResults') }}</td>
+          </tr>
+          <tr v-for="c in store.current.charges" :key="c.id">
+            <td>{{ new Date(c.occurredAt).toLocaleString() }}</td>
+            <td>{{ (c.amount / 100).toFixed(2) }} {{ currencyLabel(c.currency) }}</td>
+            <td class="mono">{{ c.source }}</td>
+            <td class="result-ok">succeeded</td>
+          </tr>
+        </tbody>
+      </table>
 
       <div class="cancel-section">
         <h2 class="section-title">{{ t('payments.cancelTitle') }}</h2>

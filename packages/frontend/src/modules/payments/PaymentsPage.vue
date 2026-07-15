@@ -3,7 +3,11 @@ import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { usePaymentsStore } from './store.js';
-import type { CreatePaymentBody } from './api.js';
+import type {
+  Currency,
+  PaymentMethod,
+  CreatePaymentRequest,
+} from '@billing-service/shared';
 import BasePanel from '../../components/BasePanel.vue';
 import BaseInput from '../../components/BaseInput.vue';
 import BaseButton from '../../components/BaseButton.vue';
@@ -19,13 +23,7 @@ const CURRENCY_OPTIONS = [
   { value: 0, label: 'UAH' }, { value: 1, label: 'USD' }, { value: 2, label: 'EUR' },
 ];
 const METHOD_OPTIONS = [{ value: 0, label: 'Card' }];
-const PERIOD_OPTIONS = [
-  { value: 'P1W', label: 'Weekly (P1W)' },
-  { value: 'P1M', label: 'Monthly (P1M)' },
-  { value: 'P3M', label: 'Quarterly (P3M)' },
-  { value: 'P6M', label: 'Half-yearly (P6M)' },
-  { value: 'P1Y', label: 'Yearly (P1Y)' },
-];
+const PERIOD_OPTIONS = [{ value: 'P4W', label: '4 weeks' }];
 
 const { t } = useI18n();
 const router = useRouter();
@@ -37,7 +35,7 @@ const showCreate = ref(false);
 const createUserId = ref('');
 const createAmount = ref('');
 const createCurrency = ref<number>(0);
-const createPeriod = ref('P1M');
+const createPeriod = ref('P4W');
 const createMethod = ref<number>(0);
 
 const filtered = computed(() => {
@@ -70,13 +68,13 @@ function statusCss(s: number): string {
   return STATUS_LABELS[s] ?? '';
 }
 
-function buildBody(): CreatePaymentBody {
+function buildBody(): CreatePaymentRequest {
   return {
     externalUserId: createUserId.value,
     amount: Number(createAmount.value),
-    currency: createCurrency.value,
+    currency: createCurrency.value as Currency,
     period: createPeriod.value,
-    method: createMethod.value,
+    method: createMethod.value as PaymentMethod,
   };
 }
 

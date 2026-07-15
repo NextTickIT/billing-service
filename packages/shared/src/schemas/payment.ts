@@ -94,3 +94,56 @@ export type CreatePayment = Schema.Schema.Type<typeof CreatePayment>;
  * docs/02-functional-requirements.md.
  */
 export const RETRY_SCHEDULE_DAYS = [0, 1, 3, 5, 7] as const;
+
+/**
+ * A completed charge fixation — a successful incoming payment event that has
+ * been matched and recorded against a Payment. `source` is the provider-agnostic
+ * label (e.g. 'wayforpay'); `occurredAt` is when the charge occurred at the provider.
+ */
+export const ChargeFixation = Schema.Struct({
+  id: Schema.String,
+  incomingEventId: Schema.String,
+  externalUserId: Schema.String,
+  amount: Schema.Int,
+  currency: CurrencySchema,
+  source: Schema.String,
+  occurredAt: Schema.Date,
+});
+
+export type ChargeFixation = Schema.Schema.Type<typeof ChargeFixation>;
+
+/** GET /api/payment/:id response: the Payment plus its charge history. */
+export const PaymentDetail = Schema.Struct({
+  ...Payment.fields,
+  charges: Schema.Array(ChargeFixation),
+});
+
+export type PaymentDetail = Schema.Schema.Type<typeof PaymentDetail>;
+
+/** POST /api/payment body: operator creates a Payment directly. */
+export const CreatePaymentRequest = Schema.Struct({
+  externalUserId: Schema.String,
+  amount: Schema.Int,
+  currency: CurrencySchema,
+  period: Schema.String,
+  method: Schema.optional(PaymentMethodSchema),
+});
+
+export type CreatePaymentRequest = Schema.Schema.Type<typeof CreatePaymentRequest>;
+
+/** POST /api/payment/:id/cancel body: operator cancels a Payment. */
+export const CancelPaymentRequest = Schema.Struct({
+  reason: Schema.optional(Schema.String),
+});
+
+export type CancelPaymentRequest = Schema.Schema.Type<typeof CancelPaymentRequest>;
+
+/** POST /api/payment/:id/cancel response. */
+export const CancelAccepted = Schema.Struct({ status: Schema.Literal('cancelled') });
+
+export type CancelAccepted = Schema.Schema.Type<typeof CancelAccepted>;
+
+/** POST /api/payment response: the new Payment id. */
+export const CreateAccepted = Schema.Struct({ id: Schema.String });
+
+export type CreateAccepted = Schema.Schema.Type<typeof CreateAccepted>;

@@ -1,6 +1,11 @@
 import { SqlClient } from '@effect/sql';
 import {
+  CancelAccepted,
+  CancelPaymentRequest,
+  CreateAccepted,
+  CreatePaymentRequest,
   Payment,
+  PaymentDetail,
   PaymentMethod,
   PaymentStatus,
   Role,
@@ -25,24 +30,10 @@ import { PAYMENT_CANCEL } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import { addPeriod, isValidPeriod } from '@/modules/payment/period.js';
 
-const CancelAccepted = Schema.Struct({ status: Schema.Literal('cancelled') });
-const CreateAccepted = Schema.Struct({ id: Schema.String });
-
-const CreatePaymentRequest = Schema.Struct({
-  externalUserId: Schema.String,
-  amount: Schema.Int,
-  currency: Schema.Int,
-  period: Schema.String,
-  method: Schema.optional(Schema.Int),
-});
-
-const CancelRequest = Schema.Struct({
-  reason: Schema.optional(Schema.String),
-});
-
 const route = makeRoute((app: FastifyInstance) => app.runtime);
 
 const operatorActor = (request: FastifyRequest) => {
+
   const presented = extractBearer(request);
   if (presented === null) {
     return Effect.fail(new Unauthorized({ reason: 'missing bearer token' }));
@@ -74,21 +65,6 @@ const listPayments = (_input: unknown, request: FastifyRequest) =>
       ? yield* repo.listAll(500)
       : yield* repo.findByExternalUser(externalUserId);
   });
-
-const ChargeFixationSchema = Schema.Struct({
-  id: Schema.String,
-  incomingEventId: Schema.String,
-  externalUserId: Schema.String,
-  amount: Schema.Int,
-  currency: Schema.Int,
-  source: Schema.String,
-  occurredAt: Schema.Date,
-});
-
-const PaymentDetail = Schema.Struct({
-  ...Payment.fields,
-  charges: Schema.Array(ChargeFixationSchema),
-});
 
 const getPayment = (_input: unknown, request: FastifyRequest) =>
   Effect.gen(function* () {
@@ -142,7 +118,7 @@ const createPayment = (
   });
 
 const cancelPayment = (
-  body: Schema.Schema.Type<typeof CancelRequest>,
+  body: Schema.Schema.Type<typeof CancelPaymentRequest>,
   request: FastifyRequest,
 ) =>
   Effect.gen(function* () {
@@ -210,7 +186,7 @@ export default function payments(fastify: FastifyInstance): void {
   route(fastify, {
     method: 'POST',
     path: '/api/payment/:id/cancel',
-    input: CancelRequest,
+    input: CancelPaymentRequest,
     output: CancelAccepted,
     status: 202,
     handler: cancelPayment,

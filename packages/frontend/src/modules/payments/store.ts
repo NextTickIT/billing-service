@@ -1,17 +1,25 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
+import type {
+  Payment,
+  PaymentDetail,
+  PaymentStatus,
+  CreatePaymentRequest,
+  CreateAccepted,
+} from '@billing-service/shared';
+
 import {
   listPayments,
   getPayment,
   cancelPayment,
   createPayment,
-  type PaymentRecord,
-  type CreatePaymentBody,
 } from './api.js';
 
+const CANCELLED: PaymentStatus = 3;
+
 export const usePaymentsStore = defineStore('payments', () => {
-  const list = ref<PaymentRecord[]>([]);
-  const current = ref<PaymentRecord | null>(null);
+  const list = ref<Payment[]>([]);
+  const current = ref<PaymentDetail | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
 
@@ -45,7 +53,7 @@ export const usePaymentsStore = defineStore('payments', () => {
     try {
       await cancelPayment(id, reason);
       if (current.value?.id === id) {
-        current.value = { ...current.value, status: 3 };
+        current.value = { ...current.value, status: CANCELLED };
       }
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Error';
@@ -54,12 +62,14 @@ export const usePaymentsStore = defineStore('payments', () => {
     }
   }
 
-  async function create(body: CreatePaymentBody): Promise<PaymentRecord | null> {
+  async function create(
+    body: CreatePaymentRequest,
+  ): Promise<CreateAccepted | null> {
     loading.value = true;
     error.value = null;
     try {
       const created = await createPayment(body);
-      list.value = [created, ...list.value];
+      await loadList();
       return created;
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Error';
