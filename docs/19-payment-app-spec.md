@@ -12,13 +12,13 @@ docs and amends the entity/API/vocabulary in docs/00, 05, 06, 12, 16, 18 and CLA
 ## 1. What it is
 
 A Vue 3 app in `packages/frontend` (replacing the current stub), deployed as **one**
-Cloudflare Pages project at `checkout.nexttick.it`, with two route areas from one build:
+Cloudflare Pages project at `bill.nexttick.it`, with two route areas from one build:
 
-1. **Public checkout** (`/c/:id`) — opened only via an unguessable direct link. Renders an
+1. **Public checkout** (`/checkout/:id`) — opened only via an unguessable direct link. Renders an
    existing checkout session (amount + currency + period), offers a single **Pay by card**
    action (WayForPay), and on return polls session status until the async provider webhook
    confirms. No subscriber data (docs/00 §5, docs/06).
-2. **Operator console** (`/ops/*`) — authenticated internal tool: **Payments** (filter by
+2. **Operator console** (`/operator/*`) — authenticated internal tool: **Payments** (filter by
    `externalUserId` → detail with the Payment's Charges → cancel; and **create** a Payment
    with a manual `externalUserId`) and **Quarantine** (list unmatched → bind/reprocess).
 
@@ -62,6 +62,26 @@ Do the charge-side rename first (`payments → charge`, `incoming_payment_events
 `payment.ts → charge.ts`), **then** `subscription → payment` — otherwise the two collide
 on the `payment` name mid-migration. Keep the queue's `attempts` table (a different
 concept: durable work-queue attempts, not a Charge).
+
+**Charge vs Payment (OQ-3).** "Charge" always means a *single instance* of payment (one
+attempt/one recorded charge); "Payment" is the *recurring* entity. The existing fixation
+table (`payments` from migration `0004`, which records single recorded charges) is renamed
+to **`charge_fixations`** (a single instance → Charge), freeing `payments` for the
+recurring Payment entity.
+
+**Value types owned by Payment (OQ-1).** `Currency`, `CurrencyCode`, `currencyFromCode`,
+`PaymentMethod`, `PaymentMethodSchema`, and `RETRY_SCHEDULE_DAYS` live in and are **owned
+by the payment slice** (`schemas/payment.ts`). Other slices (`event`, `checkout`) import
+them from `payment` — cross-slice imports of payment-owned types are allowed; they are
+**not** split into separate `currency.ts`/`method.ts` files.
+
+**Our event vocabulary is renamed; provider events are not (OQ-2).** The events **we**
+create and publish to sinks/CRM use Payment vocabulary — rename `subscription_created →
+payment_created` and `subscription_cancelled → payment_cancelled` in the outgoing
+`DomainEvent` union (`event.ts`, `EVENT_NAMES`). The sink is a stub today
+(`sendpulse`), so this is a safe pre-integration change. Events **received from WayForPay**
+(provider callback fields, transaction statuses) are **not** renamed — those are the
+provider's contract, not ours.
 
 ## 3. Payment, Charge & the date model
 
@@ -122,12 +142,12 @@ Route naming is singular `/api/payment` and `/api/quarantine`; cancel and create
      pick a processor (→ signed provider form). No listing, no lookup, no enumeration
      beyond the single unguessable token.
   2. **Authorise** — operator login.
-- Everything else (`/api/payment*`, `/api/quarantine*`, all `/ops/*`) requires the
+- Everything else (`/api/payment*`, `/api/quarantine*`, all `/operator/*`) requires the
   **operator role** (per-operator, audited; docs/12, docs/03). Filtering Payments by
   `externalUserId` is operator-only — there is no public/self lookup by user id.
 - **Operator auth flow:** login+password → BFF → backend `/auth/sessions` → the BFF stores
-  the session as a **Secure, HttpOnly, SameSite** cookie; every `/ops` `/api/*` call carries
-  only the cookie, and the Function attaches the operator token. Enforced at the BFF (no
+  the session as a **Secure, HttpOnly, SameSite** cookie; every `/operator` `/api/*` call
+  carries only the cookie, and the Function attaches the operator token. Enforced at the BFF (no
   cookie → 401 without calling the backend) **and** at the backend (`requireRole(actor,
   Operator)`).
 - The public checkout carries no privileged token: checkout sessions are created by the
@@ -144,14 +164,15 @@ Route naming is singular `/api/payment` and `/api/quarantine`; cancel and create
   method → creates a Payment so a later unmatched Charge auto-binds to it.
 - **Quarantine** — list unmatched Charges → bind/reprocess.
 
-(Deliveries and an Ops dashboard/metrics view are deferred; §11.)
+(Deliveries and an Ops dashboard/metrics view are out of MVP scope; the deliveries
+operator route is removed, not parked — no dead code (OQ-4, §11).)
 
 ## 7. Architecture
 
 ```
-checkout.nexttick.it  (one Cloudflare Pages project)
-  /c/:id, /c/:id/return   public checkout SPA routes
-  /ops/*                  operator console SPA routes (cookie-guarded)
+bill.nexttick.it  (one Cloudflare Pages project)
+  /checkout/:id, /checkout/:id/return   public checkout SPA routes
+  /operator/*                  operator console SPA routes (cookie-guarded)
   /api/*                  Pages Functions BFF (token/secret inject, proxy)
                               └─ HTTPS + shared secret ─> BACKEND_ORIGIN (Fastify)
 ```
@@ -159,7 +180,7 @@ checkout.nexttick.it  (one Cloudflare Pages project)
 - **BFF reach:** the Function targets env `BACKEND_ORIGIN` and sends a shared-secret header
   so the backend can reject non-BFF traffic; designed so a Cloudflare Tunnel can replace the
   public origin later with no code change.
-- **Checkout return** points at the frontend `/c/:id/return` route; it shows "processing"
+- **Checkout return** points at the frontend `/checkout/:id/return` route; it shows "processing"
   and polls the session status via the BFF until `completed` (success), timeout ("we'll
   confirm shortly"), or declined (retry) — because confirmation is async via the provider
   webhook, not the browser redirect.
@@ -176,13 +197,13 @@ packages/frontend/
                        #   Button, Input, Select, Panel, Table, Modal, Toast,
                        #   Spinner, ThemeToggle, LangSwitch — no business coupling
     modules/
-      checkout/        # page, store, api, components/   (/c/:id, /c/:id/return)
-      payments/        # ops: filter/detail/cancel/create (/ops/payments)
-      quarantine/      # ops: list/bind                  (/ops/quarantine)
-      session/         # operator login → HttpOnly cookie (/ops/login)
+      checkout/        # page, store, api, components/   (/checkout/:id, /checkout/:id/return)
+      payments/        # ops: filter/detail/cancel/create (/operator/payments)
+      quarantine/      # ops: list/bind                  (/operator/quarantine)
+      session/         # operator login → HttpOnly cookie (/operator/login)
     styles/            # design tokens (light+dark) + terminal effects
     i18n/              # en/ru/uk catalogs, per-module namespaces
-    router/            # routes aggregated from modules; /ops/* guard
+    router/            # routes aggregated from modules; /operator/* guard
     app/               # App.vue, main.ts, same-origin /api client
   functions/api/       # Cloudflare Pages Functions BFF
 ```
@@ -248,16 +269,16 @@ the full source when building.
   **not** `paidAt + period`.
 
 ### Client checkout
-- AC-9 `/c/:id` (valid session) renders amount + currency + period in the active locale,
+- AC-9 `/checkout/:id` (valid session) renders amount + currency + period in the active locale,
   terminal styling, single "Pay by card" — no `externalUserId`/subscriber data.
 - AC-10 Expired/invalid/`completed` sessions show the correct terminal state, not a form.
 - AC-11 "Pay by card" → `POST …/pay` via BFF → auto-submit the signed WayForPay form.
-- AC-12 On `/c/:id/return`: "processing", poll session status via BFF until `completed`
+- AC-12 On `/checkout/:id/return`: "processing", poll session status via BFF until `completed`
   (success), timeout → "we'll confirm shortly", declined → retry path.
 - AC-13 No checkout request hits the backend origin directly (verified in network trace).
 
 ### Operator console & foundation
-- AC-14 `/ops/*` unreachable without a valid operator cookie → redirect to `/ops/login`;
+- AC-14 `/operator/*` unreachable without a valid operator cookie → redirect to `/operator/login`;
   login sets a Secure HttpOnly cookie; browser storage holds no token.
 - AC-15 Payments filter by `externalUserId`; cancel reflects `cancelled`; create posts a new
   Payment; quarantine bind removes the item on success.
@@ -272,7 +293,7 @@ the full source when building.
 ### Deployment
 - AC-19 `npm run build` produces a Pages-deployable artifact (static assets + `functions/`);
   SPA deep links resolve (no 404 on refresh); BFF secrets read from Pages env, not committed;
-  public app at `checkout.nexttick.it`, console under `/ops/*`.
+  public app at `bill.nexttick.it`, console under `/operator/*`.
 
 ## 11. Backend touch-points & sequencing
 
@@ -285,11 +306,17 @@ the full source when building.
 4. Add the date model (`currentPeriodStart/End`, `nextPaymentDate`) + drift-free
    advancement; adjust `retry.ts`/`scheduler.ts` to keep the anchor.
 5. Auth-gate every route; leave only checkout + login public.
-6. **Public JSON read of a checkout session** (amount, currency, period, status) for SPA
-   render + return polling (`GET /checkout/:id` currently returns an HTML stub); retire that
-   server-rendered stub once the Vue page ships.
+6. **Public JSON read of a checkout session** (amount, currency, period, status; no
+   `externalUserId`) for SPA render + return polling — exposed as `GET
+   /api/checkout-sessions/:id` (public, via BFF). The frontend now owns the `/checkout/:id`
+   SPA route, so the backend must not serve HTML there; retire the server-rendered stub
+   (`GET /checkout/:id`) once the Vue page ships.
+9. **Remove the operator deliveries route (OQ-4).** The old `GET /api/support/deliveries`
+   is not part of the MVP console (Payments + Quarantine only) — delete it rather than port
+   it; no dead/unneeded routes. (The outbox delivery machinery itself stays — only the
+   operator read route is removed; revisit when a deliveries screen is scoped.)
 7. Shared-secret middleware to reject non-BFF traffic; point `W4P_RETURN_URL` at
-   `checkout.nexttick.it/c/:id/return`.
+   `bill.nexttick.it/checkout/:id/return`.
 8. Typed `.ts` migrations in `src/migrations/` (CLAUDE.md §2), applied at startup.
 
 ## 12. Doc & convention ripples (update in the same change)
@@ -311,12 +338,24 @@ the full source when building.
 | Locale / ThemeToken | en/ru/uk; light/dark CSS variables |
 | EdgeProxy (BFF) | Pages Functions, `BACKEND_ORIGIN`, shared secret |
 
-## 14. Open / verify
-- Retry-window coverage semantics for the late cycle (user gets a shorter cycle to the
-  anchor, §3) — verify against `retry.ts`/`scheduler.ts` and lock with a test.
-- Whether `nextPaymentDate` is stored on Payment or derived from anchor + retry state
-  (recommend derive; store only the anchor + retry fields).
-- Whether "create Payment" requires amount/period up front or can be created with only
-  `externalUserId` and filled on first matched Charge.
-- Final public domain (`checkout` assumed vs `bill`/`billing`/`payment`.nexttick.it);
-  Cloudflare account + domain registration; crypto/Whitepay processor on checkout.
+## 14. Resolved decisions & remaining verify
+
+Resolved (were open questions):
+- **Domain & routes:** `bill.nexttick.it` with `/checkout/:id` (public) and `/operator/*`
+  (console); operator login `/operator/login`.
+- **Value types** (`Currency`, `PaymentMethod`, `RETRY_SCHEDULE_DAYS`, …) are owned by the
+  `payment` slice; cross-slice imports allowed; not split out.
+- **Event vocabulary:** our outgoing events are renamed to `payment_created` /
+  `payment_cancelled`; WayForPay-received events keep their names.
+- **Fixation table** → `charge_fixations` (Charge = single instance).
+- **Deliveries operator route** removed (no dead code); revisit when a screen is scoped.
+- **Create Payment** requires `externalUserId` + amount + currency + period + method up
+  front.
+- **`nextPaymentDate`** is a stored column (the renamed scheduling column) alongside the
+  `currentPeriodEnd` anchor; period advancement always reads the anchor (plan §4, Decision 2).
+
+Remaining verify (implementation-time):
+- Retry-window coverage semantics for the late cycle (user is covered only to the anchored
+  end, §3) — verify against `retry.ts`/`scheduler.ts` and lock with a test.
+- Cloudflare account + domain registration; crypto/Whitepay processor on checkout (card-only
+  MVP).
