@@ -264,6 +264,10 @@ sub_<subscriptionId>_<…>`; charge idemKey `w4p:<orderReference>|CHARGE|<create
   `git commit --amend`, no history-rewriting rebase/reset, even to fix a previous
   commit; the user performs any amend.
 - Commit each document, finding, and code change incrementally; keep commits atomic.
+- **Every spec, plan, or design doc you produce MUST be saved as a committed document
+  under `docs/`** (next in the numbered sequence). `.omc/` is gitignored and ephemeral —
+  a deliverable that lives only there is not saved. Working/interview artifacts may live
+  in `.omc/`, but their canonical, committed home is `docs/`.
 - Do not weaken a load-bearing invariant (§5) or an acceptance criterion (§1) to make a
   change compile or a test pass — fix the change instead.
 
@@ -282,4 +286,7 @@ Scope/ТЗ `docs/00`–`docs/01`, functional requirements `docs/02`, NFRs `docs/
 questions `docs/04`, domain model `docs/05`, API `docs/06`, events `docs/07`, vertical
 slice `docs/08`, queue `docs/09`, project setup `docs/10`–`docs/11`, auth
 `docs/12`–`docs/13`, WayForPay research + poller `docs/14`–`docs/15`, conventions
-`docs/16`, payment-flows plan `docs/17`, conformance map `docs/18`.
+`docs/16`, payment-flows plan `docs/17`, conformance map `docs/18`, payment app spec
+(Vue checkout + operator console, and the end-to-end Payment/Charge model: backend rename
+Subscription→Payment / IncomingPaymentEvent→Charge, route restructure, auth-everywhere,
+drift-free dates) `docs/19`.
