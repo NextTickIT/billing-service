@@ -52,6 +52,10 @@ async function onPay(): Promise<void> {
 function currencyLabel(c: number): string {
   return CURRENCY_LABELS[c] ?? 'UAH';
 }
+
+function formatAmount(amount: number, currency: number): string {
+  return `${(amount / 100).toFixed(2)} ${currencyLabel(currency)}`;
+}
 </script>
 
 <template>
@@ -88,8 +92,7 @@ function currencyLabel(c: number): string {
           <div class="checkout__row">
             <span class="checkout__label">{{ t('common.amount') }}</span>
             <span class="checkout__value">
-              {{ store.session.amount }}
-              {{ currencyLabel(store.session.currency) }}
+              {{ formatAmount(store.session.amount, store.session.currency) }}
             </span>
           </div>
           <div class="checkout__row">

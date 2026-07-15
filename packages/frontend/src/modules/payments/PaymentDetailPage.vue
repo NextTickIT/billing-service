@@ -49,7 +49,7 @@ async function handleCancel(): Promise<void> {
         </div>
         <div class="info-row">
           <span class="lbl">{{ t('common.amount') }}</span>
-          <span>{{ store.current.amount }} {{ currencyLabel(store.current.currency) }}</span>
+          <span>{{ (store.current.amount / 100).toFixed(2) }} {{ currencyLabel(store.current.currency) }}</span>
         </div>
         <div class="info-row">
           <span class="lbl">{{ t('common.period') }}</span>
