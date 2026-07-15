@@ -3,6 +3,7 @@ import { Role } from '@billing-service/shared';
 import { Effect, Option, Redacted, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
 import {
   NotFound,
@@ -59,6 +60,7 @@ const readId = (request: FastifyRequest): string =>
 
 const bind = (body: BindBody, request: FastifyRequest) =>
   Effect.gen(function* () {
+    assertBffSecret(request);
     const actor = yield* operatorActor(request);
     const quarantineId = readId(request);
     const sql = yield* SqlClient.SqlClient;
@@ -104,6 +106,7 @@ export default function quarantine(fastify: FastifyInstance): void {
     output: Schema.Array(QuarantineView),
     handler: (_input, request) =>
       Effect.gen(function* () {
+        assertBffSecret(request);
         yield* operatorActor(request);
         const sql = yield* SqlClient.SqlClient;
         return yield* makeChargeRepo(sql).listOpenQuarantine();

@@ -10,6 +10,7 @@ import {
 import { Clock, Effect, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
 import { NotFound, Unauthorized } from '@/infra/http/errors.js';
 import { makeRoute } from '@/infra/http/route.js';
@@ -38,6 +39,18 @@ const CallbackAckSchema = Schema.Struct({
   signature: Schema.String,
 });
 
+/**
+ * Public checkout session JSON (AC-9): amount/currency/period/status/expiresAt
+ * only — no externalUserId (subscriber data must not appear on the public page).
+ */
+const CheckoutSessionPublic = Schema.Struct({
+  amount: Schema.Int,
+  currency: Schema.Int,
+  period: Schema.String,
+  status: Schema.Int,
+  expiresAt: Schema.Date,
+});
+
 const route = makeRoute((app: FastifyInstance) => app.runtime);
 
 /** The external system authenticates with a service token to open a session. */
@@ -50,37 +63,6 @@ const serviceActor = (request: FastifyRequest) => {
 
 const readId = (request: FastifyRequest): string =>
   (request.params as { readonly id: string }).id;
-
-/**
- * Minimal checkout page (FR-002): method choice + pay, no access data shown.
- * TODO(frontend): a server-rendered stub — the real page belongs in the frontend
- * package; this exists only so the hosted-checkout flow is end-to-end testable.
- */
-const pageHtml = (sessionId: string): string => `<!doctype html>
-<html><head><meta charset="utf-8"><title>Checkout</title></head>
-<body>
-  <h1>Complete your payment</h1>
-  <button id="card">Pay with card</button>
-  <script>
-    document.getElementById('card').onclick = async () => {
-      const res = await fetch(${JSON.stringify(`/api/checkout-sessions/${sessionId}/pay`)}, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ method: 0 }),
-      });
-      const { action, fields } = await res.json();
-      const form = document.createElement('form');
-      form.method = 'POST'; form.action = action;
-      for (const [k, v] of Object.entries(fields)) {
-        for (const item of Array.isArray(v) ? v : [v]) {
-          const input = document.createElement('input');
-          input.type = 'hidden'; input.name = k; input.value = String(item);
-          form.appendChild(input);
-        }
-      }
-      document.body.appendChild(form); form.submit();
-    };
-  </script>
-</body></html>`;
 
 const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
   Effect.gen(function* () {
@@ -102,8 +84,22 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
     return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };
   });
 
+const getSession = (_input: unknown, request: FastifyRequest) =>
+  Effect.gen(function* () {
+    assertBffSecret(request);
+    const sql = yield* SqlClient.SqlClient;
+    const id = readId(request);
+    const found = yield* makeCheckoutRepo(sql).findById(id);
+    if (found._tag === 'None') {
+      return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
+    }
+    const { amount, currency, period, status, expiresAt } = found.value;
+    return { amount, currency, period, status, expiresAt };
+  });
+
 const pay = (input: SelectMethod, request: FastifyRequest) =>
   Effect.gen(function* () {
+    assertBffSecret(request);
     const sql = yield* SqlClient.SqlClient;
     const repo = makeCheckoutRepo(sql);
     const id = readId(request);
@@ -152,18 +148,13 @@ export default function checkout(fastify: FastifyInstance): void {
     handler: createSession,
   });
 
-  fastify.get('/checkout/:id', async (request, reply) => {
-    const id = (request.params as { readonly id: string }).id;
-    const found = await fastify.runtime.runPromise(
-      Effect.flatMap(SqlClient.SqlClient, (sql) =>
-        makeCheckoutRepo(sql).findById(id),
-      ),
-    );
-    if (found._tag === 'None') {
-      await reply.status(404).type('text/html').send('<h1>Not found</h1>');
-      return;
-    }
-    await reply.type('text/html').send(pageHtml(id));
+  // Public JSON read (AC-9): BFF-proxied; no externalUserId in response.
+  route(fastify, {
+    method: 'GET',
+    path: '/api/checkout-sessions/:id',
+    input: Schema.Unknown,
+    output: CheckoutSessionPublic,
+    handler: getSession,
   });
 
   route(fastify, {

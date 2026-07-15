@@ -69,6 +69,12 @@ export interface AppConfig {
   readonly queue: QueueConfig;
   readonly wayforpay: WayForPayConfig;
   readonly scheduler: SchedulerConfig;
+  /**
+   * Shared secret the BFF sends on every proxied request (`BFF_SECRET` env).
+   * Empty string disables the gate (development / test). When set, the gate
+   * rejects any request to the BFF-proxied surface that lacks the header.
+   */
+  readonly bffSecret: Redacted.Redacted;
 }
 
 /** Queue tuning is its own loader so `loadConfig` stays simple (one concern each). */
@@ -98,7 +104,9 @@ const loadW4pCheckoutConfig = () => ({
   checkoutUrl:
     process.env['W4P_CHECKOUT_URL'] ?? 'https://secure.wayforpay.com/pay',
   serviceUrl: process.env['W4P_SERVICE_URL'] ?? '',
-  returnUrl: process.env['W4P_RETURN_URL'] ?? '',
+  returnUrl:
+    process.env['W4P_RETURN_URL'] ??
+    'https://bill.nexttick.it/checkout/{orderReference}/return',
   sessionTtlSeconds: Number(process.env['W4P_SESSION_TTL_SECONDS'] ?? '3600'),
 });
 
@@ -122,19 +130,22 @@ const loadWayForPayConfig = (): WayForPayConfig => ({
   ...loadW4pCheckoutConfig(),
 });
 
+const loadDatabaseConfig = (): DatabaseConfig => ({
+  host: process.env['DB_HOST'] ?? 'billing-service.local',
+  port: Number(process.env['DB_PORT'] ?? '5432'),
+  user: process.env['DB_USER'] ?? 'billing',
+  password: process.env['DB_PASSWORD'] ?? 'billing',
+  database: process.env['DB_NAME'] ?? 'billing',
+});
+
 export const loadConfig = (): AppConfig => ({
   host: process.env['HOST'] ?? '0.0.0.0',
   port: Number(process.env['PORT'] ?? '3000'),
-  database: {
-    host: process.env['DB_HOST'] ?? 'billing-service.local',
-    port: Number(process.env['DB_PORT'] ?? '5432'),
-    user: process.env['DB_USER'] ?? 'billing',
-    password: process.env['DB_PASSWORD'] ?? 'billing',
-    database: process.env['DB_NAME'] ?? 'billing',
-  },
+  database: loadDatabaseConfig(),
   adminToken: Redacted.make(process.env['ADMIN_TOKEN'] ?? ''),
   sessionTtlSeconds: Number(process.env['SESSION_TTL_SECONDS'] ?? '86400'),
   queue: loadQueueConfig(),
   wayforpay: loadWayForPayConfig(),
   scheduler: loadSchedulerConfig(),
+  bffSecret: Redacted.make(process.env['BFF_SECRET'] ?? ''),
 });

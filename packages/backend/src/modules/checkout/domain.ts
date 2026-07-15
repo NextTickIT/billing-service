@@ -10,9 +10,9 @@ import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import { createOrExtend } from '@/modules/payment/domain.js';
 
-/** The public checkout page path for a session id (the CRM prepends the host). */
+/** The public checkout page URL for a session id (served by the frontend SPA). */
 export const checkoutPath = (sessionId: string): string =>
-  `/checkout/${sessionId}`;
+  `https://bill.nexttick.it/checkout/${sessionId}`;
 
 /**
  * Checkout matcher: a succeeded incoming event whose `externalRef` is a known

@@ -10,6 +10,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import { Redacted } from 'effect';
 
+import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
 import {
   NotFound,
@@ -64,6 +65,7 @@ const readExternalUser = (request: FastifyRequest): string =>
 
 const listPayments = (_input: unknown, request: FastifyRequest) =>
   Effect.gen(function* () {
+    assertBffSecret(request);
     yield* operatorActor(request);
     const sql = yield* SqlClient.SqlClient;
     return yield* makePaymentRepo(sql).findByExternalUser(
@@ -88,6 +90,7 @@ const PaymentDetail = Schema.Struct({
 
 const getPayment = (_input: unknown, request: FastifyRequest) =>
   Effect.gen(function* () {
+    assertBffSecret(request);
     yield* operatorActor(request);
     const sql = yield* SqlClient.SqlClient;
     const id = readId(request);
@@ -106,6 +109,7 @@ const createPayment = (
   request: FastifyRequest,
 ) =>
   Effect.gen(function* () {
+    assertBffSecret(request);
     yield* operatorActor(request);
     const sql = yield* SqlClient.SqlClient;
     const nowMs = yield* Clock.currentTimeMillis;
@@ -133,6 +137,7 @@ const cancelPayment = (
   request: FastifyRequest,
 ) =>
   Effect.gen(function* () {
+    assertBffSecret(request);
     const actor = yield* operatorActor(request);
     const id = readId(request);
     const sql = yield* SqlClient.SqlClient;
