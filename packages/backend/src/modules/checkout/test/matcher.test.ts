@@ -5,7 +5,7 @@ import { expect } from 'vitest';
 
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import { makeCheckoutMatcher } from '@/modules/checkout/domain.js';
-import type { IncomingPaymentEvent } from '@/modules/payments/contracts.js';
+import type { Charge } from '@/modules/charge/contracts.js';
 
 const session: CheckoutSession = {
   id: 'chk_1',
@@ -27,7 +27,7 @@ const repoWith = (found: CheckoutSession | null): CheckoutRepo => ({
   markCompleted: () => Effect.void,
 });
 
-const event = (over: Partial<IncomingPaymentEvent>): IncomingPaymentEvent => ({
+const event = (over: Partial<Charge>): Charge => ({
   source: 'wayforpay_callback',
   idemKey: 'k',
   externalRef: 'chk_1',

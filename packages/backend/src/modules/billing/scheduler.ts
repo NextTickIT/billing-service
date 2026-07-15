@@ -2,7 +2,7 @@ import type { SqlError } from '@effect/sql';
 import type { DomainEvent, Subscription } from '@billing-service/shared';
 import { Cause, Clock, Duration, Effect } from 'effect';
 
-import type { IncomingPaymentEvent } from '@/modules/payments/contracts.js';
+import type { Charge } from '@/modules/charge/contracts.js';
 import type { SubscriptionRepo } from '@/modules/subscription/data-access.js';
 import { addPeriod } from '@/modules/subscription/period.js';
 import { planRetry } from '@/modules/subscription/retry.js';
@@ -25,7 +25,7 @@ export interface SchedulerDeps {
   readonly subs: SubscriptionRepo;
   readonly client: Pick<WayForPayClient, 'charge'>;
   readonly ingest: (
-    event: IncomingPaymentEvent,
+    event: Charge,
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly publish: (
     event: DomainEvent,

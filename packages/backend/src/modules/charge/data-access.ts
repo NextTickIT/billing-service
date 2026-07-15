@@ -3,12 +3,9 @@ import type { SqlError } from '@effect/sql';
 import { Effect, Option } from 'effect';
 
 import { requireRow } from '@/infra/db/rows.js';
-import type {
-  IncomingPaymentEvent,
-  PaymentEventStatus,
-} from '@/modules/payments/contracts.js';
+import type { Charge, ChargeStatus } from '@/modules/charge/contracts.js';
 
-/** How an incoming event resolved, cached on the row for the operator/audit. */
+/** How an incoming charge resolved, cached on the row for the operator/audit. */
 export type MatchOutcome = 'unmatched' | 'matched' | 'quarantined';
 
 export interface NewPayment {
@@ -22,7 +19,7 @@ export interface NewPayment {
   readonly occurredAt: Date;
 }
 
-/** An open quarantine row joined with its incoming event (operator queue view). */
+/** An open quarantine row joined with its incoming charge (operator queue view). */
 export interface QuarantineListRow {
   readonly quarantineId: string;
   readonly incomingEventId: string;
@@ -43,17 +40,17 @@ export interface AuditEntry {
 }
 
 /**
- * Payment-pipeline persistence. `upsertIncomingEvent` is idempotent on the source
+ * Charge-pipeline persistence. `upsertIncomingCharge` is idempotent on the source
  * key and always returns the row id (so a retry after partial processing can still
  * finish); `insertPayment`/`upsertQuarantine` are idempotent too, so the whole
  * handler is safe to replay. Same `(sql) => (input)` shape as the other repos.
  */
-export interface PaymentsRepo {
+export interface ChargeRepo {
   readonly transaction: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | SqlError.SqlError, R>;
-  readonly upsertIncomingEvent: (
-    event: IncomingPaymentEvent,
+  readonly upsertIncomingCharge: (
+    event: Charge,
   ) => Effect.Effect<string, SqlError.SqlError>;
   readonly setMatchResult: (
     id: string,
@@ -65,9 +62,9 @@ export interface PaymentsRepo {
   readonly upsertQuarantine: (
     incomingEventId: string,
   ) => Effect.Effect<string, SqlError.SqlError>;
-  readonly getIncomingEventById: (
+  readonly getIncomingChargeById: (
     id: string,
-  ) => Effect.Effect<Option.Option<IncomingPaymentEvent>, SqlError.SqlError>;
+  ) => Effect.Effect<Option.Option<Charge>, SqlError.SqlError>;
   readonly listOpenQuarantine: () => Effect.Effect<
     readonly QuarantineListRow[],
     SqlError.SqlError
@@ -88,10 +85,10 @@ export interface PaymentsRepo {
   ) => Effect.Effect<void, SqlError.SqlError>;
 }
 
-const upsertIncomingEvent =
-  (sql: SqlClient.SqlClient) => (event: IncomingPaymentEvent) =>
+const upsertIncomingCharge =
+  (sql: SqlClient.SqlClient) => (event: Charge) =>
     sql<{ readonly id: string }>`
-      INSERT INTO incoming_payment_events
+      INSERT INTO charges
         (source, "idemKey", "externalRef", "externalUserId", amount, currency, status, "occurredAt", payload)
       VALUES
         (${event.source}, ${event.idemKey}, ${event.externalRef}, ${event.externalUserId},
@@ -107,12 +104,12 @@ const upsertIncomingEvent =
 const setMatchResult =
   (sql: SqlClient.SqlClient) => (id: string, outcome: MatchOutcome) =>
     sql`
-      UPDATE incoming_payment_events SET "matchResult" = ${outcome} WHERE id = ${id}
+      UPDATE charges SET "matchResult" = ${outcome} WHERE id = ${id}
     `.pipe(Effect.asVoid);
 
 const insertPayment = (sql: SqlClient.SqlClient) => (input: NewPayment) =>
   sql`
-    INSERT INTO payments
+    INSERT INTO charge_fixations
       ("incomingEventId", "subscriptionId", "externalUserId", amount, currency, source, "occurredAt")
     VALUES
       (${input.incomingEventId}, ${input.subscriptionId}, ${input.externalUserId},
@@ -132,7 +129,7 @@ const upsertQuarantine =
       Effect.map((row) => row.id),
     );
 
-interface IncomingRow {
+interface ChargeRow {
   readonly source: string;
   readonly idemKey: string;
   readonly externalRef: string;
@@ -144,17 +141,17 @@ interface IncomingRow {
   readonly payload: Record<string, unknown>;
 }
 
-const getIncomingEventById = (sql: SqlClient.SqlClient) => (id: string) =>
-  sql<IncomingRow>`
+const getIncomingChargeById = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql<ChargeRow>`
     SELECT source, "idemKey", "externalRef", "externalUserId", amount, currency,
            status, "occurredAt", payload
-    FROM incoming_payment_events WHERE id = ${id}
+    FROM charges WHERE id = ${id}
   `.pipe(
     Effect.map((rows) => Option.fromNullable(rows[0])),
     Effect.map(
-      Option.map((r): IncomingPaymentEvent => ({
+      Option.map((r): Charge => ({
         ...r,
-        status: r.status as PaymentEventStatus,
+        status: r.status as ChargeStatus,
       })),
     ),
   );
@@ -164,7 +161,7 @@ const listOpenQuarantine = (sql: SqlClient.SqlClient) => () =>
     SELECT q.id AS "quarantineId", e.id AS "incomingEventId", e.source,
            e."externalRef", e.amount, e.currency, e."occurredAt", q."createdAt"
     FROM quarantine_records q
-    JOIN incoming_payment_events e ON e.id = q."incomingEventId"
+    JOIN charges e ON e.id = q."incomingEventId"
     WHERE q.status = 'open'
     ORDER BY q."createdAt" DESC
     LIMIT 200
@@ -193,13 +190,13 @@ const insertAudit = (sql: SqlClient.SqlClient) => (entry: AuditEntry) =>
             ${JSON.stringify(entry.detail)}::jsonb)
   `.pipe(Effect.asVoid);
 
-export const makePaymentsRepo = (sql: SqlClient.SqlClient): PaymentsRepo => ({
+export const makeChargeRepo = (sql: SqlClient.SqlClient): ChargeRepo => ({
   transaction: (effect) => sql.withTransaction(effect),
-  upsertIncomingEvent: upsertIncomingEvent(sql),
+  upsertIncomingCharge: upsertIncomingCharge(sql),
   setMatchResult: setMatchResult(sql),
   insertPayment: insertPayment(sql),
   upsertQuarantine: upsertQuarantine(sql),
-  getIncomingEventById: getIncomingEventById(sql),
+  getIncomingChargeById: getIncomingChargeById(sql),
   listOpenQuarantine: listOpenQuarantine(sql),
   getQuarantine: getQuarantine(sql),
   resolveQuarantine: resolveQuarantine(sql),

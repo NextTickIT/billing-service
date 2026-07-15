@@ -13,7 +13,7 @@ import { scenarios, type Scenario } from '@/modules/auth/test/routes.e2e.js';
 import {
   effectScenarios,
   type EffectScenario,
-} from '@/modules/payments/test/pipeline.e2e.js';
+} from '@/modules/charge/test/pipeline.e2e.js';
 
 /**
  * E2E test runner. Spins up the only external dependency (Postgres) in Docker,

@@ -2,10 +2,10 @@ import { PaymentMethod } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
 import type {
-  AppliedPayment,
-  PaymentApplier,
-  PaymentMatcher,
-} from '@/modules/payments/contracts.js';
+  AppliedCharge,
+  ChargeApplier,
+  ChargeMatcher,
+} from '@/modules/charge/contracts.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import type { SubscriptionRepo } from '@/modules/subscription/data-access.js';
 import { createOrExtend } from '@/modules/subscription/domain.js';
@@ -22,7 +22,7 @@ export const checkoutPath = (sessionId: string): string =>
  * here (no session), so they quarantine until the recurring matcher (M6).
  */
 export const makeCheckoutMatcher =
-  (repo: CheckoutRepo): PaymentMatcher =>
+  (repo: CheckoutRepo): ChargeMatcher =>
   (event) =>
     Effect.gen(function* () {
       if (event.status !== 'succeeded') {
@@ -56,10 +56,10 @@ const recToken = (payload: Record<string, unknown>): string | null =>
  * so the applier just reports it.
  */
 export const makeCheckoutApplier =
-  (subscriptions: SubscriptionRepo, checkout: CheckoutRepo): PaymentApplier =>
+  (subscriptions: SubscriptionRepo, checkout: CheckoutRepo): ChargeApplier =>
   (event, match) => {
     if (match.kind === 'recurring' && match.subscriptionId !== null) {
-      const applied: AppliedPayment = {
+      const applied: AppliedCharge = {
         subscriptionId: match.subscriptionId,
         created: false,
       };

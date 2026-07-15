@@ -1,6 +1,6 @@
 import { Redacted } from 'effect';
 
-import type { IncomingPaymentEvent } from '@/modules/payments/contracts.js';
+import type { Charge } from '@/modules/charge/contracts.js';
 import type { W4pConfigService } from '@/modules/wayforpay/config.js';
 import {
   toCurrency,
@@ -58,7 +58,7 @@ export const verifyCallback = (
  */
 export const normalizeCallback = (
   payload: CallbackPayload,
-): IncomingPaymentEvent => {
+): Charge => {
   const orderReference = field(payload, 'orderReference');
   const transactionStatus = field(payload, 'transactionStatus');
   return {

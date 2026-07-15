@@ -4,9 +4,9 @@ import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
 import type {
-  IncomingPaymentEvent,
-  PaymentEventStatus,
-} from '@/modules/payments/contracts.js';
+  Charge,
+  ChargeStatus,
+} from '@/modules/charge/contracts.js';
 import type { SubscriptionRepo } from '@/modules/subscription/data-access.js';
 import { makeRecurringMatcher } from '@/modules/subscription/matcher.js';
 
@@ -43,8 +43,8 @@ const repo = (found: Subscription | null): SubscriptionRepo => ({
 
 const event = (
   externalRef: string,
-  status: PaymentEventStatus = 'succeeded',
-): IncomingPaymentEvent => ({
+  status: ChargeStatus = 'succeeded',
+): Charge => ({
   source: 'wayforpay_charge',
   idemKey: 'k',
   externalRef,

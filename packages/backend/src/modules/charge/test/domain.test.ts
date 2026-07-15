@@ -5,21 +5,21 @@ import { expect } from 'vitest';
 
 import type { EnqueueInput } from '@/infra/queue/store.js';
 import {
-  type AppliedPayment,
-  type IncomingPaymentEvent,
+  type AppliedCharge,
+  type Charge,
   type MatchResult,
   PAYMENT_EVENT_RECEIVED,
-  type PaymentApplier,
-  type PaymentMatcher,
-} from '@/modules/payments/contracts.js';
-import type { PaymentsRepo } from '@/modules/payments/data-access.js';
+  type ChargeApplier,
+  type ChargeMatcher,
+} from '@/modules/charge/contracts.js';
+import type { ChargeRepo } from '@/modules/charge/data-access.js';
 import {
-  handlePaymentEvent,
+  handleChargeEvent,
   ingest,
   paymentSucceeded,
   quarantined,
   rebindFromPayload,
-} from '@/modules/payments/domain.js';
+} from '@/modules/charge/domain.js';
 
 /** The JSON-encoded `payment_event_received` payload the handler decodes. */
 const encodedPayload = (idemKey: string) => ({
@@ -34,7 +34,7 @@ const encodedPayload = (idemKey: string) => ({
   payload: {},
 });
 
-const decodedEvent = (idemKey: string): IncomingPaymentEvent => ({
+const decodedCharge = (idemKey: string): Charge => ({
   source: 'test',
   idemKey,
   externalRef: 'ref-1',
@@ -48,16 +48,16 @@ const decodedEvent = (idemKey: string): IncomingPaymentEvent => ({
 
 const makeFakeRepo = () => {
   const incoming = new Map<string, string>();
-  const eventsById = new Map<string, IncomingPaymentEvent>();
+  const eventsById = new Map<string, Charge>();
   const payments = new Set<string>();
   const quarantines = new Map<string, string>();
   const matchResults = new Map<string, string>();
   const resolved = new Set<string>();
   let seq = 0;
 
-  const repo: PaymentsRepo = {
+  const repo: ChargeRepo = {
     transaction: (effect) => effect,
-    upsertIncomingEvent: (event) =>
+    upsertIncomingCharge: (event) =>
       Effect.sync(() => {
         let id = incoming.get(event.idemKey);
         if (id === undefined) {
@@ -85,7 +85,7 @@ const makeFakeRepo = () => {
         }
         return q;
       }),
-    getIncomingEventById: (id) =>
+    getIncomingChargeById: (id) =>
       Effect.sync(() => Option.fromNullable(eventsById.get(id))),
     listOpenQuarantine: () => Effect.succeed([]),
     getQuarantine: () => Effect.succeed(Option.none()),
@@ -99,17 +99,17 @@ const makeFakeRepo = () => {
 };
 
 const matcherOf =
-  (result: MatchResult): PaymentMatcher =>
+  (result: MatchResult): ChargeMatcher =>
   () =>
     Effect.succeed(result);
 
 const applierOf =
-  (result: AppliedPayment): PaymentApplier =>
+  (result: AppliedCharge): ChargeApplier =>
   () =>
     Effect.succeed(result);
 
 /** Applier for paths where no match occurs, so it must never be called. */
-const noApplier: PaymentApplier = () =>
+const noApplier: ChargeApplier = () =>
   Effect.die('applier called on an unmatched path');
 
 const recordingPublish = () => {
@@ -124,13 +124,13 @@ const recordingPublish = () => {
 };
 
 it.effect(
-  'an unmatched event is quarantined and emits unknown_payment_quarantined',
+  'an unmatched charge is quarantined and emits unknown_payment_quarantined',
   () =>
     Effect.gen(function* () {
       const { repo, quarantines, payments } = makeFakeRepo();
       const pub = recordingPublish();
 
-      yield* handlePaymentEvent({
+      yield* handleChargeEvent({
         repo,
         matcher: matcherOf({ matched: false }),
         applier: noApplier,
@@ -146,12 +146,12 @@ it.effect(
     }),
 );
 
-it.effect('a matched event records a payment and emits payment_succeeded', () =>
+it.effect('a matched charge records a payment and emits payment_succeeded', () =>
   Effect.gen(function* () {
     const { repo, payments, quarantines } = makeFakeRepo();
     const pub = recordingPublish();
 
-    yield* handlePaymentEvent({
+    yield* handleChargeEvent({
       repo,
       matcher: matcherOf({
         matched: true,
@@ -176,12 +176,12 @@ it.effect('a matched event records a payment and emits payment_succeeded', () =>
   }),
 );
 
-it.effect('a checkout first payment also emits subscription_created', () =>
+it.effect('a checkout first charge also emits subscription_created', () =>
   Effect.gen(function* () {
     const { repo } = makeFakeRepo();
     const pub = recordingPublish();
 
-    yield* handlePaymentEvent({
+    yield* handleChargeEvent({
       repo,
       matcher: matcherOf({
         matched: true,
@@ -214,7 +214,7 @@ it.effect(
           return { enqueued: true, messageId: 'm1' };
         });
 
-      yield* ingest({ enqueue })(decodedEvent('k3'));
+      yield* ingest({ enqueue })(decodedCharge('k3'));
 
       expect(enqueued).toHaveLength(1);
       expect(enqueued[0]?.messageType).toBe(PAYMENT_EVENT_RECEIVED);
@@ -228,7 +228,7 @@ it.effect(
     Effect.gen(function* () {
       const fake = makeFakeRepo();
       const pub = recordingPublish();
-      const incId = yield* fake.repo.upsertIncomingEvent(decodedEvent('k9'));
+      const incId = yield* fake.repo.upsertIncomingCharge(decodedCharge('k9'));
 
       yield* rebindFromPayload({
         repo: fake.repo,
@@ -254,7 +254,7 @@ it.effect(
 
 it('paymentSucceeded carries the docs/07 required payload fields', () => {
   const event = paymentSucceeded(
-    decodedEvent('k4'),
+    decodedCharge('k4'),
     {
       matched: true,
       kind: 'recurring',
@@ -276,7 +276,7 @@ it('paymentSucceeded carries the docs/07 required payload fields', () => {
 });
 
 it('quarantined carries a null user and references the quarantine record', () => {
-  const event = quarantined(decodedEvent('k5'), 'q_1', 'inc_1');
+  const event = quarantined(decodedCharge('k5'), 'q_1', 'inc_1');
   expect(event.externalUserId).toBeNull();
   expect(event.aggregateId).toBe('q_1');
   expect(event.payload.incomingEventId).toBe('inc_1');

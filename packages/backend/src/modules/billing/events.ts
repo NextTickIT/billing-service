@@ -4,7 +4,7 @@ import type {
   Subscription,
 } from '@billing-service/shared';
 
-import type { IncomingPaymentEvent } from '@/modules/payments/contracts.js';
+import type { Charge } from '@/modules/charge/contracts.js';
 import type { W4pChargeResponse } from '@/modules/wayforpay/contracts.js';
 
 /**
@@ -20,7 +20,7 @@ export const chargeIncomingEvent = (
   orderReference: string,
   response: W4pChargeResponse,
   now: Date,
-): IncomingPaymentEvent => {
+): Charge => {
   const createdDate = String(
     response.createdDate ?? Math.floor(now.getTime() / 1000),
   );

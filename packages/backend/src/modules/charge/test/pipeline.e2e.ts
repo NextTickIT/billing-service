@@ -10,13 +10,13 @@ import { enqueue } from '@/infra/queue/store.js';
 import { TaskRegistry } from '@/infra/task-registry.js';
 import { DELIVER_EVENT } from '@/modules/outbox/contracts.js';
 import { Outbox } from '@/modules/outbox/domain.js';
-import type { IncomingPaymentEvent } from '@/modules/payments/contracts.js';
+import type { Charge } from '@/modules/charge/contracts.js';
 import {
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
-} from '@/modules/payments/contracts.js';
-import { makePaymentsRepo } from '@/modules/payments/data-access.js';
-import { PaymentPipeline } from '@/modules/payments/domain.js';
+} from '@/modules/charge/contracts.js';
+import { makeChargeRepo } from '@/modules/charge/data-access.js';
+import { ChargePipeline } from '@/modules/charge/domain.js';
 import { scheduleTick } from '@/modules/billing/scheduler.js';
 import { normalizeCallback } from '@/modules/wayforpay/callback.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
@@ -46,7 +46,7 @@ export interface EffectScenario {
   readonly run: (ctx: EffectE2eContext) => Promise<void>;
 }
 
-const event = (idemKey: string): IncomingPaymentEvent => ({
+const charge = (idemKey: string): Charge => ({
   source: 'test',
   idemKey,
   externalRef: 'o1',
@@ -62,7 +62,7 @@ const event = (idemKey: string): IncomingPaymentEvent => ({
 const registerHandlers = Effect.gen(function* () {
   const registry = yield* TaskRegistry;
   const outbox = yield* Outbox;
-  const pipeline = yield* PaymentPipeline;
+  const pipeline = yield* ChargePipeline;
   yield* registry.register(PAYMENT_EVENT_RECEIVED, (p) =>
     pipeline.handleFromPayload(p),
   );
@@ -100,12 +100,12 @@ const eq = async (
 
 const IDEM_KEY = 'w4p:o1|PURCHASE|1700000000';
 
-/** Ingest the same event twice, drain, and assert dedup + quarantine + delivery. */
+/** Ingest the same charge twice, drain, and assert dedup + quarantine + delivery. */
 const driveQuarantine = Effect.gen(function* () {
   yield* registerHandlers;
-  const pipeline = yield* PaymentPipeline;
-  yield* pipeline.ingest(event(IDEM_KEY));
-  yield* pipeline.ingest(event(IDEM_KEY)); // duplicate receipt
+  const pipeline = yield* ChargePipeline;
+  yield* pipeline.ingest(charge(IDEM_KEY));
+  yield* pipeline.ingest(charge(IDEM_KEY)); // duplicate receipt
   yield* runFor(3);
 });
 
@@ -126,15 +126,15 @@ const assertQuarantine = async (
   );
   await eq(
     query,
-    `SELECT count(*) FROM payments`,
+    `SELECT count(*) FROM charge_fixations`,
     '0',
-    'no payment when unmatched',
+    'no charge fixation when unmatched',
   );
   await eq(
     query,
     `SELECT count(*) FROM quarantine_records WHERE status = 'open'`,
     '1',
-    'unmatched event quarantined (AC6)',
+    'unmatched charge quarantined (AC6)',
   );
   await eq(
     query,
@@ -145,7 +145,7 @@ const assertQuarantine = async (
 };
 
 const quarantineAndDeliver: EffectScenario = {
-  name: 'pipeline: unmatched payment is deduped, quarantined, and delivered',
+  name: 'pipeline: unmatched charge is deduped, quarantined, and delivered',
   run: async ({ config, query }) => {
     const runtime = makeWorkerRuntime(config);
     try {
@@ -159,14 +159,14 @@ const quarantineAndDeliver: EffectScenario = {
 
 const BIND_KEY = 'w4p:o2|PURCHASE|1700000500';
 
-/** Quarantine an event, then bind it (audit + enqueue rebind) via the real repo. */
+/** Quarantine a charge, then bind it (audit + enqueue rebind) via the real repo. */
 const driveBind = Effect.gen(function* () {
   yield* registerHandlers;
   const sql = yield* SqlClient.SqlClient;
-  const repo = makePaymentsRepo(sql);
-  const pipeline = yield* PaymentPipeline;
+  const repo = makeChargeRepo(sql);
+  const pipeline = yield* ChargePipeline;
 
-  yield* pipeline.ingest(event(BIND_KEY));
+  yield* pipeline.ingest(charge(BIND_KEY));
   yield* runFor(2); // quarantine + deliver
 
   const open = yield* repo.listOpenQuarantine();
@@ -199,9 +199,9 @@ const driveBind = Effect.gen(function* () {
 const assertBind = async (query: EffectE2eContext['query']): Promise<void> => {
   await eq(
     query,
-    `SELECT count(*) FROM payments WHERE "subscriptionId" IS NULL`,
+    `SELECT count(*) FROM charge_fixations WHERE "subscriptionId" IS NULL`,
     '1',
-    'bound payment recorded without a subscription yet',
+    'bound charge fixation recorded without a subscription yet',
   );
   await eq(
     query,
@@ -230,7 +230,7 @@ const assertBind = async (query: EffectE2eContext['query']): Promise<void> => {
 };
 
 const bindReprocesses: EffectScenario = {
-  name: 'support: operator bind reprocesses a quarantine into a payment (FR-009)',
+  name: 'support: operator bind reprocesses a quarantine into a charge fixation (FR-009)',
   run: async ({ config, query }) => {
     const runtime = makeWorkerRuntime(config);
     try {
@@ -270,7 +270,7 @@ const journal: readonly W4pTransaction[] = [
 const drivePoller = Effect.gen(function* () {
   yield* registerHandlers;
   const sql = yield* SqlClient.SqlClient;
-  const pipeline = yield* PaymentPipeline;
+  const pipeline = yield* ChargePipeline;
   yield* pollTick(
     {
       client: { transactionList: () => Effect.succeed(journal) },
@@ -292,9 +292,9 @@ const assertPoller = async (
 ): Promise<void> => {
   await eq(
     query,
-    `SELECT count(*) FROM incoming_payment_events`,
+    `SELECT count(*) FROM charges`,
     '2',
-    'two payment rows ingested; SETTLE skipped',
+    'two charge rows ingested; SETTLE skipped',
   );
   await eq(
     query,
@@ -338,7 +338,7 @@ const driveCheckout = Effect.gen(function* () {
     period: 'P1M',
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
-  const pipeline = yield* PaymentPipeline;
+  const pipeline = yield* ChargePipeline;
   yield* pipeline.ingest(
     normalizeCallback({
       orderReference: CHK_ID,
@@ -400,7 +400,7 @@ const assertCheckout = async (
 };
 
 const checkoutCreatesSubscription: EffectScenario = {
-  name: 'checkout: a successful payment creates a subscription + events (AC5)',
+  name: 'checkout: a successful charge creates a subscription + events (AC5)',
   run: async ({ config, query }) => {
     const runtime = makeWorkerRuntime(config);
     try {
@@ -431,7 +431,7 @@ const driveScheduler = Effect.gen(function* () {
     retryAttempt: 0,
   });
   const outbox = yield* Outbox;
-  const pipeline = yield* PaymentPipeline;
+  const pipeline = yield* ChargePipeline;
   yield* scheduleTick(
     {
       subs,
@@ -467,7 +467,7 @@ const assertScheduler = async (
   );
   await eq(
     query,
-    `SELECT count(*) FROM payments`,
+    `SELECT count(*) FROM charge_fixations`,
     '1',
     'the charge was recorded',
   );

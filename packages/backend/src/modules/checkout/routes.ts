@@ -14,7 +14,7 @@ import { extractBearer } from '@/infra/http/bearer.js';
 import { NotFound, Unauthorized } from '@/infra/http/errors.js';
 import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
-import { PAYMENT_EVENT_RECEIVED } from '@/modules/payments/contracts.js';
+import { PAYMENT_EVENT_RECEIVED } from '@/modules/charge/contracts.js';
 import { authenticateToken } from '@/modules/auth/domain.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import { checkoutPath } from '@/modules/checkout/domain.js';

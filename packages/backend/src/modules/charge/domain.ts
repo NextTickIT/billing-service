@@ -11,22 +11,22 @@ import { Context, Effect, Layer, Option, Schema } from 'effect';
 import { Queue } from '@/infra/queue/service.js';
 import type { EnqueueInput, EnqueueResult } from '@/infra/queue/store.js';
 import {
-  IncomingPaymentEvent,
+  Charge,
   type Match,
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
-  type PaymentApplier,
-  type PaymentMatcher,
+  type ChargeApplier,
+  type ChargeMatcher,
   RebindPayload,
-} from '@/modules/payments/contracts.js';
+} from '@/modules/charge/contracts.js';
 import {
-  makePaymentsRepo,
-  type PaymentsRepo,
-} from '@/modules/payments/data-access.js';
+  makeChargeRepo,
+  type ChargeRepo,
+} from '@/modules/charge/data-access.js';
 import { Outbox } from '@/modules/outbox/domain.js';
 
 /**
- * Payment pipeline (FR-007). A source `ingest`s a normalized event onto the queue;
+ * Charge pipeline (FR-007). A source `ingest`s a normalized charge onto the queue;
  * the `payment_event_received` handler runs it through: upsert (idempotent on the
  * source key) -> match -> record payment + emit, or quarantine + emit (FR-009).
  * Every write is idempotent and every emitted event has a deterministic id, so a
@@ -37,9 +37,9 @@ import { Outbox } from '@/modules/outbox/domain.js';
 const eventId = (idemKey: string, suffix: string): string =>
   `evt_${idemKey}:${suffix}`;
 
-/** payment_succeeded envelope for a matched incoming event (docs/07). */
+/** payment_succeeded envelope for a matched incoming charge (docs/07). */
 export const paymentSucceeded = (
-  event: IncomingPaymentEvent,
+  event: Charge,
   match: Match,
   subscriptionId: string,
 ): PaymentSucceededEvent => ({
@@ -60,7 +60,7 @@ export const paymentSucceeded = (
 
 /** subscription_created envelope for a brand-new gateway subscription (docs/07). */
 export const subscriptionCreated = (
-  event: IncomingPaymentEvent,
+  event: Charge,
   match: Match,
   subscriptionId: string,
 ): SubscriptionCreatedEvent => ({
@@ -79,7 +79,7 @@ export const subscriptionCreated = (
 
 /** unknown_payment_quarantined envelope — externalUserId is null by definition. */
 export const quarantined = (
-  event: IncomingPaymentEvent,
+  event: Charge,
   quarantineId: string,
   incomingEventId: string,
 ): UnknownPaymentQuarantinedEvent => ({
@@ -102,7 +102,7 @@ export const quarantined = (
 /** payment_succeeded envelope for an operator-bound quarantine (FR-009). Without
  * a real subscription yet, the aggregate id falls back to the incoming event. */
 export const boundPaymentSucceeded = (
-  event: IncomingPaymentEvent,
+  event: Charge,
   bind: RebindPayload,
 ): PaymentSucceededEvent => ({
   id: eventId(event.idemKey, 'succeeded'),
@@ -126,10 +126,10 @@ interface IngestDeps {
   ) => Effect.Effect<EnqueueResult, SqlError.SqlError>;
 }
 
-/** Entry point for any source: enqueue the normalized event (idempotent by key). */
+/** Entry point for any source: enqueue the normalized charge (idempotent by key). */
 export const ingest =
   (deps: IngestDeps) =>
-  (event: IncomingPaymentEvent): Effect.Effect<void, SqlError.SqlError> =>
+  (event: Charge): Effect.Effect<void, SqlError.SqlError> =>
     deps
       .enqueue({
         messageType: PAYMENT_EVENT_RECEIVED,
@@ -139,17 +139,17 @@ export const ingest =
       .pipe(Effect.asVoid);
 
 interface HandleDeps {
-  readonly repo: PaymentsRepo;
-  readonly matcher: PaymentMatcher;
-  readonly applier: PaymentApplier;
+  readonly repo: ChargeRepo;
+  readonly matcher: ChargeMatcher;
+  readonly applier: ChargeApplier;
   readonly publish: (
     event: DomainEvent,
   ) => Effect.Effect<void, SqlError.SqlError>;
 }
 
-const process = (deps: HandleDeps, event: IncomingPaymentEvent) =>
+const process = (deps: HandleDeps, event: Charge) =>
   Effect.gen(function* () {
-    const incomingId = yield* deps.repo.upsertIncomingEvent(event);
+    const incomingId = yield* deps.repo.upsertIncomingCharge(event);
     const match = yield* deps.matcher(event);
     if (!match.matched) {
       const quarantineId = yield* deps.repo.upsertQuarantine(incomingId);
@@ -177,10 +177,10 @@ const process = (deps: HandleDeps, event: IncomingPaymentEvent) =>
   });
 
 /** The `payment_event_received` handler: decode the queue payload, then process. */
-export const handlePaymentEvent =
+export const handleChargeEvent =
   (deps: HandleDeps) =>
   (payload: unknown): Effect.Effect<void, SqlError.SqlError> =>
-    Schema.decodeUnknown(IncomingPaymentEvent)(payload).pipe(
+    Schema.decodeUnknown(Charge)(payload).pipe(
       Effect.flatMap((event) => process(deps, event)),
       Effect.catchTag('ParseError', (error) =>
         Effect.die(
@@ -191,7 +191,7 @@ export const handlePaymentEvent =
 
 /**
  * Reprocess an operator-bound quarantine (FR-009). The operator binds a SPECIFIC
- * incoming event by id: one user may have several quarantined events at once (e.g.
+ * incoming charge by id: one user may have several quarantined events at once (e.g.
  * two failed attempts and one success), so a human — not a heuristic — chooses which
  * to bind. Load that event, record the payment against the operator-supplied user,
  * resolve the quarantine, and emit payment_succeeded (the matched path, match supplied
@@ -202,9 +202,9 @@ const rebind =
   (deps: HandleDeps) =>
   (bind: RebindPayload): Effect.Effect<void, SqlError.SqlError> =>
     Effect.gen(function* () {
-      const found = yield* deps.repo.getIncomingEventById(bind.incomingEventId);
+      const found = yield* deps.repo.getIncomingChargeById(bind.incomingEventId);
       if (Option.isNone(found)) {
-        return; // incoming event vanished — nothing to reprocess
+        return; // incoming charge vanished — nothing to reprocess
       }
       const event = found.value;
       yield* deps.repo.insertPayment({
@@ -235,9 +235,9 @@ export const rebindFromPayload =
       ),
     );
 
-export interface PaymentPipelineService {
+export interface ChargePipelineService {
   readonly ingest: (
-    event: IncomingPaymentEvent,
+    event: Charge,
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly handleFromPayload: (
     payload: unknown,
@@ -247,9 +247,9 @@ export interface PaymentPipelineService {
   ) => Effect.Effect<void, SqlError.SqlError>;
 }
 
-export class PaymentPipeline extends Context.Tag('PaymentPipeline')<
-  PaymentPipeline,
-  PaymentPipelineService
+export class ChargePipeline extends Context.Tag('PaymentPipeline')<
+  ChargePipeline,
+  ChargePipelineService
 >() {}
 
 /**
@@ -258,17 +258,17 @@ export class PaymentPipeline extends Context.Tag('PaymentPipeline')<
  * the composition root (runtime) and passed in, not resolved as separate services,
  * so the pipeline needs no context beyond its real resources (Sql, Outbox, Queue).
  */
-export const makePaymentPipelineLayer = (
-  makeMatcher: (sql: SqlClient.SqlClient) => PaymentMatcher,
-  makeApplier: (sql: SqlClient.SqlClient) => PaymentApplier,
+export const makeChargePipelineLayer = (
+  makeMatcher: (sql: SqlClient.SqlClient) => ChargeMatcher,
+  makeApplier: (sql: SqlClient.SqlClient) => ChargeApplier,
 ) =>
   Layer.effect(
-    PaymentPipeline,
+    ChargePipeline,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const outbox = yield* Outbox;
       const queue = yield* Queue;
-      const repo = makePaymentsRepo(sql);
+      const repo = makeChargeRepo(sql);
       const handleDeps = {
         repo,
         matcher: makeMatcher(sql),
@@ -277,7 +277,7 @@ export const makePaymentPipelineLayer = (
       };
       return {
         ingest: ingest({ enqueue: queue.enqueue }),
-        handleFromPayload: handlePaymentEvent(handleDeps),
+        handleFromPayload: handleChargeEvent(handleDeps),
         rebindFromPayload: rebindFromPayload(handleDeps),
       };
     }),

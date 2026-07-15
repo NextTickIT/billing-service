@@ -10,8 +10,8 @@ import { TaskRegistryLive } from '@/infra/task-registry.js';
 import { makeAuthConfig } from '@/modules/auth/domain.js';
 import { AuthRepoLive } from '@/modules/auth/data-access.js';
 import { OutboxLive } from '@/modules/outbox/domain.js';
-import { makeCompositeMatcher } from '@/modules/payments/contracts.js';
-import { makePaymentPipelineLayer } from '@/modules/payments/domain.js';
+import { makeCompositeMatcher } from '@/modules/charge/contracts.js';
+import { makeChargePipelineLayer } from '@/modules/charge/domain.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
   makeCheckoutApplier,
@@ -72,7 +72,7 @@ const wayForPayLayer = (config: AppConfig) =>
  * `SqlClient`, the queue reads the `TaskRegistry` for the handler set, and the
  * outbox fans out to the `Sinks`. Built eagerly on worker start. Layering: base
  * services -> Queue (needs sql + registry) -> Outbox (needs sql + sinks + queue) ->
- * PaymentPipeline (needs sql + outbox + queue).
+ * ChargePipeline (needs sql + outbox + queue).
  */
 export const makeWorkerLayer = (config: AppConfig) => {
   const base = Layer.mergeAll(
@@ -85,7 +85,7 @@ export const makeWorkerLayer = (config: AppConfig) => {
   // its applier creates/extends the subscription. Both are plain functions built
   // from `sql` here at the composition root — legacy _WFPREG charges match nothing
   // and quarantine (the migration tail).
-  const pipeline = makePaymentPipelineLayer(
+  const pipeline = makeChargePipelineLayer(
     (sql) =>
       makeCompositeMatcher([
         makeCheckoutMatcher(makeCheckoutRepo(sql)),

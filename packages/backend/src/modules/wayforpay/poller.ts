@@ -1,7 +1,7 @@
 import type { SqlError } from '@effect/sql';
 import { Cause, Clock, Duration, Effect } from 'effect';
 
-import type { IncomingPaymentEvent } from '@/modules/payments/contracts.js';
+import type { Charge } from '@/modules/charge/contracts.js';
 import type { WayForPayClient } from '@/modules/wayforpay/client.js';
 import type { W4pError } from '@/modules/wayforpay/errors.js';
 import { mapTransaction } from '@/modules/wayforpay/mapping.js';
@@ -19,7 +19,7 @@ import { chunkWindows, type DateWindow } from '@/modules/wayforpay/windows.js';
 export interface PollerDeps {
   readonly client: Pick<WayForPayClient, 'transactionList'>;
   readonly ingest: (
-    event: IncomingPaymentEvent,
+    event: Charge,
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly state: PollerStateRepo;
 }
@@ -57,7 +57,7 @@ const ingestRows = (
 ): Effect.Effect<number, SqlError.SqlError> => {
   const events = rows
     .map(mapTransaction)
-    .filter((event): event is IncomingPaymentEvent => event !== null);
+    .filter((event): event is Charge => event !== null);
   return Effect.forEach(events, deps.ingest, { discard: true }).pipe(
     Effect.as(events.length),
   );

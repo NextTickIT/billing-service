@@ -15,11 +15,11 @@ import { Outbox, type OutboxService } from '@/modules/outbox/domain.js';
 import {
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
-} from '@/modules/payments/contracts.js';
+} from '@/modules/charge/contracts.js';
 import {
-  PaymentPipeline,
-  type PaymentPipelineService,
-} from '@/modules/payments/domain.js';
+  ChargePipeline,
+  type ChargePipelineService,
+} from '@/modules/charge/domain.js';
 import { runScheduler } from '@/modules/billing/scheduler.js';
 import { cancelNotify } from '@/modules/subscription/cancel.js';
 import { SUBSCRIPTION_CANCEL } from '@/modules/subscription/contracts.js';
@@ -37,12 +37,12 @@ import { makeWorkerRuntime } from '@/runtime.js';
  */
 const config = loadConfig();
 
-type Ingest = PaymentPipelineService['ingest'];
+type Ingest = ChargePipelineService['ingest'];
 
 const registerHandlers = (
   registry: TaskRegistryService,
   outbox: OutboxService,
-  pipeline: PaymentPipelineService,
+  pipeline: ChargePipelineService,
 ) =>
   Effect.gen(function* () {
     yield* registry.register(PAYMENT_EVENT_RECEIVED, (payload) =>
@@ -111,7 +111,7 @@ await runtime.runPromise(
     );
     const registry = yield* TaskRegistry;
     const outbox = yield* Outbox;
-    const pipeline = yield* PaymentPipeline;
+    const pipeline = yield* ChargePipeline;
     yield* registerHandlers(registry, outbox, pipeline);
     yield* startPoller(pipeline.ingest);
     yield* startScheduler(pipeline.ingest, outbox.publish);

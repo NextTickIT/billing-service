@@ -2,7 +2,7 @@ import { it } from '@effect/vitest';
 import { Effect, Option } from 'effect';
 import { describe, expect, test } from 'vitest';
 
-import type { IncomingPaymentEvent } from '@/modules/payments/contracts.js';
+import type { Charge } from '@/modules/charge/contracts.js';
 import type { WayForPayClient } from '@/modules/wayforpay/client.js';
 import type { W4pTransaction } from '@/modules/wayforpay/contracts.js';
 import type { PollerStateRepo } from '@/modules/wayforpay/poller-state.js';
@@ -80,7 +80,7 @@ it.effect(
   'pollTick ingests payment rows, skips others, advances the watermark',
   () =>
     Effect.gen(function* () {
-      const ingested: IncomingPaymentEvent[] = [];
+      const ingested: Charge[] = [];
       const { client } = fakeClient([
         [tx('PURCHASE', 'o1'), tx('SETTLE', 'o2'), tx('CHARGE', 'o3')],
       ]);
@@ -109,7 +109,7 @@ it.effect('backfill walks newest-first and stops after N empty chunks', () =>
   Effect.gen(function* () {
     // 150 days ⇒ 5 chunks; only the newest has rows, so it must stop early.
     const { client, callCount } = fakeClient([[tx('PURCHASE', 'o1')]]);
-    const ingested: IncomingPaymentEvent[] = [];
+    const ingested: Charge[] = [];
     const day = 24 * 60 * 60;
 
     const result = yield* backfill(

@@ -5,12 +5,12 @@ import { expect } from 'vitest';
 import { makeCheckoutApplier } from '@/modules/checkout/domain.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import type {
-  IncomingPaymentEvent,
+  Charge,
   Match,
-} from '@/modules/payments/contracts.js';
+} from '@/modules/charge/contracts.js';
 import type { SubscriptionRepo } from '@/modules/subscription/data-access.js';
 
-const event: IncomingPaymentEvent = {
+const event: Charge = {
   source: 'wayforpay_callback',
   idemKey: 'k',
   externalRef: 'chk_1',

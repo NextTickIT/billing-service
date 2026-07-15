@@ -1,9 +1,9 @@
 import { Currency, currencyFromCode } from '@billing-service/shared';
 
 import type {
-  IncomingPaymentEvent,
-  PaymentEventStatus,
-} from '@/modules/payments/contracts.js';
+  Charge,
+  ChargeStatus,
+} from '@/modules/charge/contracts.js';
 import {
   transactionExternalId,
   type W4pTransaction,
@@ -38,7 +38,7 @@ export const toCurrency = (code: string | undefined): Currency =>
 export const w4pStatus = (
   transactionType: string | undefined,
   transactionStatus: string | undefined,
-): PaymentEventStatus => {
+): ChargeStatus => {
   if (transactionType === 'REFUND') {
     return 'refunded';
   }
@@ -66,7 +66,7 @@ export const w4pStatus = (
  */
 export const mapTransaction = (
   tx: W4pTransaction,
-): IncomingPaymentEvent | null => {
+): Charge | null => {
   if (
     tx.transactionType === undefined ||
     !PAYMENT_TYPES.has(tx.transactionType)

@@ -7,7 +7,7 @@ import {
 import { Effect } from 'effect';
 import { expect } from 'vitest';
 
-import type { IncomingPaymentEvent } from '@/modules/payments/contracts.js';
+import type { Charge } from '@/modules/charge/contracts.js';
 import type {
   RetryState,
   SubscriptionRepo,
@@ -43,7 +43,7 @@ const makeDeps = (sub: Subscription, response: W4pChargeResponse) => {
     advanced: null as { id: string; next: Date } | null,
     retry: null as { id: string; state: RetryState } | null,
     renewalFailed: false,
-    ingested: [] as IncomingPaymentEvent[],
+    ingested: [] as Charge[],
     published: [] as DomainEvent[],
   };
   const subs: SubscriptionRepo = {

@@ -12,7 +12,7 @@ import {
 import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { authenticateToken } from '@/modules/auth/domain.js';
-import { makePaymentsRepo } from '@/modules/payments/data-access.js';
+import { makeChargeRepo } from '@/modules/charge/data-access.js';
 import {
   CancelRequest,
   SUBSCRIPTION_CANCEL,
@@ -75,7 +75,7 @@ const cancel = (body: CancelRequest, request: FastifyRequest) =>
       );
     }
     const reason = body.reason ?? 'operator';
-    yield* makePaymentsRepo(sql).insertAudit({
+    yield* makeChargeRepo(sql).insertAudit({
       actor: Role[actor.role],
       action: 'cancel_subscription',
       targetType: 'subscription',

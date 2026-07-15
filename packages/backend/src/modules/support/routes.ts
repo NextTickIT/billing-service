@@ -12,8 +12,8 @@ import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import type { DeliveryStatus } from '@/modules/outbox/contracts.js';
 import { makeOutboxRepo } from '@/modules/outbox/data-access.js';
-import { PAYMENT_REBIND } from '@/modules/payments/contracts.js';
-import { makePaymentsRepo } from '@/modules/payments/data-access.js';
+import { PAYMENT_REBIND } from '@/modules/charge/contracts.js';
+import { makeChargeRepo } from '@/modules/charge/data-access.js';
 import { authenticateToken } from '@/modules/auth/domain.js';
 
 /**
@@ -91,7 +91,7 @@ const bind = (request: FastifyRequest, body: BindBody) =>
     const actor = yield* supportActor(request);
     const quarantineId = readId(request);
     const sql = yield* SqlClient.SqlClient;
-    const repo = makePaymentsRepo(sql);
+    const repo = makeChargeRepo(sql);
     const found = yield* repo.getQuarantine(quarantineId);
     if (Option.isNone(found)) {
       return yield* Effect.fail(
@@ -135,7 +135,7 @@ export default function support(fastify: FastifyInstance): void {
       Effect.gen(function* () {
         yield* supportActor(request);
         const sql = yield* SqlClient.SqlClient;
-        return yield* makePaymentsRepo(sql).listOpenQuarantine();
+        return yield* makeChargeRepo(sql).listOpenQuarantine();
       }),
   });
 

@@ -1,6 +1,6 @@
 import { Effect, Option } from 'effect';
 
-import type { PaymentMatcher } from '@/modules/payments/contracts.js';
+import type { ChargeMatcher } from '@/modules/charge/contracts.js';
 import type { SubscriptionRepo } from '@/modules/subscription/data-access.js';
 
 /** Our recurring-charge orderReference format: `sub_<subscriptionId>_<...>`. */
@@ -13,7 +13,7 @@ const OUR_REF = /^sub_([0-9a-fA-F-]+)_/;
  * (the migration tail; docs/15).
  */
 export const makeRecurringMatcher =
-  (repo: SubscriptionRepo): PaymentMatcher =>
+  (repo: SubscriptionRepo): ChargeMatcher =>
   (event) =>
     Effect.gen(function* () {
       if (event.status !== 'succeeded') {
