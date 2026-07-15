@@ -13,6 +13,7 @@ export const operatorRoutes: RouteRecordRaw[] = [
   },
   {
     path: '/operator',
+    component: () => import('./OperatorLayout.vue'),
     redirect: '/operator/payments',
     beforeEnter: guard,
     children: [

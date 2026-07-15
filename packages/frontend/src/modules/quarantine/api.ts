@@ -3,8 +3,11 @@ import { apiFetch } from '../../infra/apiFetch.js';
 export interface QuarantineRecord {
   id: string;
   externalRef: string | null;
+  amount: number | null;
+  currency: number | null;
   source: string;
   rawPayload: Record<string, unknown>;
+  occurredAt: string | null;
   createdAt: string;
 }
 

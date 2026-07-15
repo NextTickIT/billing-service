@@ -29,11 +29,6 @@
   /* rgb tuple for rgba() usage */
   --bg-rgb: 11, 13, 15;
 
-  /* window dots */
-  --dot-r: #4a2222;
-  --dot-y: #4a3a14;
-  --dot-g: #1d3a24;
-
   /* typography */
   --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
@@ -67,7 +62,4 @@
   --magenta: #8250df;
   --white: #1f2328;
   --bg-rgb: 255, 255, 255;
-  --dot-r: #ff5f57;
-  --dot-y: #febc2e;
-  --dot-g: #28c840;
 }

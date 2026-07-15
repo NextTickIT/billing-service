@@ -14,11 +14,6 @@ const emit = defineEmits<{ close: [] }>();
     <div v-if="open" class="modal-overlay" @click.self="emit('close')">
       <div class="modal" role="dialog" :aria-label="title">
         <div class="modal__header">
-          <div class="modal__dots">
-            <span class="r" />
-            <span class="y" />
-            <span class="g" />
-          </div>
           <span class="modal__title">{{ title }}</span>
           <button class="modal__close" type="button" aria-label="Close" @click="emit('close')">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -65,22 +60,6 @@ const emit = defineEmits<{ close: [] }>();
   border-bottom: 1px solid var(--line);
   background: var(--surface-2);
 }
-
-.modal__dots {
-  display: flex;
-  gap: 5px;
-}
-
-.modal__dots span {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  border: 1px solid var(--line-2);
-}
-
-.modal__dots .r { background: var(--dot-r); }
-.modal__dots .y { background: var(--dot-y); }
-.modal__dots .g { background: var(--dot-g); }
 
 .modal__title {
   color: var(--muted);

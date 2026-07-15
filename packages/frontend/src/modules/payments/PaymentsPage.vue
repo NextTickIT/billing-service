@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { usePaymentsStore } from './store.js';
@@ -12,7 +12,7 @@ import BaseModal from '../../components/BaseModal.vue';
 import BaseSelect from '../../components/BaseSelect.vue';
 
 const CURRENCY_LABELS: Record<number, string> = { 0: 'UAH', 1: 'USD', 2: 'EUR' };
-const STATUS_CSS: Record<number, string> = {
+const STATUS_LABELS: Record<number, string> = {
   0: 'active', 1: 'past_due', 2: 'failed', 3: 'cancelled',
 };
 const CURRENCY_OPTIONS = [
@@ -25,6 +25,7 @@ const router = useRouter();
 const store = usePaymentsStore();
 
 const filterUserId = ref('');
+const searched = ref(false);
 const showCreate = ref(false);
 const createUserId = ref('');
 const createAmount = ref('');
@@ -32,22 +33,24 @@ const createCurrency = ref<number>(0);
 const createPeriod = ref('P1M');
 const createMethod = ref<number>(0);
 
-onMounted(() => { void store.loadList(); });
-
-async function onFilter(): Promise<void> {
-  await store.loadList(filterUserId.value || undefined);
+async function onSearch(): Promise<void> {
+  if (!filterUserId.value.trim()) return;
+  searched.value = true;
+  await store.loadList(filterUserId.value.trim());
 }
 
 function toDetail(id: string): void {
   void router.push(`/operator/payments/${id}`);
 }
 
-function currencyLabel(c: number): string {
-  return CURRENCY_LABELS[c] ?? 'UAH';
+function formatAmount(amount: number, currency: number): string {
+  const label = CURRENCY_LABELS[currency] ?? 'UAH';
+  const major = (amount / 100).toFixed(2);
+  return `${major} ${label}`;
 }
 
 function statusCss(s: number): string {
-  return STATUS_CSS[s] ?? '';
+  return STATUS_LABELS[s] ?? '';
 }
 
 function buildBody(): CreatePaymentBody {
@@ -73,25 +76,29 @@ async function onCreate(): Promise<void> {
 <template>
   <div class="payments-page">
     <BasePanel :title="t('payments.title')">
-      <div class="payments-toolbar">
+      <div class="toolbar">
         <BaseInput
           v-model="filterUserId"
           :placeholder="t('payments.filterPlaceholder')"
-          @keyup.enter="onFilter"
+          class="toolbar__filter"
+          @keyup.enter="onSearch"
         />
-        <BaseButton :label="t('common.submit')" variant="ghost" @click="onFilter" />
+        <BaseButton :label="t('common.submit')" variant="ghost" @click="onSearch" />
         <BaseButton :label="t('payments.createButton')" @click="showCreate = true" />
       </div>
 
-      <div v-if="store.loading" class="payments-center">
+      <div v-if="store.loading" class="state-center">
         <BaseSpinner />
       </div>
-      <p v-else-if="store.error" class="payments-error">{{ store.error }}</p>
-      <p v-else-if="store.list.length === 0" class="payments-empty">
-        {{ t('payments.noResults') }}
+      <p v-else-if="store.error" class="state-error">{{ store.error }}</p>
+      <p v-else-if="!searched" class="state-hint">
+        {{ t('payments.searchHint') }}
+      </p>
+      <p v-else-if="store.list.length === 0" class="state-empty">
+        {{ t('payments.noResults') }} <span class="state-empty__id">{{ filterUserId }}</span>
       </p>
 
-      <table v-else class="payments-table">
+      <table v-else class="data-table">
         <thead>
           <tr>
             <th>{{ t('payments.externalUserId') }}</th>
@@ -106,11 +113,13 @@ async function onCreate(): Promise<void> {
           <tr
             v-for="p in store.list"
             :key="p.id"
-            class="payments-row"
+            class="data-row"
+            tabindex="0"
             @click="toDetail(p.id)"
+            @keyup.enter="toDetail(p.id)"
           >
-            <td>{{ p.externalUserId }}</td>
-            <td>{{ p.amount }} {{ currencyLabel(p.currency) }}</td>
+            <td class="mono">{{ p.externalUserId }}</td>
+            <td class="mono">{{ formatAmount(p.amount, p.currency) }}</td>
             <td>{{ p.period }}</td>
             <td>
               {{ new Date(p.currentPeriodStart).toLocaleDateString() }} –
@@ -137,7 +146,7 @@ async function onCreate(): Promise<void> {
         </div>
         <div class="form-field">
           <label class="form-label">{{ t('common.amount') }}</label>
-          <BaseInput v-model="createAmount" placeholder="1000" />
+          <BaseInput v-model="createAmount" placeholder="100000" />
         </div>
         <div class="form-field">
           <label class="form-label">{{ t('common.currency') }}</label>
@@ -163,29 +172,44 @@ async function onCreate(): Promise<void> {
 </template>
 
 <style scoped>
-.payments-page { padding: 20px; }
-.payments-toolbar {
+.payments-page { display: flex; flex-direction: column; gap: 0; }
+
+.toolbar {
   display: flex;
   gap: 8px;
   margin-bottom: 16px;
   align-items: center;
 }
-.payments-toolbar > :first-child { flex: 1; }
-.payments-center { text-align: center; padding: 20px 0; }
-.payments-error { color: var(--red); padding: 8px 0; }
-.payments-empty { color: var(--dim); padding: 8px 0; }
-.payments-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.payments-table th {
-  padding: 8px 12px; text-align: left; color: var(--muted);
-  border-bottom: 1px solid var(--line); white-space: nowrap;
-  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+.toolbar__filter { flex: 1; }
+
+.state-center { text-align: center; padding: 32px 0; }
+.state-error { color: var(--red); padding: 8px 0; font-size: 13px; }
+.state-hint { color: var(--dim); padding: 8px 0; font-size: 13px; }
+.state-empty { color: var(--muted); padding: 8px 0; font-size: 13px; }
+.state-empty__id { color: var(--text); font-family: var(--mono); font-size: 12px; }
+
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th {
+  padding: 8px 12px;
+  text-align: left;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
-.payments-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); color: var(--text); }
-.payments-row { cursor: pointer; }
-.payments-row:hover td { background: var(--surface-2); }
+.data-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); color: var(--text); }
+.data-row { cursor: pointer; }
+.data-row:hover td { background: var(--surface-2); }
+.data-row:focus { outline: 2px solid var(--green); outline-offset: -1px; }
+
 .status--active { color: var(--green); }
 .status--past_due { color: var(--amber); }
-.status--failed, .status--cancelled { color: var(--red); }
+.status--failed,
+.status--cancelled { color: var(--red); }
+
 .create-form { display: flex; flex-direction: column; gap: 12px; }
 .form-field { display: flex; flex-direction: column; gap: 4px; }
 .form-label { color: var(--dim); font-size: 12px; }
