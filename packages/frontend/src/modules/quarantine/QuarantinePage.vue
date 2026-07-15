@@ -15,6 +15,7 @@ const { t } = useI18n();
 const store = useQuarantineStore();
 
 const filterText = ref('');
+const idFilterOpen = ref(false);
 const selected = ref<QuarantineView | null>(null);
 const paymentId = ref('');
 
@@ -23,17 +24,21 @@ onMounted(() => { void store.load(); });
 const filtered = computed(() => {
   const q = filterText.value.trim().toLowerCase();
   if (!q) return store.items;
-  return store.items.filter((item) => {
-    const ref = item.externalRef.toLowerCase();
-    const id = item.quarantineId.toLowerCase();
-    return ref.includes(q) || id.includes(q);
-  });
+  return store.items.filter(
+    (item) =>
+      item.externalRef.toLowerCase().includes(q) ||
+      item.quarantineId.toLowerCase().includes(q),
+  );
 });
+
+function clearFilter(): void {
+  filterText.value = '';
+  idFilterOpen.value = false;
+}
 
 function formatAmount(amount: number, currency: number): string {
   const label = CURRENCY_LABELS[currency] ?? 'UAH';
-  const major = (amount / 100).toFixed(2);
-  return `${major} ${label}`;
+  return `${(amount / 100).toFixed(2)} ${label}`;
 }
 
 function formatDate(val: string | Date): string {
@@ -60,22 +65,50 @@ async function doBind(): Promise<void> {
   <div class="q-page">
     <BasePanel :title="t('quarantine.title')">
       <div class="toolbar">
-        <BaseInput
-          v-model="filterText"
-          :placeholder="t('quarantine.filterPlaceholder')"
-          class="toolbar__filter"
-        />
+        <span class="toolbar__count">{{ filtered.length }} / {{ store.items.length }}</span>
       </div>
 
       <div v-if="store.loading" class="state-center"><BaseSpinner /></div>
       <p v-else-if="store.error" class="state-error">{{ store.error }}</p>
-      <p v-else-if="store.items.length === 0" class="state-empty">{{ t('quarantine.noItems') }}</p>
-      <p v-else-if="filtered.length === 0" class="state-empty">{{ t('quarantine.noMatch') }}</p>
+      <p v-else-if="store.items.length === 0" class="state-empty">
+        {{ t('quarantine.noItems') }}
+      </p>
 
       <table v-else class="data-table">
         <thead>
           <tr>
-            <th>{{ t('quarantine.externalRef') }}</th>
+            <th class="th-filter">
+              <div class="th-filter__row">
+                <span>{{ t('quarantine.externalRef') }}</span>
+                <button
+                  type="button"
+                  class="filter-icon"
+                  :class="{ 'filter-icon--active': filterText }"
+                  :aria-label="t('quarantine.externalRef')"
+                  @click="idFilterOpen = !idFilterOpen"
+                >
+                  <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+                    <path fill="currentColor" d="M0.5 1.5h15l-6 7v5l-3 1.5v-6.5l-6-7z" />
+                  </svg>
+                </button>
+              </div>
+              <div v-if="idFilterOpen" class="th-filter__pop">
+                <input
+                  v-model="filterText"
+                  class="th-filter__input"
+                  type="text"
+                  :placeholder="t('quarantine.externalRef')"
+                />
+                <button
+                  v-if="filterText"
+                  type="button"
+                  class="filter-clear"
+                  @click="clearFilter"
+                >
+                  ×
+                </button>
+              </div>
+            </th>
             <th>{{ t('common.amount') }}</th>
             <th>{{ t('quarantine.source') }}</th>
             <th>{{ t('quarantine.occurredAt') }}</th>
@@ -83,6 +116,9 @@ async function doBind(): Promise<void> {
           </tr>
         </thead>
         <tbody>
+          <tr v-if="filtered.length === 0" class="data-row--empty">
+            <td colspan="5">{{ t('quarantine.noMatch') }} {{ filterText }}</td>
+          </tr>
           <tr v-for="item in filtered" :key="item.quarantineId">
             <td class="mono">{{ item.externalRef }}</td>
             <td class="mono">{{ formatAmount(item.amount, item.currency) }}</td>
@@ -128,7 +164,12 @@ async function doBind(): Promise<void> {
   margin-bottom: 16px;
   align-items: center;
 }
-.toolbar__filter { flex: 1; max-width: 320px; }
+.toolbar__count {
+  flex: 1;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 12px;
+}
 
 .state-center { text-align: center; padding: 32px 0; }
 .state-error { color: var(--red); padding: 8px 0; font-size: 13px; }
@@ -150,7 +191,60 @@ async function doBind(): Promise<void> {
 .data-table tbody tr:hover td { background: var(--surface-2); }
 .col-action { text-align: right; width: 1px; white-space: nowrap; }
 
-.bind-form { display: flex; flex-direction: column; gap: 10px; }
-.bind-label { color: var(--dim); font-size: 12px; }
-.bind-error { color: var(--red); font-size: 13px; }
+.th-filter { position: relative; }
+.th-filter__row { display: flex; align-items: center; gap: 6px; }
+.filter-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  border-radius: 2px;
+}
+.filter-icon:hover,
+.filter-icon--active { color: var(--green); }
+.th-filter__pop {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+.th-filter__input {
+  width: 200px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-transform: none;
+}
+.th-filter__input:focus { outline: none; border-color: var(--green); }
+.filter-clear {
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.filter-clear:hover { color: var(--red); }
+.data-row--empty td {
+  padding: 16px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
 </style>
