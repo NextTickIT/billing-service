@@ -30,6 +30,7 @@ const unusedSubs: PaymentRepo = {
   recordRetry: () => Effect.die('unused'),
   markRenewalFailed: () => Effect.die('unused'),
   findByExternalUser: () => Effect.die('unused'),
+  listAll: () => Effect.die('unused'),
   cancel: () => Effect.die('unused'),
 };
 const unusedCheckout: CheckoutRepo = {

@@ -68,9 +68,11 @@ const listPayments = (_input: unknown, request: FastifyRequest) =>
     assertBffSecret(request);
     yield* operatorActor(request);
     const sql = yield* SqlClient.SqlClient;
-    return yield* makePaymentRepo(sql).findByExternalUser(
-      readExternalUser(request),
-    );
+    const externalUserId = readExternalUser(request);
+    const repo = makePaymentRepo(sql);
+    return externalUserId === ''
+      ? yield* repo.listAll(500)
+      : yield* repo.findByExternalUser(externalUserId);
   });
 
 const ChargeFixationSchema = Schema.Struct({

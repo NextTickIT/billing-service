@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { usePaymentsStore } from './store.js';
@@ -32,7 +32,7 @@ const router = useRouter();
 const store = usePaymentsStore();
 
 const filterUserId = ref('');
-const searched = ref(false);
+const idFilterOpen = ref(false);
 const showCreate = ref(false);
 const createUserId = ref('');
 const createAmount = ref('');
@@ -40,10 +40,20 @@ const createCurrency = ref<number>(0);
 const createPeriod = ref('P1M');
 const createMethod = ref<number>(0);
 
-async function onSearch(): Promise<void> {
-  if (!filterUserId.value.trim()) return;
-  searched.value = true;
-  await store.loadList(filterUserId.value.trim());
+const filtered = computed(() => {
+  const q = filterUserId.value.trim().toLowerCase();
+  return q
+    ? store.list.filter((p) => p.externalUserId.toLowerCase().includes(q))
+    : store.list;
+});
+
+onMounted(() => {
+  void store.loadList();
+});
+
+function clearFilter(): void {
+  filterUserId.value = '';
+  idFilterOpen.value = false;
 }
 
 function toDetail(id: string): void {
@@ -84,13 +94,7 @@ async function onCreate(): Promise<void> {
   <div class="payments-page">
     <BasePanel :title="t('payments.title')">
       <div class="toolbar">
-        <BaseInput
-          v-model="filterUserId"
-          :placeholder="t('payments.filterPlaceholder')"
-          class="toolbar__filter"
-          @keyup.enter="onSearch"
-        />
-        <BaseButton :label="t('common.submit')" variant="ghost" @click="onSearch" />
+        <span class="toolbar__count">{{ filtered.length }} / {{ store.list.length }}</span>
         <BaseButton :label="t('payments.createButton')" @click="showCreate = true" />
       </div>
 
@@ -98,17 +102,45 @@ async function onCreate(): Promise<void> {
         <BaseSpinner />
       </div>
       <p v-else-if="store.error" class="state-error">{{ store.error }}</p>
-      <p v-else-if="!searched" class="state-hint">
-        {{ t('payments.searchHint') }}
-      </p>
       <p v-else-if="store.list.length === 0" class="state-empty">
-        {{ t('payments.noResults') }} <span class="state-empty__id">{{ filterUserId }}</span>
+        {{ t('payments.noResults') }}
       </p>
 
       <table v-else class="data-table">
         <thead>
           <tr>
-            <th>{{ t('payments.externalUserId') }}</th>
+            <th class="th-filter">
+              <div class="th-filter__row">
+                <span>{{ t('payments.externalUserId') }}</span>
+                <button
+                  type="button"
+                  class="filter-icon"
+                  :class="{ 'filter-icon--active': filterUserId }"
+                  :aria-label="t('payments.externalUserId')"
+                  @click="idFilterOpen = !idFilterOpen"
+                >
+                  <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
+                    <path fill="currentColor" d="M0.5 1.5h15l-6 7v5l-3 1.5v-6.5l-6-7z" />
+                  </svg>
+                </button>
+              </div>
+              <div v-if="idFilterOpen" class="th-filter__pop">
+                <input
+                  v-model="filterUserId"
+                  class="th-filter__input"
+                  type="text"
+                  :placeholder="t('payments.externalUserId')"
+                />
+                <button
+                  v-if="filterUserId"
+                  type="button"
+                  class="filter-clear"
+                  @click="clearFilter"
+                >
+                  ×
+                </button>
+              </div>
+            </th>
             <th>{{ t('common.amount') }}</th>
             <th>{{ t('common.period') }}</th>
             <th>{{ t('payments.periodStart') }} – {{ t('payments.periodEnd') }}</th>
@@ -117,8 +149,11 @@ async function onCreate(): Promise<void> {
           </tr>
         </thead>
         <tbody>
+          <tr v-if="filtered.length === 0" class="data-row--empty">
+            <td colspan="6">{{ t('payments.noResults') }} {{ filterUserId }}</td>
+          </tr>
           <tr
-            v-for="p in store.list"
+            v-for="p in filtered"
             :key="p.id"
             class="data-row"
             tabindex="0"
@@ -187,7 +222,68 @@ async function onCreate(): Promise<void> {
   margin-bottom: 16px;
   align-items: center;
 }
-.toolbar__filter { flex: 1; }
+.toolbar__count {
+  flex: 1;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.th-filter { position: relative; }
+.th-filter__row { display: flex; align-items: center; gap: 6px; }
+.filter-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  border-radius: 2px;
+}
+.filter-icon:hover,
+.filter-icon--active { color: var(--green); }
+.th-filter__pop {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+.th-filter__input {
+  width: 180px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.th-filter__input:focus { outline: none; border-color: var(--green); }
+.filter-clear {
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.filter-clear:hover { color: var(--red); }
+.data-row--empty td {
+  padding: 16px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
 
 .state-center { text-align: center; padding: 32px 0; }
 .state-error { color: var(--red); padding: 8px 0; font-size: 13px; }

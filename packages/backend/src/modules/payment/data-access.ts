@@ -74,6 +74,10 @@ export interface PaymentRepo {
   readonly findByExternalUser: (
     externalUserId: string,
   ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
+  /** All payments, newest first — the operator's default table view. */
+  readonly listAll: (
+    limit: number,
+  ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
   /** Cancel unless already ended; returns false if it was already cancelled. */
   readonly cancel: (id: string) => Effect.Effect<boolean, SqlError.SqlError>;
 }
@@ -167,6 +171,13 @@ const findByExternalUser =
       ORDER BY "createdAt" DESC
     `;
 
+const listAll = (sql: SqlClient.SqlClient) => (limit: number) =>
+  sql<Payment>`
+    SELECT ${sql.unsafe(COLUMNS)} FROM payments
+    ORDER BY "createdAt" DESC
+    LIMIT ${limit}
+  `;
+
 const cancel = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<{ readonly id: string }>`
     UPDATE payments SET status = ${PaymentStatus.Cancelled}, "updatedAt" = now()
@@ -184,5 +195,6 @@ export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   recordRetry: recordRetry(sql),
   markRenewalFailed: markRenewalFailed(sql),
   findByExternalUser: findByExternalUser(sql),
+  listAll: listAll(sql),
   cancel: cancel(sql),
 });

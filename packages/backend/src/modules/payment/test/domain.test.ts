@@ -66,6 +66,7 @@ const makeFakeRepo = (existing: Payment | null) => {
     recordRetry: () => Effect.die('unused'),
     markRenewalFailed: () => Effect.die('unused'),
     findByExternalUser: () => Effect.die('unused'),
+    listAll: () => Effect.die('unused'),
     cancel: () => Effect.die('unused'),
   };
   return { repo, getInserted: () => inserted, getExtended: () => extended };
