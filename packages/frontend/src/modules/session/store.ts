@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { login as apiLogin } from './api.js';
+import { login as apiLogin, logout as apiLogout } from './api.js';
 
 export const useSessionStore = defineStore('session', () => {
   const loading = ref(false);
@@ -20,5 +20,9 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  return { loading, error, login };
+  async function logout(): Promise<void> {
+    await apiLogout();
+  }
+
+  return { loading, error, login, logout };
 });

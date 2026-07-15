@@ -14,6 +14,7 @@ import {
   effectScenarios,
   type EffectScenario,
 } from '@/modules/charge/test/pipeline.e2e.js';
+import { edgeScenarios } from './edge.e2e.js';
 
 /**
  * E2E test runner. Spins up the only external dependency (Postgres) in Docker,
@@ -170,6 +171,15 @@ const runEffectScenarios = async (): Promise<void> => {
   }
 };
 
+const runEdgeScenarios = async (): Promise<void> => {
+  for (let index = 0; index < edgeScenarios.length; index += 1) {
+    const scenario = edgeScenarios[index];
+    if (scenario !== undefined) {
+      await runScenario(scenario, scenarios.length + index);
+    }
+  }
+};
+
 const verifyNoLeaks = (): void => {
   dropStaleTestDbs();
   const remaining = psql(
@@ -179,7 +189,7 @@ const verifyNoLeaks = (): void => {
   if (remaining !== '0') {
     throw new Error(`leaked ${remaining} test database(s)`);
   }
-  const total = scenarios.length + effectScenarios.length;
+  const total = scenarios.length + effectScenarios.length + edgeScenarios.length;
   console.log(`e2e: ${total.toString()} scenarios passed; 0 leaked databases`);
 };
 
@@ -190,6 +200,7 @@ const main = async (): Promise<void> => {
     dropStaleTestDbs();
     await runHttpScenarios();
     await runEffectScenarios();
+    await runEdgeScenarios();
     verifyNoLeaks();
   } finally {
     console.log('e2e: tearing down (docker compose down -v)...');
