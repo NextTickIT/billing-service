@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useQuarantineStore } from './store.js';
-import type { QuarantineRecord } from './api.js';
+import type { QuarantineView } from './api.js';
 import BasePanel from '../../components/BasePanel.vue';
 import BaseSpinner from '../../components/BaseSpinner.vue';
 import BaseButton from '../../components/BaseButton.vue';
@@ -15,7 +15,7 @@ const { t } = useI18n();
 const store = useQuarantineStore();
 
 const filterText = ref('');
-const selected = ref<QuarantineRecord | null>(null);
+const selected = ref<QuarantineView | null>(null);
 const paymentId = ref('');
 
 onMounted(() => { void store.load(); });
@@ -24,25 +24,23 @@ const filtered = computed(() => {
   const q = filterText.value.trim().toLowerCase();
   if (!q) return store.items;
   return store.items.filter((item) => {
-    const ref = (item.externalRef ?? '').toLowerCase();
-    const id = item.id.toLowerCase();
+    const ref = item.externalRef.toLowerCase();
+    const id = item.quarantineId.toLowerCase();
     return ref.includes(q) || id.includes(q);
   });
 });
 
-function formatAmount(amount: number | null, currency: number | null): string {
-  if (amount === null) return '—';
-  const label = CURRENCY_LABELS[currency ?? 0] ?? 'UAH';
+function formatAmount(amount: number, currency: number): string {
+  const label = CURRENCY_LABELS[currency] ?? 'UAH';
   const major = (amount / 100).toFixed(2);
   return `${major} ${label}`;
 }
 
-function formatDate(val: string | null): string {
-  if (!val) return '—';
+function formatDate(val: string | Date): string {
   return new Date(val).toLocaleString();
 }
 
-function openBind(item: QuarantineRecord): void {
+function openBind(item: QuarantineView): void {
   selected.value = item;
   paymentId.value = '';
 }
@@ -53,7 +51,7 @@ function closeModal(): void {
 
 async function doBind(): Promise<void> {
   if (!selected.value) return;
-  await store.bind(selected.value.id, paymentId.value);
+  await store.bind(selected.value.quarantineId, paymentId.value);
   if (!store.error) closeModal();
 }
 </script>
@@ -85,8 +83,8 @@ async function doBind(): Promise<void> {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="item in filtered" :key="item.id">
-            <td class="mono">{{ item.externalRef ?? '—' }}</td>
+          <tr v-for="item in filtered" :key="item.quarantineId">
+            <td class="mono">{{ item.externalRef }}</td>
             <td class="mono">{{ formatAmount(item.amount, item.currency) }}</td>
             <td>{{ item.source }}</td>
             <td>{{ formatDate(item.occurredAt) }}</td>

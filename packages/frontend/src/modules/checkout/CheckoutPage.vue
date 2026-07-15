@@ -21,7 +21,7 @@ const id = route.params['id'] as string;
 
 onMounted(() => { void store.load(id); });
 
-function submitW4PForm(action: string, fields: Record<string, string>): void {
+function submitW4PForm(action: string, fields: Record<string, unknown>): void {
   const form = document.createElement('form');
   form.method = 'POST';
   form.action = action;
@@ -29,7 +29,7 @@ function submitW4PForm(action: string, fields: Record<string, string>): void {
     const input = document.createElement('input');
     input.type = 'hidden';
     input.name = key;
-    input.value = val;
+    input.value = String(val);
     form.appendChild(input);
   }
   document.body.appendChild(form);

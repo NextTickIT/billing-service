@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 
 import { SqlClient } from '@effect/sql';
 import {
+  CheckoutSessionPublic,
   CheckoutSessionStatus,
   CreateCheckoutSession,
+  PurchaseForm,
   SelectMethod,
   SessionCreated,
 } from '@billing-service/shared';
@@ -27,28 +29,11 @@ import {
 } from '@/modules/wayforpay/callback.js';
 import { buildPurchase } from '@/modules/wayforpay/purchase.js';
 
-const PurchaseFormSchema = Schema.Struct({
-  action: Schema.String,
-  fields: Schema.Record({ key: Schema.String, value: Schema.Unknown }),
-});
-
 const CallbackAckSchema = Schema.Struct({
   orderReference: Schema.String,
   status: Schema.Literal('accept'),
   time: Schema.Int,
   signature: Schema.String,
-});
-
-/**
- * Public checkout session JSON (AC-9): amount/currency/period/status/expiresAt
- * only — no externalUserId (subscriber data must not appear on the public page).
- */
-const CheckoutSessionPublic = Schema.Struct({
-  amount: Schema.Int,
-  currency: Schema.Int,
-  period: Schema.String,
-  status: Schema.Int,
-  expiresAt: Schema.Date,
 });
 
 const route = makeRoute((app: FastifyInstance) => app.runtime);
@@ -161,7 +146,7 @@ export default function checkout(fastify: FastifyInstance): void {
     method: 'POST',
     path: '/api/checkout-sessions/:id/pay',
     input: SelectMethod,
-    output: PurchaseFormSchema,
+    output: PurchaseForm,
     handler: pay,
   });
 

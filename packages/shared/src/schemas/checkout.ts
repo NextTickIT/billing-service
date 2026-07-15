@@ -63,3 +63,27 @@ export const SessionCreated = Schema.Struct({
 });
 
 export type SessionCreated = Schema.Schema.Type<typeof SessionCreated>;
+
+/**
+ * GET /api/checkout-sessions/:id response (public, BFF-proxied, AC-9):
+ * amount/currency/period/status/expiresAt only — no externalUserId so subscriber
+ * data does not appear on the public checkout page.
+ */
+export const CheckoutSessionPublic = CheckoutSession.pipe(
+  Schema.pick('amount', 'currency', 'period', 'status', 'expiresAt'),
+);
+
+export type CheckoutSessionPublic = Schema.Schema.Type<
+  typeof CheckoutSessionPublic
+>;
+
+/**
+ * POST /api/checkout-sessions/:id/pay response: WayForPay hosted-purchase form
+ * fields that the frontend posts to the provider directly.
+ */
+export const PurchaseForm = Schema.Struct({
+  action: Schema.String,
+  fields: Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+});
+
+export type PurchaseForm = Schema.Schema.Type<typeof PurchaseForm>;

@@ -1,5 +1,10 @@
 import { SqlClient } from '@effect/sql';
-import { Role } from '@billing-service/shared';
+import {
+  BindAccepted,
+  QuarantineBindRequest,
+  QuarantineView,
+  Role,
+} from '@billing-service/shared';
 import { Effect, Option, Redacted, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
@@ -16,27 +21,7 @@ import { authenticate, requireRole } from '@/modules/auth/domain.js';
 import { PAYMENT_REBIND } from '@/modules/charge/contracts.js';
 import { makeChargeRepo } from '@/modules/charge/data-access.js';
 
-const QuarantineView = Schema.Struct({
-  quarantineId: Schema.String,
-  incomingEventId: Schema.String,
-  source: Schema.String,
-  externalRef: Schema.String,
-  amount: Schema.Int,
-  currency: Schema.Int,
-  occurredAt: Schema.Date,
-  createdAt: Schema.Date,
-});
-
-const BindRequest = Schema.Struct({
-  externalUserId: Schema.String,
-  subscriptionId: Schema.optional(Schema.String),
-  period: Schema.optional(Schema.String),
-  method: Schema.optional(Schema.Int),
-});
-
-const BindAccepted = Schema.Struct({ status: Schema.Literal('accepted') });
-
-type BindBody = Schema.Schema.Type<typeof BindRequest>;
+type BindBody = Schema.Schema.Type<typeof QuarantineBindRequest>;
 
 const route = makeRoute((app: FastifyInstance) => app.runtime);
 
@@ -116,7 +101,7 @@ export default function quarantine(fastify: FastifyInstance): void {
   route(fastify, {
     method: 'POST',
     path: '/api/quarantine/:id/bind',
-    input: BindRequest,
+    input: QuarantineBindRequest,
     output: BindAccepted,
     status: 202,
     handler: bind,

@@ -1,16 +1,6 @@
-export interface CheckoutSessionPublic {
-  id: string;
-  amount: number;
-  currency: number;
-  period: string;
-  status: number;
-  expiresAt: string;
-}
+import type { CheckoutSessionPublic, PurchaseForm } from '@billing-service/shared';
 
-export interface WayForPayForm {
-  action: string;
-  fields: Record<string, string>;
-}
+export type { CheckoutSessionPublic, PurchaseForm };
 
 export async function getCheckoutSession(
   id: string,
@@ -20,12 +10,12 @@ export async function getCheckoutSession(
   return res.json() as Promise<CheckoutSessionPublic>;
 }
 
-export async function payByCard(id: string): Promise<WayForPayForm> {
+export async function payByCard(id: string): Promise<PurchaseForm> {
   const res = await fetch(`/api/checkout-sessions/${id}/pay`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ method: 0 }),
   });
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
-  return res.json() as Promise<WayForPayForm>;
+  return res.json() as Promise<PurchaseForm>;
 }

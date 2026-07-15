@@ -4,14 +4,14 @@ import {
   getCheckoutSession,
   payByCard,
   type CheckoutSessionPublic,
-  type WayForPayForm,
+  type PurchaseForm,
 } from './api.js';
 
 export const useCheckoutStore = defineStore('checkout', () => {
   const session = ref<CheckoutSessionPublic | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
-  const form = ref<WayForPayForm | null>(null);
+  const form = ref<PurchaseForm | null>(null);
 
   async function load(id: string): Promise<void> {
     loading.value = true;

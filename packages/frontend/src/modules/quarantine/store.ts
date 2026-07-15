@@ -1,10 +1,10 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { listQuarantine, bindQuarantine } from './api.js';
-import type { QuarantineRecord } from './api.js';
+import type { QuarantineView } from './api.js';
 
 export const useQuarantineStore = defineStore('quarantine', () => {
-  const items = ref<QuarantineRecord[]>([]);
+  const items = ref<QuarantineView[]>([]);
   const loading = ref(false);
   const error = ref<string | null>(null);
 
@@ -25,7 +25,7 @@ export const useQuarantineStore = defineStore('quarantine', () => {
     error.value = null;
     try {
       await bindQuarantine(id, paymentId);
-      items.value = items.value.filter((i) => i.id !== id);
+      items.value = items.value.filter((i) => i.quarantineId !== id);
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Error';
     } finally {
