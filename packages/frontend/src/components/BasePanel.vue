@@ -6,8 +6,11 @@ defineProps<{
 
 <template>
   <div class="panel">
-    <div v-if="title" class="panel__header">
-      <span class="panel__title">{{ title }}</span>
+    <div v-if="title || $slots['actions']" class="panel__header">
+      <span v-if="title" class="panel__title">{{ title }}</span>
+      <div v-if="$slots['actions']" class="panel__actions">
+        <slot name="actions" />
+      </div>
     </div>
     <div class="panel__body">
       <slot />
@@ -36,6 +39,13 @@ defineProps<{
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: 0.04em;
+}
+
+.panel__actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .panel__body {

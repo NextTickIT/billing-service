@@ -56,11 +56,11 @@ function currencyLabel(c: number): string {
 
 <template>
   <div class="checkout-wrap">
-    <div class="page-controls">
-      <LangSwitch />
-      <ThemeToggle />
-    </div>
     <BasePanel :title="t('checkout.title')">
+      <template #actions>
+        <LangSwitch />
+        <ThemeToggle />
+      </template>
       <div v-if="store.loading" class="checkout__center">
         <BaseSpinner />
       </div>
@@ -117,21 +117,11 @@ function currencyLabel(c: number): string {
 
 <style scoped>
 .checkout-wrap {
-  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 100vh;
   padding: 20px;
-}
-
-.page-controls {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .checkout-wrap > * {
