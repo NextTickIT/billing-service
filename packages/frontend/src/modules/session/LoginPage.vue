@@ -24,11 +24,11 @@ async function onSubmit(): Promise<void> {
 
 <template>
   <div class="login-wrap">
-    <div class="page-controls">
-      <LangSwitch />
-      <ThemeToggle />
-    </div>
     <BasePanel :title="t('session.loginTitle')">
+      <template #actions>
+        <LangSwitch />
+        <ThemeToggle />
+      </template>
       <form class="login-form" @submit.prevent="onSubmit">
         <div class="login-field">
           <label class="login-label">{{ t('session.loginLabel') }}</label>
@@ -62,21 +62,11 @@ async function onSubmit(): Promise<void> {
 
 <style scoped>
 .login-wrap {
-  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 100vh;
   padding: 20px;
-}
-
-.page-controls {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .login-wrap > * {

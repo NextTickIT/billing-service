@@ -3,6 +3,7 @@ import { onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { useCheckoutStore } from './store.js';
+import { formatDate } from '../../app/datetime.js';
 import BaseSpinner from '../../components/BaseSpinner.vue';
 import BasePanel from '../../components/BasePanel.vue';
 import BaseButton from '../../components/BaseButton.vue';
@@ -15,7 +16,7 @@ const CURRENCY_LABELS: Record<number, string> = { 0: 'UAH', 1: 'USD', 2: 'EUR' }
 const STATUS_EXPIRED = 3;
 const STATUS_COMPLETED = 2;
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const route = useRoute();
 const store = useCheckoutStore();
 
@@ -96,13 +97,9 @@ function formatAmount(amount: number, currency: number): string {
             </span>
           </div>
           <div class="checkout__row">
-            <span class="checkout__label">{{ t('checkout.periodLabel') }}</span>
-            <span class="checkout__value">{{ store.session.period }}</span>
-          </div>
-          <div class="checkout__row">
             <span class="checkout__label">{{ t('checkout.expiresAt') }}</span>
             <span class="checkout__value">
-              {{ new Date(store.session.expiresAt).toLocaleString() }}
+              {{ formatDate(store.session.expiresAt, locale) }}
             </span>
           </div>
           <div class="checkout__action">

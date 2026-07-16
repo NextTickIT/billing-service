@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { usePaymentsStore } from './store.js';
+import { formatDate } from '../../app/datetime.js';
 import type {
   Currency,
   PaymentMethod,
   CreatePaymentRequest,
+  Payment,
 } from '@billing-service/shared';
 import BasePanel from '../../components/BasePanel.vue';
+import DataTable from '../../components/DataTable.vue';
 import BaseInput from '../../components/BaseInput.vue';
 import BaseButton from '../../components/BaseButton.vue';
 import BaseSpinner from '../../components/BaseSpinner.vue';
@@ -20,17 +23,15 @@ const STATUS_LABELS: Record<number, string> = {
   0: 'active', 1: 'past_due', 2: 'failed', 3: 'cancelled',
 };
 const CURRENCY_OPTIONS = [
-  { value: 0, label: 'UAH' }, { value: 1, label: 'USD' }, { value: 2, label: 'EUR' },
+  { value: 0, label: 'UAH' }, { value: 1, label: 'USD' },
 ];
 const METHOD_OPTIONS = [{ value: 0, label: 'Card' }];
 const PERIOD_OPTIONS = [{ value: 'P4W', label: '4 weeks' }];
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const router = useRouter();
 const store = usePaymentsStore();
 
-const filterUserId = ref('');
-const idFilterOpen = ref(false);
 const showCreate = ref(false);
 const createUserId = ref('');
 const createAmount = ref('');
@@ -38,30 +39,23 @@ const createCurrency = ref<number>(0);
 const createPeriod = ref('P4W');
 const createMethod = ref<number>(0);
 
-const filtered = computed(() => {
-  const q = filterUserId.value.trim().toLowerCase();
-  return q
-    ? store.list.filter((p) => p.externalUserId.toLowerCase().includes(q))
-    : store.list;
-});
-
 onMounted(() => {
   void store.loadList();
 });
 
-function clearFilter(): void {
-  filterUserId.value = '';
-  idFilterOpen.value = false;
+function matchUser(p: Payment, q: string): boolean {
+  return p.externalUserId.toLowerCase().includes(q);
 }
-
-function toDetail(id: string): void {
-  void router.push(`/operator/payments/${id}`);
+function rowKey(p: Payment): string {
+  return p.id;
+}
+function onRowClick(p: Payment): void {
+  void router.push(`/operator/payments/${p.id}`);
 }
 
 function formatAmount(amount: number, currency: number): string {
   const label = CURRENCY_LABELS[currency] ?? 'UAH';
-  const major = (amount / 100).toFixed(2);
-  return `${major} ${label}`;
+  return `${(amount / 100).toFixed(2)} ${label}`;
 }
 
 function statusCss(s: number): string {
@@ -91,87 +85,63 @@ async function onCreate(): Promise<void> {
 <template>
   <div class="payments-page">
     <BasePanel :title="t('payments.title')">
-      <div class="toolbar">
-        <span class="toolbar__count">{{ filtered.length }} / {{ store.list.length }}</span>
-        <BaseButton :label="t('payments.createButton')" @click="showCreate = true" />
-      </div>
+      <template #actions>
+        <button
+          type="button"
+          class="add-btn"
+          :title="t('payments.createButton')"
+          :aria-label="t('payments.createButton')"
+          @click="showCreate = true"
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <path
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              d="M8 3v10M3 8h10"
+            />
+          </svg>
+        </button>
+      </template>
 
       <div v-if="store.loading" class="state-center">
         <BaseSpinner />
       </div>
       <p v-else-if="store.error" class="state-error">{{ store.error }}</p>
-      <p v-else-if="store.list.length === 0" class="state-empty">
-        {{ t('payments.noResults') }}
-      </p>
 
-      <table v-else class="data-table">
-        <thead>
-          <tr>
-            <th class="th-filter">
-              <div class="th-filter__row">
-                <span>{{ t('payments.externalUserId') }}</span>
-                <button
-                  type="button"
-                  class="filter-icon"
-                  :class="{ 'filter-icon--active': filterUserId }"
-                  :aria-label="t('payments.externalUserId')"
-                  @click="idFilterOpen = !idFilterOpen"
-                >
-                  <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">
-                    <path fill="currentColor" d="M0.5 1.5h15l-6 7v5l-3 1.5v-6.5l-6-7z" />
-                  </svg>
-                </button>
-              </div>
-              <div v-if="idFilterOpen" class="th-filter__pop">
-                <input
-                  v-model="filterUserId"
-                  class="th-filter__input"
-                  type="text"
-                  :placeholder="t('payments.externalUserId')"
-                />
-                <button
-                  v-if="filterUserId"
-                  type="button"
-                  class="filter-clear"
-                  @click="clearFilter"
-                >
-                  ×
-                </button>
-              </div>
-            </th>
-            <th>{{ t('common.amount') }}</th>
-            <th>{{ t('common.period') }}</th>
-            <th>{{ t('payments.periodStart') }} – {{ t('payments.periodEnd') }}</th>
-            <th>{{ t('payments.nextPayment') }}</th>
-            <th>{{ t('common.status') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="filtered.length === 0" class="data-row--empty">
-            <td colspan="6">{{ t('payments.noResults') }} {{ filterUserId }}</td>
-          </tr>
-          <tr
-            v-for="p in filtered"
-            :key="p.id"
-            class="data-row"
-            tabindex="0"
-            @click="toDetail(p.id)"
-            @keyup.enter="toDetail(p.id)"
-          >
-            <td class="mono">{{ p.externalUserId }}</td>
-            <td class="mono">{{ formatAmount(p.amount, p.currency) }}</td>
-            <td>{{ p.period }}</td>
-            <td>
-              {{ new Date(p.currentPeriodStart).toLocaleDateString() }} –
-              {{ new Date(p.currentPeriodEnd).toLocaleDateString() }}
-            </td>
-            <td>{{ new Date(p.nextPaymentDate).toLocaleDateString() }}</td>
-            <td :class="`status--${statusCss(p.status)}`">
-              {{ t(`payments.statuses.${p.status}`) }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <DataTable
+        v-else
+        :items="store.list"
+        :filter-label="t('payments.externalUserId')"
+        :filter-match="matchUser"
+        :row-key="rowKey"
+        :colspan="6"
+        :empty-text="t('payments.noResults')"
+        clickable
+        @row-click="onRowClick"
+      >
+        <template #head>
+          <th>{{ t('common.amount') }}</th>
+          <th>{{ t('common.period') }}</th>
+          <th>{{ t('payments.periodStart') }} – {{ t('payments.periodEnd') }}</th>
+          <th>{{ t('payments.nextPayment') }}</th>
+          <th>{{ t('common.status') }}</th>
+        </template>
+        <template #row="{ item }">
+          <td class="mono">{{ item.externalUserId }}</td>
+          <td class="mono">{{ formatAmount(item.amount, item.currency) }}</td>
+          <td>{{ item.period }}</td>
+          <td>
+            {{ formatDate(item.currentPeriodStart, locale) }} –
+            {{ formatDate(item.currentPeriodEnd, locale) }}
+          </td>
+          <td>{{ formatDate(item.nextPaymentDate, locale) }}</td>
+          <td :class="`status--${statusCss(item.status)}`">
+            {{ t(`payments.statuses.${item.status}`) }}
+          </td>
+        </template>
+      </DataTable>
     </BasePanel>
 
     <BaseModal
@@ -214,97 +184,24 @@ async function onCreate(): Promise<void> {
 <style scoped>
 .payments-page { display: flex; flex-direction: column; gap: 0; }
 
-.toolbar {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
-  align-items: center;
-}
-.toolbar__count {
-  flex: 1;
-  color: var(--dim);
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.th-filter { position: relative; }
-.th-filter__row { display: flex; align-items: center; gap: 6px; }
-.filter-icon {
+.add-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 2px;
-  border: 0;
-  background: transparent;
-  color: var(--dim);
-  cursor: pointer;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
   border-radius: 2px;
-}
-.filter-icon:hover,
-.filter-icon--active { color: var(--green); }
-.th-filter__pop {
-  position: absolute;
-  z-index: 20;
-  top: 100%;
-  left: 0;
-  margin-top: 4px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px;
-  border: 1px solid var(--line);
   background: var(--surface);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
-}
-.th-filter__input {
-  width: 180px;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  background: var(--bg-2);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 12px;
-}
-.th-filter__input:focus { outline: none; border-color: var(--green); }
-.filter-clear {
-  border: 0;
-  background: transparent;
-  color: var(--dim);
-  cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
-  padding: 0 4px;
-}
-.filter-clear:hover { color: var(--red); }
-.data-row--empty td {
-  padding: 16px;
   color: var(--muted);
-  font-size: 13px;
-  text-align: center;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
 }
+.add-btn:hover { color: var(--green); border-color: var(--green); }
 
 .state-center { text-align: center; padding: 32px 0; }
 .state-error { color: var(--red); padding: 8px 0; font-size: 13px; }
-.state-hint { color: var(--dim); padding: 8px 0; font-size: 13px; }
-.state-empty { color: var(--muted); padding: 8px 0; font-size: 13px; }
-.state-empty__id { color: var(--text); font-family: var(--mono); font-size: 12px; }
-
-.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.data-table th {
-  padding: 8px 12px;
-  text-align: left;
-  color: var(--muted);
-  border-bottom: 1px solid var(--line);
-  white-space: nowrap;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.data-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); color: var(--text); }
-.data-row { cursor: pointer; }
-.data-row:hover td { background: var(--surface-2); }
-.data-row:focus { outline: 2px solid var(--green); outline-offset: -1px; }
 
 .status--active { color: var(--green); }
 .status--past_due { color: var(--amber); }

@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { usePaymentsStore } from './store.js';
+import { formatDateTime } from '../../app/datetime.js';
 import BaseSpinner from '../../components/BaseSpinner.vue';
 import BaseInput from '../../components/BaseInput.vue';
 import BaseButton from '../../components/BaseButton.vue';
@@ -10,7 +11,7 @@ import BaseButton from '../../components/BaseButton.vue';
 const CURRENCY_LABELS: Record<number, string> = { 0: 'UAH', 1: 'USD', 2: 'EUR' };
 
 const route = useRoute();
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const store = usePaymentsStore();
 
 const id = route.params['id'] as string;
@@ -61,15 +62,15 @@ async function handleCancel(): Promise<void> {
         </div>
         <div class="info-row">
           <span class="lbl">{{ t('payments.periodStart') }}</span>
-          <span>{{ store.current.currentPeriodStart }}</span>
+          <span>{{ formatDateTime(store.current.currentPeriodStart, locale) }}</span>
         </div>
         <div class="info-row">
           <span class="lbl">{{ t('payments.periodEnd') }}</span>
-          <span>{{ store.current.currentPeriodEnd }}</span>
+          <span>{{ formatDateTime(store.current.currentPeriodEnd, locale) }}</span>
         </div>
         <div class="info-row">
           <span class="lbl">{{ t('payments.nextPayment') }}</span>
-          <span>{{ store.current.nextPaymentDate }}</span>
+          <span>{{ formatDateTime(store.current.nextPaymentDate, locale) }}</span>
         </div>
       </div>
 
@@ -88,7 +89,7 @@ async function handleCancel(): Promise<void> {
             <td colspan="4" class="charges-empty">{{ t('payments.noResults') }}</td>
           </tr>
           <tr v-for="c in store.current.charges" :key="c.id">
-            <td>{{ new Date(c.occurredAt).toLocaleString() }}</td>
+            <td>{{ formatDateTime(c.occurredAt, locale) }}</td>
             <td>{{ (c.amount / 100).toFixed(2) }} {{ currencyLabel(c.currency) }}</td>
             <td class="mono">{{ c.source }}</td>
             <td class="result-ok">succeeded</td>

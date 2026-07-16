@@ -16,6 +16,7 @@ export default {
     currency: 'Валюта',
     period: 'Період',
     method: 'Метод',
+    rowsPerPage: 'Рядків на сторінці',
     theme: {
       dark: 'Темна',
       light: 'Світла',

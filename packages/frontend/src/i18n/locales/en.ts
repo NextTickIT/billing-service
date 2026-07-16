@@ -16,6 +16,7 @@ export default {
     currency: 'Currency',
     period: 'Period',
     method: 'Method',
+    rowsPerPage: 'Rows per page',
     theme: {
       dark: 'Dark',
       light: 'Light',
