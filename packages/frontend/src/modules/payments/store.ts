@@ -1,9 +1,9 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
+import { PaymentStatus } from '@billing-service/shared';
 import type {
   Payment,
   PaymentDetail,
-  PaymentStatus,
   CreatePaymentRequest,
   CreateAccepted,
 } from '@billing-service/shared';
@@ -14,8 +14,6 @@ import {
   cancelPayment,
   createPayment,
 } from './api.js';
-
-const CANCELLED: PaymentStatus = 3;
 
 export const usePaymentsStore = defineStore('payments', () => {
   const list = ref<Payment[]>([]);
@@ -53,7 +51,7 @@ export const usePaymentsStore = defineStore('payments', () => {
     try {
       await cancelPayment(id, reason);
       if (current.value?.id === id) {
-        current.value = { ...current.value, status: CANCELLED };
+        current.value = { ...current.value, status: PaymentStatus.Cancelled };
       }
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Error';

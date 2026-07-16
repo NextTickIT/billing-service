@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
+import { isNetworkError } from '@/infra/errors.js';
 import { login as apiLogin, logout as apiLogout } from './api.js';
 
 const AUTH_KEY = 'operator_authed';
@@ -19,8 +20,10 @@ export const useSessionStore = defineStore('session', () => {
       await apiLogin(username, password);
       localStorage.setItem(AUTH_KEY, '1');
       return true;
-    } catch {
-      error.value = 'invalid';
+    } catch (err) {
+      // A rejected sign-in (bad credentials) is the expected failure; a network
+      // blip is not — don't blame every failure on the credentials.
+      error.value = isNetworkError(err) ? 'network' : 'invalid';
       return false;
     } finally {
       loading.value = false;
