@@ -3,25 +3,21 @@ import { ref, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { usePaymentsStore } from './store.js';
-import { formatDateTime } from '../../app/datetime.js';
-import BaseSpinner from '../../components/BaseSpinner.vue';
-import BaseInput from '../../components/BaseInput.vue';
-import BaseButton from '../../components/BaseButton.vue';
-
-const CURRENCY_LABELS: Record<number, string> = { 0: 'UAH', 1: 'USD', 2: 'EUR' };
+import { formatDateTime } from '@/app/datetime.js';
+import { useMoney } from '@/app/money.js';
+import BaseSpinner from '@/components/BaseSpinner.vue';
+import BaseInput from '@/components/BaseInput.vue';
+import BaseButton from '@/components/BaseButton.vue';
 
 const route = useRoute();
 const { t, locale } = useI18n();
+const { formatAmount } = useMoney();
 const store = usePaymentsStore();
 
 const id = route.params['id'] as string;
 const cancelReason = ref('');
 
 onMounted(() => { void store.loadDetail(id); });
-
-function currencyLabel(c: number): string {
-  return CURRENCY_LABELS[c] ?? 'UAH';
-}
 
 function statusLabel(s: number): string {
   return t(`payments.statuses.${s}`);
@@ -50,7 +46,7 @@ async function handleCancel(): Promise<void> {
         </div>
         <div class="info-row">
           <span class="lbl">{{ t('common.amount') }}</span>
-          <span>{{ (store.current.amount / 100).toFixed(2) }} {{ currencyLabel(store.current.currency) }}</span>
+          <span>{{ formatAmount(store.current.amount, store.current.currency) }}</span>
         </div>
         <div class="info-row">
           <span class="lbl">{{ t('common.period') }}</span>
@@ -90,7 +86,7 @@ async function handleCancel(): Promise<void> {
           </tr>
           <tr v-for="c in store.current.charges" :key="c.id">
             <td>{{ formatDateTime(c.occurredAt, locale) }}</td>
-            <td>{{ (c.amount / 100).toFixed(2) }} {{ currencyLabel(c.currency) }}</td>
+            <td>{{ formatAmount(c.amount, c.currency) }}</td>
             <td class="mono">{{ c.source }}</td>
             <td class="result-ok">succeeded</td>
           </tr>

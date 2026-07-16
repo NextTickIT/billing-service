@@ -2,18 +2,18 @@
 import { ref, onMounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useQuarantineStore } from './store.js';
-import { formatDateTime } from '../../app/datetime.js';
+import { formatDateTime } from '@/app/datetime.js';
+import { useMoney } from '@/app/money.js';
 import type { QuarantineView } from './api.js';
-import BasePanel from '../../components/BasePanel.vue';
-import DataTable from '../../components/DataTable.vue';
-import BaseSpinner from '../../components/BaseSpinner.vue';
-import BaseButton from '../../components/BaseButton.vue';
-import BaseInput from '../../components/BaseInput.vue';
-import BaseModal from '../../components/BaseModal.vue';
-
-const CURRENCY_LABELS: Record<number, string> = { 0: 'UAH', 1: 'USD', 2: 'EUR' };
+import BasePanel from '@/components/BasePanel.vue';
+import DataTable from '@/components/DataTable.vue';
+import BaseSpinner from '@/components/BaseSpinner.vue';
+import BaseButton from '@/components/BaseButton.vue';
+import BaseInput from '@/components/BaseInput.vue';
+import BaseModal from '@/components/BaseModal.vue';
 
 const { t, locale } = useI18n();
+const { formatAmount } = useMoney();
 const store = useQuarantineStore();
 
 const selected = ref<QuarantineView | null>(null);
@@ -29,11 +29,6 @@ function matchRef(item: QuarantineView, q: string): boolean {
 }
 function rowKey(item: QuarantineView): string {
   return item.quarantineId;
-}
-
-function formatAmount(amount: number, currency: number): string {
-  const label = CURRENCY_LABELS[currency] ?? 'UAH';
-  return `${(amount / 100).toFixed(2)} ${label}`;
 }
 
 function openBind(item: QuarantineView): void {

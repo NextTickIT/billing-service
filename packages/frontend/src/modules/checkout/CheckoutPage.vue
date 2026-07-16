@@ -2,21 +2,18 @@
 import { onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
+import { CheckoutSessionStatus } from '@billing-service/shared';
 import { useCheckoutStore } from './store.js';
-import { formatDate } from '../../app/datetime.js';
-import BaseSpinner from '../../components/BaseSpinner.vue';
-import BasePanel from '../../components/BasePanel.vue';
-import BaseButton from '../../components/BaseButton.vue';
-import LangSwitch from '../../components/LangSwitch.vue';
-import ThemeToggle from '../../components/ThemeToggle.vue';
-
-const CURRENCY_LABELS: Record<number, string> = { 0: 'UAH', 1: 'USD', 2: 'EUR' };
-
-// CheckoutSessionStatus enum values
-const STATUS_EXPIRED = 3;
-const STATUS_COMPLETED = 2;
+import { formatDate } from '@/app/datetime.js';
+import { useMoney } from '@/app/money.js';
+import BaseSpinner from '@/components/BaseSpinner.vue';
+import BasePanel from '@/components/BasePanel.vue';
+import BaseButton from '@/components/BaseButton.vue';
+import LangSwitch from '@/components/LangSwitch.vue';
+import ThemeToggle from '@/components/ThemeToggle.vue';
 
 const { t, locale } = useI18n();
+const { formatAmount } = useMoney();
 const route = useRoute();
 const store = useCheckoutStore();
 
@@ -49,14 +46,6 @@ watch(
 async function onPay(): Promise<void> {
   await store.pay(id);
 }
-
-function currencyLabel(c: number): string {
-  return CURRENCY_LABELS[c] ?? 'UAH';
-}
-
-function formatAmount(amount: number, currency: number): string {
-  return `${(amount / 100).toFixed(2)} ${currencyLabel(currency)}`;
-}
 </script>
 
 <template>
@@ -76,14 +65,14 @@ function formatAmount(amount: number, currency: number): string {
 
       <template v-else-if="store.session">
         <div
-          v-if="store.session.status === STATUS_EXPIRED"
+          v-if="store.session.status === CheckoutSessionStatus.Expired"
           class="checkout__msg checkout__msg--warn"
         >
           {{ t('checkout.expired') }}
         </div>
 
         <div
-          v-else-if="store.session.status === STATUS_COMPLETED"
+          v-else-if="store.session.status === CheckoutSessionStatus.Completed"
           class="checkout__msg checkout__msg--ok"
         >
           {{ t('checkout.completed') }}

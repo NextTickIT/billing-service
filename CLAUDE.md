@@ -115,6 +115,18 @@ A module mirrors `auth`: `data-access.ts` / `domain.ts` / `routes.ts` / `contrac
     more than one module goes to a common `infra/` home, never copy-pasted (e.g.
     `requireRow`, the PG error mapping in `infra/db`); a module's matchers / appliers /
     builders live in its `domain.ts`, not one-function files.
+14. **Catch only what you can name** — never a bare `catch {}` (or `catch (e) {}`
+    that ignores) which assumes the sole possible failure is the one you meant to
+    tolerate. Identify the expected error by class / name / property (e.g.
+    `err instanceof TypeError` for a `fetch` network blip, a `Data.TaggedError`
+    `_tag`) and **rethrow everything else**, so an unforeseen fault surfaces instead
+    of being silently swallowed. A tolerant poll loop ignores the network error and
+    re-raises the rest (`checkout/CheckoutReturnPage.vue`, `infra/errors.ts`).
+15. **Frontend labels are localisation, values are shared** — a user-facing label
+    (currency code, status, unit) is owned by an i18n resource, never a JS map
+    redefined per component; the *value/type* it keys on comes from the shared
+    package enum (`Currency`, `PaymentStatus`), never a magic number. Imports use
+    the `@/` alias (src root), never `../`.
 
 ## 4. Type system & lint (both are hard gates — run before claiming done)
 

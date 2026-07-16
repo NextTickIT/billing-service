@@ -2,12 +2,12 @@
 import { onMounted, onUnmounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
+import { CheckoutSessionStatus } from '@billing-service/shared';
 import { getCheckoutSession } from './api.js';
-import BaseSpinner from '../../components/BaseSpinner.vue';
-import BasePanel from '../../components/BasePanel.vue';
+import { isNetworkError } from '@/infra/errors.js';
+import BaseSpinner from '@/components/BaseSpinner.vue';
+import BasePanel from '@/components/BasePanel.vue';
 
-const STATUS_COMPLETED = 2;
-const STATUS_EXPIRED = 3;
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 30000;
 
@@ -24,15 +24,17 @@ let elapsed = 0;
 async function poll(): Promise<void> {
   try {
     const session = await getCheckoutSession(id);
-    if (session.status === STATUS_COMPLETED) {
+    if (session.status === CheckoutSessionStatus.Completed) {
       state.value = 'confirmed';
       stopPolling();
-    } else if (session.status === STATUS_EXPIRED) {
+    } else if (session.status === CheckoutSessionStatus.Expired) {
       state.value = 'declined';
       stopPolling();
     }
-  } catch {
-    // network error — keep polling
+  } catch (err) {
+    // A transient network blip is expected while polling — keep going. Any
+    // other error is a real fault and must surface, not be swallowed.
+    if (!isNetworkError(err)) throw err;
   }
   elapsed += POLL_INTERVAL_MS;
   if (elapsed >= POLL_TIMEOUT_MS && state.value === 'polling') {

@@ -1,4 +1,4 @@
-import { apiFetch } from '../../infra/apiFetch.js';
+import { apiFetch } from '@/infra/apiFetch.js';
 
 export async function login(username: string, password: string): Promise<void> {
   const res = await apiFetch('/api/auth/sessions', {

@@ -3,41 +3,36 @@ import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { usePaymentsStore } from './store.js';
-import { formatDate } from '../../app/datetime.js';
-import type {
+import { formatDate } from '@/app/datetime.js';
+import { useMoney } from '@/app/money.js';
+import { usePaymentOptions } from '@/app/options.js';
+import {
   Currency,
   PaymentMethod,
-  CreatePaymentRequest,
-  Payment,
+  PaymentStatus,
+  type CreatePaymentRequest,
+  type Payment,
 } from '@billing-service/shared';
-import BasePanel from '../../components/BasePanel.vue';
-import DataTable from '../../components/DataTable.vue';
-import BaseInput from '../../components/BaseInput.vue';
-import BaseButton from '../../components/BaseButton.vue';
-import BaseSpinner from '../../components/BaseSpinner.vue';
-import BaseModal from '../../components/BaseModal.vue';
-import BaseSelect from '../../components/BaseSelect.vue';
-
-const CURRENCY_LABELS: Record<number, string> = { 0: 'UAH', 1: 'USD', 2: 'EUR' };
-const STATUS_LABELS: Record<number, string> = {
-  0: 'active', 1: 'past_due', 2: 'failed', 3: 'cancelled',
-};
-const CURRENCY_OPTIONS = [
-  { value: 0, label: 'UAH' }, { value: 1, label: 'USD' },
-];
-const METHOD_OPTIONS = [{ value: 0, label: 'Card' }];
-const PERIOD_OPTIONS = [{ value: 'P4W', label: '4 weeks' }];
+import BasePanel from '@/components/BasePanel.vue';
+import DataTable from '@/components/DataTable.vue';
+import BaseInput from '@/components/BaseInput.vue';
+import BaseButton from '@/components/BaseButton.vue';
+import BaseSpinner from '@/components/BaseSpinner.vue';
+import BaseModal from '@/components/BaseModal.vue';
+import BaseSelect from '@/components/BaseSelect.vue';
 
 const { t, locale } = useI18n();
+const { formatAmount } = useMoney();
+const { currencyOptions, methodOptions, periodOptions } = usePaymentOptions();
 const router = useRouter();
 const store = usePaymentsStore();
 
 const showCreate = ref(false);
 const createUserId = ref('');
 const createAmount = ref('');
-const createCurrency = ref<number>(0);
+const createCurrency = ref<number>(Currency.UAH);
 const createPeriod = ref('P4W');
-const createMethod = ref<number>(0);
+const createMethod = ref<number>(PaymentMethod.Card);
 
 onMounted(() => {
   void store.loadList();
@@ -53,13 +48,8 @@ function onRowClick(p: Payment): void {
   void router.push(`/operator/payments/${p.id}`);
 }
 
-function formatAmount(amount: number, currency: number): string {
-  const label = CURRENCY_LABELS[currency] ?? 'UAH';
-  return `${(amount / 100).toFixed(2)} ${label}`;
-}
-
-function statusCss(s: number): string {
-  return STATUS_LABELS[s] ?? '';
+function statusClass(s: PaymentStatus): string {
+  return `status--${PaymentStatus[s]}`;
 }
 
 function buildBody(): CreatePaymentRequest {
@@ -137,7 +127,7 @@ async function onCreate(): Promise<void> {
             {{ formatDate(item.currentPeriodEnd, locale) }}
           </td>
           <td>{{ formatDate(item.nextPaymentDate, locale) }}</td>
-          <td :class="`status--${statusCss(item.status)}`">
+          <td :class="statusClass(item.status)">
             {{ t(`payments.statuses.${item.status}`) }}
           </td>
         </template>
@@ -160,15 +150,15 @@ async function onCreate(): Promise<void> {
         </div>
         <div class="form-field">
           <label class="form-label">{{ t('common.currency') }}</label>
-          <BaseSelect v-model="createCurrency" :options="CURRENCY_OPTIONS" />
+          <BaseSelect v-model="createCurrency" :options="currencyOptions" />
         </div>
         <div class="form-field">
           <label class="form-label">{{ t('common.period') }}</label>
-          <BaseSelect v-model="createPeriod" :options="PERIOD_OPTIONS" />
+          <BaseSelect v-model="createPeriod" :options="periodOptions" />
         </div>
         <div class="form-field">
           <label class="form-label">{{ t('common.method') }}</label>
-          <BaseSelect v-model="createMethod" :options="METHOD_OPTIONS" />
+          <BaseSelect v-model="createMethod" :options="methodOptions" />
         </div>
         <p v-if="store.error" class="form-error">{{ store.error }}</p>
         <BaseButton
@@ -203,10 +193,10 @@ async function onCreate(): Promise<void> {
 .state-center { text-align: center; padding: 32px 0; }
 .state-error { color: var(--red); padding: 8px 0; font-size: 13px; }
 
-.status--active { color: var(--green); }
-.status--past_due { color: var(--amber); }
-.status--failed,
-.status--cancelled { color: var(--red); }
+.status--Active { color: var(--green); }
+.status--PastDue { color: var(--amber); }
+.status--RenewalFailed,
+.status--Cancelled { color: var(--red); }
 
 .create-form { display: flex; flex-direction: column; gap: 12px; }
 .form-field { display: flex; flex-direction: column; gap: 4px; }

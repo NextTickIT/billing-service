@@ -6,7 +6,7 @@ import type {
   CreateAccepted,
 } from '@billing-service/shared';
 
-import { apiFetch } from '../../infra/apiFetch.js';
+import { apiFetch } from '@/infra/apiFetch.js';
 
 export async function listPayments(externalUserId?: string): Promise<Payment[]> {
   const url = externalUserId

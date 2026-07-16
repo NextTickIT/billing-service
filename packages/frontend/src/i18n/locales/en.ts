@@ -17,6 +17,11 @@ export default {
     period: 'Period',
     method: 'Method',
     rowsPerPage: 'Rows per page',
+    currencies: {
+      0: 'UAH',
+      1: 'USD',
+      2: 'EUR',
+    },
     theme: {
       dark: 'Dark',
       light: 'Light',

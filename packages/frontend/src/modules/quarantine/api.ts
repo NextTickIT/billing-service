@@ -1,6 +1,6 @@
 import type { QuarantineView } from '@billing-service/shared';
 
-import { apiFetch } from '../../infra/apiFetch.js';
+import { apiFetch } from '@/infra/apiFetch.js';
 
 export type { QuarantineView };
 

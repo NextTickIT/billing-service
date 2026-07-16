@@ -1,9 +1,9 @@
-import '../styles/index.css';
+import '@/styles/index.css';
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 import App from './App.vue';
-import { router } from '../router/index.js';
-import { i18n } from '../i18n/index.js';
+import { router } from '@/router/index.js';
+import { i18n } from '@/i18n/index.js';
 import { initTheme } from './theme.js';
 
 initTheme();

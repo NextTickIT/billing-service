@@ -19,17 +19,17 @@ export const operatorRoutes: RouteRecordRaw[] = [
     children: [
       {
         path: 'payments',
-        component: () => import('../payments/PaymentsPage.vue'),
+        component: () => import('@/modules/payments/PaymentsPage.vue'),
         beforeEnter: guard,
       },
       {
         path: 'payments/:id',
-        component: () => import('../payments/PaymentDetailPage.vue'),
+        component: () => import('@/modules/payments/PaymentDetailPage.vue'),
         beforeEnter: guard,
       },
       {
         path: 'quarantine',
-        component: () => import('../quarantine/QuarantinePage.vue'),
+        component: () => import('@/modules/quarantine/QuarantinePage.vue'),
         beforeEnter: guard,
       },
     ],

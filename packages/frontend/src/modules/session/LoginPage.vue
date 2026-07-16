@@ -3,11 +3,11 @@ import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { useSessionStore } from './store.js';
-import BasePanel from '../../components/BasePanel.vue';
-import BaseInput from '../../components/BaseInput.vue';
-import BaseButton from '../../components/BaseButton.vue';
-import LangSwitch from '../../components/LangSwitch.vue';
-import ThemeToggle from '../../components/ThemeToggle.vue';
+import BasePanel from '@/components/BasePanel.vue';
+import BaseInput from '@/components/BaseInput.vue';
+import BaseButton from '@/components/BaseButton.vue';
+import LangSwitch from '@/components/LangSwitch.vue';
+import ThemeToggle from '@/components/ThemeToggle.vue';
 
 const { t } = useI18n();
 const router = useRouter();

@@ -2,8 +2,8 @@
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { useSessionStore } from './store.js';
-import ThemeToggle from '../../components/ThemeToggle.vue';
-import LangSwitch from '../../components/LangSwitch.vue';
+import ThemeToggle from '@/components/ThemeToggle.vue';
+import LangSwitch from '@/components/LangSwitch.vue';
 
 const { t } = useI18n();
 const router = useRouter();

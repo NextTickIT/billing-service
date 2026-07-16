@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { setTheme, getTheme } from '../app/theme.js';
+import { setTheme, getTheme } from '@/app/theme.js';
 
 function toggle(): void {
   setTheme(getTheme() === 'dark' ? 'light' : 'dark');
