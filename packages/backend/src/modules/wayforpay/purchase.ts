@@ -50,7 +50,10 @@ export const buildPurchase = (
       productCount: [1],
       productPrice: [amount],
       serviceUrl: config.serviceUrl,
-      returnUrl: config.returnUrl,
+      // returnUrl is a template (…/checkout/{orderReference}/return); fill the token
+      // with this order's reference (= the session id) so the browser lands on the
+      // real return page, not a literal `{orderReference}`.
+      returnUrl: config.returnUrl.replace('{orderReference}', session.id),
     },
   };
 };
