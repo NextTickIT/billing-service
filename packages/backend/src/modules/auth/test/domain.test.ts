@@ -63,6 +63,10 @@ it.effect('requireRole rejects a mismatched role as Forbidden', () =>
   ),
 );
 
+it.effect('requireRole lets an Admin satisfy any role (superset)', () =>
+  requireRole({ role: Role.Admin }, Role.Operator),
+);
+
 it('isExpired compares a session expiry to a wall-clock time', () => {
   const base = {
     id: 's_1',

@@ -49,9 +49,10 @@ export type CreateOperatorCommand = CreateOperator & {
 /** Sign-in credentials: an operator's login plus password. */
 export type Credentials = Omit<CreateOperatorCommand, 'role'>;
 
-/** Authorization gate: the actor must hold `required`, or the op is Forbidden. */
+/** Authorization gate: the actor must hold `required`, or be an Admin — Admin is
+ * a superset and passes every role check. Otherwise the op is Forbidden. */
 export const requireRole = (actor: Actor, required: Role) =>
-  actor.role === required
+  actor.role === required || actor.role === Role.Admin
     ? Effect.void
     : Effect.fail(
         new Forbidden({ reason: `requires role ${required.toString()}` }),
