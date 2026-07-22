@@ -98,7 +98,6 @@ export default {
     off: 'Off',
     token: 'API token',
     tokenSet: 'Token is set — enter a new value to replace it.',
-    tokenReplace: 'Enter a new token to replace',
     tokenEnter: 'Enter the API token',
     tokenFirst: 'Set the token to map event flows.',
     tokenCheck: 'Could not load flows — check the token.',

@@ -19,6 +19,10 @@ const MAPPABLE_EVENTS = EVENT_NAMES.filter(
   (n): n is EventName => n !== 'unknown_payment_quarantined',
 );
 
+// The stored secret is never returned to the client; once a token exists we show
+// a fixed mask so the field reads as "not empty" without leaking its length.
+const MASKED_TOKEN = '*'.repeat(16);
+
 const { t } = useI18n();
 const store = useSinksStore();
 
@@ -109,9 +113,7 @@ async function onSave(): Promise<void> {
           <BaseInput
             v-model="token"
             type="password"
-            :placeholder="
-              hasToken ? t('sinks.tokenReplace') : t('sinks.tokenEnter')
-            "
+            :placeholder="hasToken ? MASKED_TOKEN : t('sinks.tokenEnter')"
           />
         </div>
 
