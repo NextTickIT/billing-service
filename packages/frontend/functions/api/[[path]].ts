@@ -28,6 +28,7 @@ function requiresOperatorAuth(pathname: string): boolean {
   return (
     pathname.startsWith('/api/payment') ||
     pathname.startsWith('/api/quarantine') ||
+    pathname.startsWith('/api/sinks') ||
     pathname.startsWith('/api/support')
   );
 }
