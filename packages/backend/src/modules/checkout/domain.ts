@@ -15,17 +15,18 @@ export const checkoutPath = (sessionId: string): string =>
   `https://bill.nexttick.it/checkout/${sessionId}`;
 
 /**
- * Checkout matcher: a succeeded incoming event whose `externalRef` is a known
- * checkout session id resolves to a `checkout` match (create-or-extend). Only
- * succeeded events match — a decline for a known session, and any event for an
- * unknown ref, fall through to quarantine (FR-009). Poller/legacy events never match
- * here (no session), so they quarantine until the recurring matcher (M6).
+ * Checkout matcher: an incoming event whose `externalRef` is a known checkout
+ * session id resolves to a `checkout` match. A succeeded event is create-or-extend;
+ * a declined one is a first-payment failure (the pipeline emits
+ * `initial_payment_failed`, FR-003) — both are OUR session, not an unknown payment.
+ * Intermediate/other statuses (pending, refunded) still fall through to quarantine,
+ * as do events for an unknown ref. Poller/legacy events never match here (no session).
  */
 export const makeCheckoutMatcher =
   (repo: CheckoutRepo): ChargeMatcher =>
   (event) =>
     Effect.gen(function* () {
-      if (event.status !== 'succeeded') {
+      if (event.status !== 'succeeded' && event.status !== 'failed') {
         return { matched: false };
       }
       const found = yield* repo.findById(event.externalRef);

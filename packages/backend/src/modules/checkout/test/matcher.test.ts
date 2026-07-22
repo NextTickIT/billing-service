@@ -53,8 +53,21 @@ it.effect('matches a succeeded event to a known session', () =>
   ),
 );
 
-it.effect('does not match a non-succeeded event', () =>
-  makeCheckoutMatcher(repoWith(session))(event({ status: 'failed' })).pipe(
+it.effect(
+  'matches a declined event to a known session (pipeline emits initial_payment_failed)',
+  () =>
+    makeCheckoutMatcher(repoWith(session))(event({ status: 'failed' })).pipe(
+      Effect.map((result) => {
+        expect(result.matched).toBe(true);
+        if (result.matched) {
+          expect(result.kind).toBe('checkout');
+        }
+      }),
+    ),
+);
+
+it.effect('does not match an intermediate (pending) status', () =>
+  makeCheckoutMatcher(repoWith(session))(event({ status: 'pending' })).pipe(
     Effect.map((result) => {
       expect(result.matched).toBe(false);
     }),

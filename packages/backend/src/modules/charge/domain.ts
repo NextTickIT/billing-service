@@ -2,8 +2,10 @@ import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
 import type {
   DomainEvent,
+  InitialPaymentFailedEvent,
+  InitialPaymentSucceededEvent,
   PaymentCreatedEvent,
-  PaymentSucceededEvent,
+  RecurringPaymentSucceededEvent,
   UnknownPaymentQuarantinedEvent,
 } from '@billing-service/shared';
 import { Context, Effect, Layer, Option, Schema } from 'effect';
@@ -37,23 +39,81 @@ import { Outbox } from '@/modules/outbox/domain.js';
 const eventId = (idemKey: string, suffix: string): string =>
   `evt_${idemKey}:${suffix}`;
 
-/** payment_succeeded envelope for a matched incoming charge (docs/07). */
-export const paymentSucceeded = (
+/** Shared success payload for the initial/recurring variants (docs/07). */
+const succeededPayload = (event: Charge, match: Match) => ({
+  amount: event.amount,
+  currency: event.currency,
+  method: match.method,
+  period: match.period,
+  source: event.source,
+});
+
+/** initial_payment_succeeded — a first checkout payment (match kind 'checkout'). */
+export const initialPaymentSucceeded = (
   event: Charge,
   match: Match,
   subscriptionId: string,
-): PaymentSucceededEvent => ({
+): InitialPaymentSucceededEvent => ({
   id: eventId(event.idemKey, 'succeeded'),
-  name: 'payment_succeeded',
+  name: 'initial_payment_succeeded',
   occurredAt: event.occurredAt,
   correlationId: event.idemKey,
   externalUserId: match.externalUserId,
   aggregateId: subscriptionId,
+  payload: succeededPayload(event, match),
+});
+
+/** recurring_payment_succeeded — a renewal charge (match kind 'recurring'). */
+export const recurringPaymentSucceeded = (
+  event: Charge,
+  match: Match,
+  subscriptionId: string,
+): RecurringPaymentSucceededEvent => ({
+  id: eventId(event.idemKey, 'succeeded'),
+  name: 'recurring_payment_succeeded',
+  occurredAt: event.occurredAt,
+  correlationId: event.idemKey,
+  externalUserId: match.externalUserId,
+  aggregateId: subscriptionId,
+  payload: succeededPayload(event, match),
+});
+
+/** Pick the success variant from the match kind (checkout = initial, else recurring). */
+const paymentSucceeded = (
+  event: Charge,
+  match: Match,
+  subscriptionId: string,
+): InitialPaymentSucceededEvent | RecurringPaymentSucceededEvent =>
+  match.kind === 'checkout'
+    ? initialPaymentSucceeded(event, match, subscriptionId)
+    : recurringPaymentSucceeded(event, match, subscriptionId);
+
+/** The provider decline reason for a failed charge (raw payload; string or code). */
+const declineReason = (payload: Record<string, unknown>): string => {
+  const value = payload['reason'] ?? payload['reasonCode'];
+  if (typeof value === 'string') {
+    return value;
+  }
+  return typeof value === 'number' ? String(value) : 'declined';
+};
+
+/** initial_payment_failed — a declined first checkout for a known session (FR-003). */
+export const initialPaymentFailed = (
+  event: Charge,
+  match: Match,
+): InitialPaymentFailedEvent => ({
+  id: eventId(event.idemKey, 'failed'),
+  name: 'initial_payment_failed',
+  occurredAt: event.occurredAt,
+  correlationId: event.idemKey,
+  externalUserId: match.externalUserId,
+  aggregateId: match.subscriptionId ?? event.externalRef,
   payload: {
     amount: event.amount,
     currency: event.currency,
     method: match.method,
     period: match.period,
+    reason: declineReason(event.payload),
     source: event.source,
   },
 });
@@ -99,14 +159,18 @@ export const quarantined = (
   },
 });
 
-/** payment_succeeded envelope for an operator-bound quarantine (FR-009). Without
- * a real subscription yet, the aggregate id falls back to the incoming event. */
+/**
+ * Success envelope for an operator-bound quarantine (FR-009). A bind reconciles a
+ * previously-unknown (usually legacy/migration-tail) payment to a user, so it maps
+ * to `recurring_payment_succeeded` — never the "welcome" initial flow. Without a real
+ * subscription yet, the aggregate id falls back to the incoming event.
+ */
 export const boundPaymentSucceeded = (
   event: Charge,
   bind: RebindPayload,
-): PaymentSucceededEvent => ({
+): RecurringPaymentSucceededEvent => ({
   id: eventId(event.idemKey, 'succeeded'),
-  name: 'payment_succeeded',
+  name: 'recurring_payment_succeeded',
   occurredAt: event.occurredAt,
   correlationId: event.idemKey,
   externalUserId: bind.externalUserId,
@@ -147,16 +211,14 @@ interface HandleDeps {
   ) => Effect.Effect<void, SqlError.SqlError>;
 }
 
-const process = (deps: HandleDeps, event: Charge) =>
+/** Record a matched, succeeded charge: apply, fix the payment, emit created?/succeeded. */
+const recordMatchedSuccess = (
+  deps: HandleDeps,
+  event: Charge,
+  match: Match,
+  incomingId: string,
+) =>
   Effect.gen(function* () {
-    const incomingId = yield* deps.repo.upsertIncomingCharge(event);
-    const match = yield* deps.matcher(event);
-    if (!match.matched) {
-      const quarantineId = yield* deps.repo.upsertQuarantine(incomingId);
-      yield* deps.repo.setMatchResult(incomingId, 'quarantined');
-      yield* deps.publish(quarantined(event, quarantineId, incomingId));
-      return;
-    }
     const applied = yield* deps.applier(event, match);
     yield* deps.repo.insertPayment({
       incomingEventId: incomingId,
@@ -172,6 +234,28 @@ const process = (deps: HandleDeps, event: Charge) =>
       yield* deps.publish(paymentCreated(event, match, applied.subscriptionId));
     }
     yield* deps.publish(paymentSucceeded(event, match, applied.subscriptionId));
+  });
+
+const process = (deps: HandleDeps, event: Charge) =>
+  Effect.gen(function* () {
+    const incomingId = yield* deps.repo.upsertIncomingCharge(event);
+    const match = yield* deps.matcher(event);
+    if (!match.matched) {
+      const quarantineId = yield* deps.repo.upsertQuarantine(incomingId);
+      yield* deps.repo.setMatchResult(incomingId, 'quarantined');
+      yield* deps.publish(quarantined(event, quarantineId, incomingId));
+      return;
+    }
+    if (event.status !== 'succeeded') {
+      // Matched a known checkout session but the charge did not succeed → a declined
+      // first payment (FR-003). No retry ladder — the customer re-initiates checkout;
+      // the session stays open for another attempt. Recurring failures never reach the
+      // pipeline (the scheduler emits them), so a matched non-success is a checkout one.
+      yield* deps.repo.setMatchResult(incomingId, 'matched');
+      yield* deps.publish(initialPaymentFailed(event, match));
+      return;
+    }
+    yield* recordMatchedSuccess(deps, event, match, incomingId);
   });
 
 /** The `payment_event_received` handler: decode the queue payload, then process. */

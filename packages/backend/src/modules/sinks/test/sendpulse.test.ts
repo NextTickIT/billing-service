@@ -32,7 +32,7 @@ const recordingFetch =
 
 const event = (over: Partial<StoredEvent> = {}): StoredEvent => ({
   id: 'evt_1',
-  name: 'payment_succeeded',
+  name: 'initial_payment_succeeded',
   occurredAt: new Date('2026-01-01T00:00:00Z'),
   correlationId: 'c1',
   externalUserId: 'contact_9',
@@ -59,7 +59,7 @@ it.effect(
     return connectorFor(
       recordingFetch(200, { success: true, data: [] }, calls),
       {
-        payment_succeeded: 'flow_42',
+        initial_payment_succeeded: 'flow_42',
       },
     )
       .deliver(event())
@@ -84,39 +84,51 @@ it.effect(
 it.effect('skips an event with no externalUserId (no call)', () => {
   const calls: Recorded[] = [];
   return connectorFor(recordingFetch(200, { success: true }, calls), {
-    payment_succeeded: 'flow_42',
+    initial_payment_succeeded: 'flow_42',
   })
     .deliver(
       event({ externalUserId: null, name: 'unknown_payment_quarantined' }),
     )
-    .pipe(Effect.map(() => expect(calls).toHaveLength(0)));
+    .pipe(
+      Effect.map(() => {
+        expect(calls).toHaveLength(0);
+      }),
+    );
 });
 
 it.effect('skips an unmapped event (no call)', () => {
   const calls: Recorded[] = [];
   return connectorFor(recordingFetch(200, { success: true }, calls), {})
     .deliver(event())
-    .pipe(Effect.map(() => expect(calls).toHaveLength(0)));
+    .pipe(
+      Effect.map(() => {
+        expect(calls).toHaveLength(0);
+      }),
+    );
 });
 
 it.effect('fails SinkError on a non-transient error response (HTTP 400)', () =>
   connectorFor(recordingFetch(400, { success: false }, []), {
-    payment_succeeded: 'flow_42',
+    initial_payment_succeeded: 'flow_42',
   })
     .deliver(event())
     .pipe(
       Effect.flip,
-      Effect.map((error) => expect(error._tag).toBe('SinkError')),
+      Effect.map((error) => {
+        expect(error._tag).toBe('SinkError');
+      }),
     ),
 );
 
 it.effect('fails SinkError when the body is success:false', () =>
   connectorFor(recordingFetch(200, { success: false }, []), {
-    payment_succeeded: 'flow_42',
+    initial_payment_succeeded: 'flow_42',
   })
     .deliver(event())
     .pipe(
       Effect.flip,
-      Effect.map((error) => expect(error._tag).toBe('SinkError')),
+      Effect.map((error) => {
+        expect(error._tag).toBe('SinkError');
+      }),
     ),
 );

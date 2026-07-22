@@ -106,7 +106,9 @@ export default {
     noFlows: 'No matching flows.',
     flowNotFound: 'Flow not found ({id})',
     events: {
-      payment_succeeded: 'Payment succeeded',
+      initial_payment_succeeded: 'Initial payment succeeded',
+      recurring_payment_succeeded: 'Recurring payment succeeded',
+      initial_payment_failed: 'Initial payment failed',
       charge_retry_failed: 'Charge retry failed',
       renewal_failed: 'Renewal failed',
       payment_created: 'Payment created',

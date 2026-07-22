@@ -14,7 +14,9 @@ export const SINK_DELIVERY_SLA_SECONDS = 60;
  * values.
  */
 export const EVENT_NAMES = [
-  'payment_succeeded',
+  'initial_payment_succeeded',
+  'recurring_payment_succeeded',
+  'initial_payment_failed',
   'charge_retry_failed',
   'renewal_failed',
   'payment_created',
@@ -39,22 +41,64 @@ const envelope = {
   aggregateId: Schema.String,
 };
 
-/** A successful payment on a subscription (a matched incoming event or a bind). */
-export const PaymentSucceededEvent = Schema.Struct({
+/**
+ * A successful payment, split by scenario so downstream flows can differ: an
+ * INITIAL checkout payment vs a RECURRING renewal charge. Both carry the same
+ * facts; the pipeline picks the variant from the match kind ('checkout' vs
+ * 'recurring'). A matched incoming event or an operator bind produces one of these.
+ */
+const succeededPayload = {
+  amount: Schema.Int,
+  currency: CurrencySchema,
+  method: Schema.Int,
+  period: Schema.String,
+  source: Schema.String,
+};
+
+export const InitialPaymentSucceededEvent = Schema.Struct({
   ...envelope,
-  name: Schema.Literal('payment_succeeded'),
+  name: Schema.Literal('initial_payment_succeeded'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct(succeededPayload),
+});
+
+export type InitialPaymentSucceededEvent = Schema.Schema.Type<
+  typeof InitialPaymentSucceededEvent
+>;
+
+export const RecurringPaymentSucceededEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('recurring_payment_succeeded'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct(succeededPayload),
+});
+
+export type RecurringPaymentSucceededEvent = Schema.Schema.Type<
+  typeof RecurringPaymentSucceededEvent
+>;
+
+/**
+ * A first (checkout) payment that was DECLINED for a known session (FR-003).
+ * Unlike a recurring failure there is no retry ladder — the customer re-initiates
+ * a new checkout — so this is a single terminal signal, not a step on the 0/1/3/5/7
+ * schedule. `reason` carries the provider decline text/code for the outgoing flow.
+ */
+export const InitialPaymentFailedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('initial_payment_failed'),
   externalUserId: Schema.String,
   payload: Schema.Struct({
     amount: Schema.Int,
     currency: CurrencySchema,
     method: Schema.Int,
     period: Schema.String,
+    reason: Schema.String,
     source: Schema.String,
   }),
 });
 
-export type PaymentSucceededEvent = Schema.Schema.Type<
-  typeof PaymentSucceededEvent
+export type InitialPaymentFailedEvent = Schema.Schema.Type<
+  typeof InitialPaymentFailedEvent
 >;
 
 /** A brand-new gateway payment created from a first checkout payment. */
@@ -140,7 +184,9 @@ export type UnknownPaymentQuarantinedEvent = Schema.Schema.Type<
  * null only for a quarantined unknown payment.
  */
 export const DomainEvent = Schema.Union(
-  PaymentSucceededEvent,
+  InitialPaymentSucceededEvent,
+  RecurringPaymentSucceededEvent,
+  InitialPaymentFailedEvent,
   PaymentCreatedEvent,
   ChargeRetryFailedEvent,
   RenewalFailedEvent,

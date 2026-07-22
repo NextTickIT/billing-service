@@ -10,8 +10,8 @@ import type { W4pChargeResponse } from '@/modules/wayforpay/contracts.js';
 /**
  * Outgoing events for the recurring billing cycle (docs/07, §5.3). A successful
  * charge is fed back through the pipeline as an incoming event so payment fixation
- * and `payment_succeeded` stay single-path (and the poller re-seeing the same row
- * dedupes on the shared idem key). Failures are the scheduler's own events.
+ * and `recurring_payment_succeeded` stay single-path (and the poller re-seeing the
+ * same row dedupes on the shared idem key). Failures are the scheduler's own events.
  */
 
 /** A successful charge, shaped as a standard incoming event for the pipeline. */

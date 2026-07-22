@@ -106,7 +106,9 @@ export default {
     noFlows: 'Подходящих потоков нет.',
     flowNotFound: 'Поток не найден ({id})',
     events: {
-      payment_succeeded: 'Платёж успешен',
+      initial_payment_succeeded: 'Первый платёж успешен',
+      recurring_payment_succeeded: 'Повторный платёж успешен',
+      initial_payment_failed: 'Первый платёж не удался',
       charge_retry_failed: 'Повтор списания не удался',
       renewal_failed: 'Обновление не удалось',
       payment_created: 'Платёж создан',

@@ -7,7 +7,7 @@ const base: Sink = {
   kind: SinkKind.SendPulse,
   enabled: false,
   auth: { kind: AuthKind.Bearer, token: 'stored-token' },
-  config: { flows: { payment_succeeded: 'f1' } },
+  config: { flows: { initial_payment_succeeded: 'f1' } },
   updatedAt: new Date('2026-01-01T00:00:00Z'),
 };
 

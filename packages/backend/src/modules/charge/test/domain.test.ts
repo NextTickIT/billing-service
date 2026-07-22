@@ -16,9 +16,10 @@ import type { ChargeRepo } from '@/modules/charge/data-access.js';
 import {
   handleChargeEvent,
   ingest,
-  paymentSucceeded,
+  initialPaymentFailed,
   quarantined,
   rebindFromPayload,
+  recurringPaymentSucceeded,
 } from '@/modules/charge/domain.js';
 
 /** The JSON-encoded `payment_event_received` payload the handler decodes. */
@@ -148,7 +149,7 @@ it.effect(
 );
 
 it.effect(
-  'a matched charge records a payment and emits payment_succeeded',
+  'a matched recurring charge records a payment and emits recurring_payment_succeeded',
   () =>
     Effect.gen(function* () {
       const { repo, payments, quarantines } = makeFakeRepo();
@@ -172,7 +173,7 @@ it.effect(
       expect(payments.size).toBe(1);
       // No payment_created when the payment already existed.
       expect(pub.events).toHaveLength(1);
-      expect(pub.events[0]?.name).toBe('payment_succeeded');
+      expect(pub.events[0]?.name).toBe('recurring_payment_succeeded');
       expect(pub.events[0]?.externalUserId).toBe('sp:1');
       expect(pub.events[0]?.aggregateId).toBe('sub_1');
       expect(pub.events[0]?.id).toBe('evt_k2:succeeded');
@@ -200,10 +201,45 @@ it.effect('a checkout first charge also emits payment_created', () =>
 
     expect(pub.events.map((e) => e.name)).toEqual([
       'payment_created',
-      'payment_succeeded',
+      'initial_payment_succeeded',
     ]);
     expect(pub.events.every((e) => e.aggregateId === 'sub_new')).toBe(true);
   }),
+);
+
+it.effect(
+  'a declined checkout charge emits initial_payment_failed (no payment, no quarantine)',
+  () =>
+    Effect.gen(function* () {
+      const { repo, payments, quarantines } = makeFakeRepo();
+      const pub = recordingPublish();
+
+      yield* handleChargeEvent({
+        repo,
+        matcher: matcherOf({
+          matched: true,
+          kind: 'checkout',
+          subscriptionId: null,
+          externalUserId: 'sp:3',
+          period: 'P1M',
+          method: 0,
+        }),
+        // A failed charge must never reach the applier (no payment is recorded).
+        applier: noApplier,
+        publish: pub.publish,
+      })({
+        ...encodedPayload('k8'),
+        status: 'failed',
+        payload: { reason: 'Declined' },
+      });
+
+      expect(payments.size).toBe(0);
+      expect(quarantines.size).toBe(0);
+      expect(pub.events).toHaveLength(1);
+      expect(pub.events[0]?.name).toBe('initial_payment_failed');
+      expect(pub.events[0]?.externalUserId).toBe('sp:3');
+      expect(pub.events[0]?.id).toBe('evt_k8:failed');
+    }),
 );
 
 it.effect(
@@ -226,7 +262,7 @@ it.effect(
 );
 
 it.effect(
-  'rebind records a payment, resolves the quarantine, and emits payment_succeeded',
+  'rebind records a payment, resolves the quarantine, and emits recurring_payment_succeeded',
   () =>
     Effect.gen(function* () {
       const fake = makeFakeRepo();
@@ -249,14 +285,14 @@ it.effect(
 
       expect(fake.payments.has(incId)).toBe(true);
       expect(fake.resolved.has(incId)).toBe(true);
-      expect(pub.events[0]?.name).toBe('payment_succeeded');
+      expect(pub.events[0]?.name).toBe('recurring_payment_succeeded');
       expect(pub.events[0]?.externalUserId).toBe('sp:9');
       expect(pub.events[0]?.id).toBe('evt_k9:succeeded');
     }),
 );
 
-it('paymentSucceeded carries the docs/07 required payload fields', () => {
-  const event = paymentSucceeded(
+it('recurringPaymentSucceeded carries the docs/07 required payload fields', () => {
+  const event = recurringPaymentSucceeded(
     decodedCharge('k4'),
     {
       matched: true,
@@ -276,6 +312,31 @@ it('paymentSucceeded carries the docs/07 required payload fields', () => {
     source: 'test',
   });
   expect(event.aggregateId).toBe('sub_9');
+});
+
+it('initialPaymentFailed carries the decline reason and required fields', () => {
+  const event = initialPaymentFailed(
+    { ...decodedCharge('k6'), status: 'failed', payload: { reasonCode: 1101 } },
+    {
+      matched: true,
+      kind: 'checkout',
+      subscriptionId: null,
+      externalUserId: 'sp:6',
+      period: 'P1M',
+      method: 0,
+    },
+  );
+  expect(event.name).toBe('initial_payment_failed');
+  // A numeric reasonCode is coerced to a string for the outgoing payload.
+  expect(event.payload).toEqual({
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    reason: '1101',
+    source: 'test',
+  });
+  expect(event.aggregateId).toBe('ref-1');
 });
 
 it('quarantined carries a null user and references the quarantine record', () => {

@@ -16,7 +16,7 @@ import { deliverEvent, publish } from '@/modules/outbox/domain.js';
 
 const event = (id: string): DomainEvent => ({
   id,
-  name: 'payment_succeeded',
+  name: 'initial_payment_succeeded',
   occurredAt: new Date(0),
   correlationId: 'corr-1',
   externalUserId: 'sendpulse:123',

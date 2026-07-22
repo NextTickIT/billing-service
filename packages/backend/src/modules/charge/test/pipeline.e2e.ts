@@ -211,9 +211,9 @@ const assertBind = async (query: EffectE2eContext['query']): Promise<void> => {
   );
   await eq(
     query,
-    `SELECT count(*) FROM domain_events WHERE name = 'payment_succeeded'`,
+    `SELECT count(*) FROM domain_events WHERE name = 'recurring_payment_succeeded'`,
     '1',
-    'bind emitted payment_succeeded',
+    'bind emitted recurring_payment_succeeded',
   );
   await eq(
     query,
@@ -387,9 +387,9 @@ const assertCheckout = async (
   );
   await eq(
     query,
-    `SELECT count(*) FROM domain_events WHERE name = 'payment_succeeded'`,
+    `SELECT count(*) FROM domain_events WHERE name = 'initial_payment_succeeded'`,
     '1',
-    'payment_succeeded emitted',
+    'initial_payment_succeeded emitted',
   );
   await eq(
     query,
@@ -475,9 +475,9 @@ const assertScheduler = async (
   );
   await eq(
     query,
-    `SELECT count(*) FROM domain_events WHERE name = 'payment_succeeded'`,
+    `SELECT count(*) FROM domain_events WHERE name = 'recurring_payment_succeeded'`,
     '1',
-    'payment_succeeded emitted for the recurring charge',
+    'recurring_payment_succeeded emitted for the recurring charge',
   );
 };
 
