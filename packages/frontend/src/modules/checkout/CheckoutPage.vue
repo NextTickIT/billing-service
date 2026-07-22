@@ -94,7 +94,7 @@ async function onPay(): Promise<void> {
           <div class="checkout__action">
             <BaseButton
               :label="t('checkout.payByCard')"
-              :loading="store.loading"
+              :loading="store.submitting"
               @click="onPay"
             />
           </div>
