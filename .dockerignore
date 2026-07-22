@@ -1,0 +1,22 @@
+# Build context excludes — keeps the image small and preserves the builder's
+# `npm ci` node_modules (host copies never overwrite it).
+node_modules
+**/node_modules
+**/dist
+.git
+.gitignore
+.omc
+.claude
+**/.turbo
+**/*.tsbuildinfo
+coverage
+.env
+.env.*
+docs
+**/test
+**/*.test.ts
+**/*.e2e.ts
+docker-compose*.yml
+Dockerfile
+.dockerignore
+README.md
