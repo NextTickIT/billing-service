@@ -5,3 +5,4 @@ export * from '@/schemas/checkout.js';
 export * from '@/schemas/charge.js';
 export * from '@/schemas/delivery.js';
 export * from '@/schemas/message.js';
+export * from '@/schemas/sink.js';

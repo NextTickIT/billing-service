@@ -3,7 +3,11 @@ import type { DomainEvent } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
-import { SinkError, type Sink, type SinksService } from '@/infra/sinks.js';
+import {
+  SinkError,
+  type SinkConnector,
+  type SinksService,
+} from '@/infra/sinks.js';
 import type {
   DeliveryWithEvent,
   OutboxRepo,
@@ -83,12 +87,12 @@ const makeFakeRepo = () => {
   return { repo, deliveries, eventsById };
 };
 
-const sinksOf = (...sinks: readonly Sink[]): SinksService => ({
+const sinksOf = (...sinks: readonly SinkConnector[]): SinksService => ({
   all: () => Effect.succeed(sinks),
 });
 
-const successSink: Sink = { name: 'sendpulse', deliver: () => Effect.void };
-const failSink: Sink = {
+const successSink: SinkConnector = { name: 'sendpulse', deliver: () => Effect.void };
+const failSink: SinkConnector = {
   name: 'sendpulse',
   deliver: () =>
     Effect.fail(new SinkError({ sink: 'sendpulse', reason: 'boom' })),
@@ -183,7 +187,7 @@ it.effect('deliverEvent is a no-op when already delivered', () =>
       status: 'delivered',
     });
     let called = false;
-    const spySink: Sink = {
+    const spySink: SinkConnector = {
       name: 'sendpulse',
       deliver: () =>
         Effect.sync(() => {

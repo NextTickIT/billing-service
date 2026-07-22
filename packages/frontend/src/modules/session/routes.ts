@@ -32,6 +32,11 @@ export const operatorRoutes: RouteRecordRaw[] = [
         component: () => import('@/modules/quarantine/QuarantinePage.vue'),
         beforeEnter: guard,
       },
+      {
+        path: 'sinks',
+        component: () => import('@/modules/sinks/SinksPage.vue'),
+        beforeEnter: guard,
+      },
     ],
   },
 ];

@@ -5,7 +5,7 @@ import { SqlLive } from '@/infra/db.js';
 import { HasherLive } from '@/infra/hasher.js';
 import { QueueLive } from '@/infra/queue/service.js';
 import { rateLimiterLayer } from '@/infra/rate-limiter.js';
-import { LoggingSinkLive } from '@/infra/sinks.js';
+import { SinksLive } from '@/modules/sinks/live.js';
 import { TaskRegistryLive } from '@/infra/task-registry.js';
 import { makeAuthConfig } from '@/modules/auth/domain.js';
 import { AuthRepoLive } from '@/modules/auth/data-access.js';
@@ -77,10 +77,12 @@ const wayForPayLayer = (config: AppConfig) =>
 export const makeWorkerLayer = (config: AppConfig) => {
   const base = Layer.mergeAll(
     TaskRegistryLive,
-    LoggingSinkLive,
     SqlLive(config.database),
     wayForPayLayer(config),
   );
+  // The real sinks service reads its config from the DB (hot-reload, docs/21), so it
+  // layers on top of `base` to get `SqlClient`; its output `Sinks` flows to the outbox.
+  const withSinks = Layer.provideMerge(SinksLive(config.sinks), base);
   // The pipeline's matcher tries checkout (session) then recurring (our charges);
   // its applier creates/extends the subscription. Both are plain functions built
   // from `sql` here at the composition root — legacy _WFPREG charges match nothing
@@ -93,7 +95,7 @@ export const makeWorkerLayer = (config: AppConfig) => {
       ]),
     (sql) => makeCheckoutApplier(makePaymentRepo(sql), makeCheckoutRepo(sql)),
   );
-  const withQueue = Layer.provideMerge(QueueLive, base);
+  const withQueue = Layer.provideMerge(QueueLive, withSinks);
   const withOutbox = Layer.provideMerge(OutboxLive, withQueue);
   return Layer.provideMerge(pipeline, withOutbox);
 };

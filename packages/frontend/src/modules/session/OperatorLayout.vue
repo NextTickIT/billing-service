@@ -25,6 +25,9 @@ async function onLogout(): Promise<void> {
         <RouterLink to="/operator/quarantine" class="op-nav__link">
           {{ t('quarantine.title') }}
         </RouterLink>
+        <RouterLink to="/operator/sinks" class="op-nav__link">
+          {{ t('sinks.title') }}
+        </RouterLink>
       </nav>
       <div class="op-nav__actions">
         <ThemeToggle />
@@ -78,7 +81,9 @@ async function onLogout(): Promise<void> {
   font-weight: 500;
   text-decoration: none;
   border-bottom: 2px solid transparent;
-  transition: color 0.15s, border-color 0.15s;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
 }
 
 .op-nav__link:hover {
@@ -108,7 +113,9 @@ async function onLogout(): Promise<void> {
   font-family: var(--sans);
   font-size: 12px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
 }
 
 .op-nav__logout:hover {

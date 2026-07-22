@@ -4,8 +4,9 @@ import { Context, Data, Effect, Layer } from 'effect';
 /**
  * Sink — a downstream consumer of outgoing events (docs/03: "sync connector").
  * The outbox owns durability and retries; a sink only has to attempt one delivery
- * and be idempotent on its side. A new sink (SendPulse, …) is a new `Sink` in the
- * `Sinks` set — no core change (AC8).
+ * and be idempotent on its side. A new sink (SendPulse, …) is a new `SinkConnector`
+ * in the `Sinks` set — no core change (AC8). The persisted, operator-editable config
+ * entity is the shared `Sink` DU; this is the runtime adapter it is built into.
  */
 export class SinkError extends Data.TaggedError('SinkError')<{
   readonly sink: string;
@@ -13,14 +14,14 @@ export class SinkError extends Data.TaggedError('SinkError')<{
   readonly cause?: unknown;
 }> {}
 
-export interface Sink {
+export interface SinkConnector {
   readonly name: string;
   readonly deliver: (event: StoredEvent) => Effect.Effect<void, SinkError>;
 }
 
 /** The connected sinks. The outbox fans an event out to one delivery per sink. */
 export interface SinksService {
-  readonly all: () => Effect.Effect<readonly Sink[]>;
+  readonly all: () => Effect.Effect<readonly SinkConnector[]>;
 }
 
 export class Sinks extends Context.Tag('Sinks')<Sinks, SinksService>() {}
@@ -31,7 +32,7 @@ export class Sinks extends Context.Tag('Sinks')<Sinks, SinksService>() {}
  * Named `sendpulse` so the delivery records already carry the eventual target and
  * swapping in the real connector needs no data migration.
  */
-export const loggingSink: Sink = {
+export const loggingSink: SinkConnector = {
   name: 'sendpulse',
   deliver: (event) =>
     Effect.logInfo('sink delivery (logging)').pipe(

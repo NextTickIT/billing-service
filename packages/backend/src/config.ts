@@ -5,12 +5,24 @@ import { Redacted } from 'effect';
  * Values come from the environment; the DB host defaults to the
  * project-specific loopback (see README / docker-compose).
  */
+/**
+ * Postgres TLS setting. `false` disables SSL (local dev). The object form maps
+ * onto `pg`'s `ssl` (a `tls.ConnectionOptions`): a managed provider (DO) refuses
+ * plaintext, so production sets `DB_SSL=require` — encrypt without CA verification
+ * (fine over a private VPC) — or `DB_SSL=verify-full` with `DB_CA_CERT` to validate
+ * the provider's chain.
+ */
+export type DatabaseSsl =
+  | false
+  | { readonly rejectUnauthorized: boolean; readonly ca?: string };
+
 export interface DatabaseConfig {
   readonly host: string;
   readonly port: number;
   readonly user: string;
   readonly password: string;
   readonly database: string;
+  readonly ssl: DatabaseSsl;
 }
 
 /** Worker message-queue tuning (docs/09). Consumed only by the worker runtime. */
@@ -58,6 +70,30 @@ export interface SchedulerConfig {
   readonly batchSize: number;
 }
 
+/**
+ * In-process background worker toggle. When `true`, the HTTP server process ALSO
+ * boots the queue worker (dispatch loop + poller/scheduler) in-process, so a single
+ * container both serves the API and drains the queue. When `false` (default) the
+ * worker runs only as its own OS process (`dist/worker.js`). Both share the same
+ * image; only the launch config differs.
+ */
+export interface WorkerConfig {
+  readonly enabled: boolean;
+}
+
+/**
+ * Sinks (docs/21): how long the DB-backed `Sinks` service caches config before a
+ * re-read (so operator changes are live within the TTL, no restart), plus the
+ * SendPulse connector's endpoint and client-side rate limit.
+ */
+export interface SinksConfig {
+  readonly cacheTtlMillis: number;
+  readonly sendpulse: {
+    readonly apiUrl: string;
+    readonly rateLimitRps: number;
+  };
+}
+
 export interface AppConfig {
   readonly host: string;
   readonly port: number;
@@ -69,6 +105,8 @@ export interface AppConfig {
   readonly queue: QueueConfig;
   readonly wayforpay: WayForPayConfig;
   readonly scheduler: SchedulerConfig;
+  readonly worker: WorkerConfig;
+  readonly sinks: SinksConfig;
   /**
    * Shared secret the BFF sends on every proxied request (`BFF_SECRET` env).
    * Empty string disables the gate (development / test). When set, the gate
@@ -130,12 +168,28 @@ const loadWayForPayConfig = (): WayForPayConfig => ({
   ...loadW4pCheckoutConfig(),
 });
 
+/** TLS from `DB_SSL` (`disable` | `require` | `verify-full`, default `disable`).
+ * `verify-full` validates the chain and so needs `DB_CA_CERT`; without a CA we can
+ * only encrypt (`rejectUnauthorized: false`) — the managed-Postgres `require` mode. */
+const loadDbSsl = (): DatabaseSsl => {
+  const mode = process.env['DB_SSL'] ?? 'disable';
+  if (mode === 'disable' || mode === 'false' || mode === '') {
+    return false;
+  }
+  const ca = process.env['DB_CA_CERT'];
+  if (ca !== undefined && ca.length > 0) {
+    return { rejectUnauthorized: mode === 'verify-full', ca };
+  }
+  return { rejectUnauthorized: false };
+};
+
 const loadDatabaseConfig = (): DatabaseConfig => ({
   host: process.env['DB_HOST'] ?? 'billing-service.local',
   port: Number(process.env['DB_PORT'] ?? '5432'),
   user: process.env['DB_USER'] ?? 'billing',
   password: process.env['DB_PASSWORD'] ?? 'billing',
   database: process.env['DB_NAME'] ?? 'billing',
+  ssl: loadDbSsl(),
 });
 
 export const loadConfig = (): AppConfig => ({
@@ -147,5 +201,15 @@ export const loadConfig = (): AppConfig => ({
   queue: loadQueueConfig(),
   wayforpay: loadWayForPayConfig(),
   scheduler: loadSchedulerConfig(),
+  worker: { enabled: process.env['WORKER_ENABLED'] === 'true' },
+  sinks: {
+    cacheTtlMillis: Number(process.env['SINKS_CACHE_TTL_MS'] ?? '10000'),
+    sendpulse: {
+      apiUrl:
+        process.env['SENDPULSE_API_URL'] ??
+        'https://api.sendpulse.com/telegram',
+      rateLimitRps: Number(process.env['SENDPULSE_RATE_LIMIT_RPS'] ?? '5'),
+    },
+  },
   bffSecret: Redacted.make(process.env['BFF_SECRET'] ?? ''),
 });
