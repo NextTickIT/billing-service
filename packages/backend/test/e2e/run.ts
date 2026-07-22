@@ -81,6 +81,7 @@ const testDbConfig = (database: string): DatabaseConfig => ({
   user: DB.user,
   password: DB.password,
   database,
+  ssl: false,
 });
 
 const setAppEnv = (database: string): void => {

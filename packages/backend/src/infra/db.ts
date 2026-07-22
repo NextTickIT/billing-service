@@ -20,4 +20,5 @@ export const SqlLive = (config: DatabaseConfig) =>
     database: config.database,
     username: config.user,
     password: Redacted.make(config.password),
+    ssl: config.ssl,
   });
