@@ -147,7 +147,13 @@ const runEffectScenario = async (
   try {
     await Effect.runPromise(runMigrations(testDbConfig(database)));
     setAppEnv(database);
-    await scenario.run({ config: loadConfig(), query: queryTestDb(database) });
+    const query = queryTestDb(database);
+    // The pipeline scenarios assert delivery; the seed sink ships disabled (operators
+    // enable it), so enable it here to mirror a configured deployment. Its flow map is
+    // empty, so the connector skips-and-succeeds — deliveries are marked delivered with
+    // no outbound SendPulse call.
+    await query(`UPDATE sinks SET enabled = true WHERE kind = 0`);
+    await scenario.run({ config: loadConfig(), query });
     console.log(`  ✓ ${scenario.name}`);
   } finally {
     psql('postgres', `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
