@@ -12,7 +12,8 @@ import { SinkError, type SinkConnector } from '@/infra/sinks.js';
 /**
  * SendPulse Telegram connector (docs/21, conv.12 — provider code lives here). Runs a
  * SendPulse flow per outgoing event: `POST {apiUrl}/flows/run` with `contact_id =
- * externalUserId`, `flow_id` from the operator's map, `external_data = event payload`.
+ * externalUserId`, `flow_id` from the operator's map, and `external_data = event
+ * payload + the event name (`event`) and `event_id`.
  * Auth is a static `sp_apikey_***` Bearer. Every non-success maps to `SinkError` so the
  * durable outbox retries (§4.5); transient blips (network/429/5xx) also retry in-call.
  */
@@ -121,7 +122,9 @@ export const makeSendPulseConnector = (
       const body = JSON.stringify({
         contact_id: event.externalUserId,
         flow_id: flowId,
-        external_data: { ...event.payload, event_id: event.id },
+        // `event` (the name) + `event_id` let a flow reached by more than one event
+        // branch/dedupe on which one fired; our keys win over any payload collision.
+        external_data: { ...event.payload, event: event.name, event_id: event.id },
       });
       yield* call(client, 'POST', '/flows/run', body).pipe(
         Effect.flatMap(parseData),

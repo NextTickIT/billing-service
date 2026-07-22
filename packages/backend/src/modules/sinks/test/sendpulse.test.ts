@@ -75,6 +75,7 @@ it.effect(
           expect(body.contact_id).toBe('contact_9');
           expect(body.flow_id).toBe('flow_42');
           expect(body.external_data['amount']).toBe(5000);
+          expect(body.external_data['event']).toBe('initial_payment_succeeded');
           expect(body.external_data['event_id']).toBe('evt_1');
         }),
       );

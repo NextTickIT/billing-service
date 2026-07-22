@@ -60,9 +60,11 @@ on, just logs). Deliver three things:
   {eventName → flowId} map.
 - On delivery: `POST https://api.sendpulse.com/telegram/flows/run`,
   `Authorization: Bearer <sp_apikey_***>`,
-  `{ contact_id: <externalUserId>, flow_id: <flows[event.name]>, external_data: <event.payload> }`.
+  `{ contact_id: <externalUserId>, flow_id: <flows[event.name]>, external_data: { ...event.payload, event, event_id } }`.
 - **LOCKED (1):** auth = static `sp_apikey_***` used directly as Bearer (no OAuth refresh).
-- **LOCKED (2):** send the full event payload as `external_data` (flow reads `{{$['amount']}}`).
+- **LOCKED (2):** send the full event payload as `external_data`, plus the event name
+  (`event`) and `event_id`, so a flow reached by more than one event can branch/dedupe
+  (flow reads `{{$['amount']}}`, `{{$['event']}}`).
 - **`externalUserId` is the SendPulse `contact_id`** (caller contract — §7).
 
 Source: SendPulse Telegram run-flow `POST /telegram/flows/run` — `contact_id` (req),
@@ -133,7 +135,7 @@ the outbox/delivery contract and its data are **unchanged** (no delivery-table m
   - `externalUserId === null` → success no-op (quarantine events never target a contact).
   - `flowId = flows[event.name]`; missing → success no-op (event not mapped).
   - else rate-limited `POST /telegram/flows/run` with `Authorization: Bearer <token>`,
-    `{ contact_id: externalUserId, flow_id, external_data: { ...payload, event_id } }`; non-success → `SinkError` (§4.5).
+    `{ contact_id: externalUserId, flow_id, external_data: { ...payload, event, event_id } }`; non-success → `SinkError` (§4.5).
   - Also `listFlows(token)` (operator picker): `GET /telegram/bots` → for each **active** bot
     `GET /telegram/flows?bot_id=…` → merge active flows to `{ id, name, botName }`; typed errors.
 - **`routes.ts`** — operator-guarded (reuse `operatorActor` from `quarantine/routes.ts`:
