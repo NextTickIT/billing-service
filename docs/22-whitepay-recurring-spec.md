@@ -1,13 +1,21 @@
 # WhitePay recurring payments spec (planner input)
 
-> Status: decision-locked with the user (2026-07-22), ready for planning. Grounded in
-> [17-whitepay-research.md](17-whitepay-research.md). Nothing here is committed as code yet.
+> Status: decision-locked with the user (2026-07-22), extended 2026-07-23. Ready for planning.
+> Grounded in [17-whitepay-research.md](17-whitepay-research.md) and
+> [23-whitepay-checkout-selection-research.md](23-whitepay-checkout-selection-research.md).
+> Nothing here is committed as code yet.
 >
 > **Why this spec exists:** WhitePay has **no reusable token** (see 17 — the make-or-break
 > finding). So recurring billing cannot be an unattended server-side charge like WayForPay's
 > `recToken` CHARGE. Instead, each due date **prompts the user to pay a freshly-minted checkout
 > link**. This spec defines that flow so it rides the same outbox→sink + matching pipeline the
 > gateway already uses.
+>
+> **2026-07-23 extension (grounded in doc 23):** confirmed that on WhitePay's hosted checkout the
+> **payer** selects the coin **and** network (the create-order call is **fiat-denominated only** —
+> we neither collect nor pass a coin/network), and generalized the recurring trigger into one
+> **provider-agnostic charge function** (autocharge if a usable token exists, else fire a
+> `payment.manual_required` prompt). See decisions D6–D10 and "Provider-agnostic recurring charge".
 
 ## Decisions locked (with the user)
 
@@ -17,7 +25,12 @@
 | D2 | When to prompt | **On the due date** (no early pre-notification / no grace period — there is no subscription to keep alive). |
 | D3 | When to create the WhitePay order | **On click, on demand.** The outbound event carries **our** link; the real WhitePay checkout is minted only when the user presses "Pay". |
 | D4 | On exhaustion | After the **last** scheduled attempt lapses → mark Payment **FAILED** + fire an outgoing `payment.failed` event. **No suspend, no downgrade.** |
-| D5 | Payment window | A user may take **up to ~48h** to pay after being prompted; that is one attempt's live window. |
+| D5 | Payment window | A user may take **up to ~48h** to pay after being prompted; that is one attempt's live window. Held by **our own checkout session** (below), *not* by the WhitePay order — the WhitePay order is minted on click and lives only ~2 min of rate lock. |
+| D6 | Who picks coin/network | **The payer, on WhitePay's hosted page** (confirmed, doc 23). Our create-order call is **fiat-denominated** (`{amount, currency=FIAT, external_order_id}`). We do **not** collect or pass coin/network, and cannot pre-force one (that only existed on a deprecated endpoint). "Preselect crypto" therefore means only **"route this session to the WhitePay provider,"** not a coin/network choice. |
+| D7 | Recurring trigger is provider-agnostic | One `attemptCharge(payment)` on the provider boundary. The predicate is **per-payment, not per-provider**: `hasUsableToken(payment)` → **autocharge** (server-side, WayForPay `recToken`); else → fire a **`payment.manual_required`** event (prompt-to-pay). WhitePay is always the `else` branch. |
+| D8 | "Default to previous method" is provider-level | Because the payer re-picks coin/network on WhitePay every cycle and we can only reliably record the coin (not the chain, doc 23 Q4), "default to previous method" means **defaulting the provider/method** (WayForPay-card vs WhitePay-crypto), **changeable** by the user — *not* a coin/network default within WhitePay. |
+| D9 | Autocharge decline → **retry on schedule** | When a usable token *is* present and the server-side autocharge **declines**, we **retry on the existing recurring schedule** — we do **not** fire a same-cycle `payment.manual_required` fallback. (Locked 2026-07-23.) |
+| D10 | Event name | The prompt-to-pay event is **`payment.manual_required`** (renamed from the earlier `payment.due` / "pay now"). **One** event only. (Locked 2026-07-23.) |
 
 ## Model
 
@@ -29,7 +42,7 @@ Payment (the recurring payable)
       ──all attempts lapsed──► FAILED
 
 Attempt (one scheduled try, on its due date)
-  SCHEDULED ──fire "pay now" event──► NOTIFIED
+  SCHEDULED ──fire payment.manual_required event──► NOTIFIED
   NOTIFIED  ──user clicks, order minted──► AWAITING_PAYMENT (fresh acquiring_url)
   AWAITING_PAYMENT ──webhook order::completed──► (Payment → PAID)
                    ──~48h window elapses, no COMPLETE──► LAPSED ──► next attempt
@@ -42,9 +55,10 @@ Attempt (one scheduled try, on its due date)
 
 ## Flow — one attempt
 
-1. **Due date reached** → the scheduler emits a `payment.due` (“pay now”) domain event into the
-   outbox. The sink delivers it to the user (email / messenger / in-app) with a button that
-   points at **our** on-click endpoint (not a WhitePay URL).
+1. **Due date reached** → the scheduler runs `attemptCharge` (D7); on the manual branch it emits a
+   `payment.manual_required` domain event into the outbox. The sink delivers it to the user
+   (email / messenger / in-app) with a button that points at **our** on-click endpoint (not a
+   WhitePay URL).
 2. **User presses "Pay"** → our on-click endpoint creates a **fresh** WhitePay crypto order
    (`POST …/private-api/crypto-orders/{slug}`, Bearer auth) with `external_order_id = chargeId`,
    receives `order.acquiring_url`, records the `order.id ↔ chargeId` mapping, and **302-redirects**
@@ -54,7 +68,7 @@ Attempt (one scheduled try, on its due date)
    the HMAC, match `external_order_id → charge → Payment`, set **Payment = PAID**, and **cancel
    the remaining scheduled attempts**.
 4. **No payment within the ~48h window** (or WhitePay `DECLINED`/expired) → the attempt is
-   **LAPSED**; the next scheduled attempt date will fire a new `payment.due` event.
+   **LAPSED**; the next scheduled attempt date will fire a new `payment.manual_required` event.
 5. **Last scheduled attempt lapses** → **Payment = FAILED** → emit `payment.failed`. Done.
 
 ## The on-click mint endpoint
@@ -69,7 +83,7 @@ Attempt (one scheduled try, on its due date)
 
 | Event | Key fields |
 |---|---|
-| `payment.due` (“pay now”) | `paymentId`, `chargeId`, `attemptNumber`, `amount` (minor units), `currency`, `payUrl` (our on-click link), `dueDate`, `windowExpiresAt` (dueDate + ~48h) |
+| `payment.manual_required` (prompt-to-pay; formerly `payment.due`) | `paymentId`, `chargeId`, `attemptNumber`, `amount` (minor units), `currency`, `payUrl` (our on-click link), `defaultMethod` (last-used provider, changeable), `dueDate`, `windowExpiresAt` (dueDate + ~48h) |
 | `payment.paid` | `paymentId`, `chargeId`, `amount`, `paidAt`, `providerOrderId`, `receivedTotal` |
 | `payment.failed` | `paymentId`, `amount`, `attemptsMade`, `lastAttemptAt`, `reason` |
 
@@ -107,14 +121,61 @@ raw-log + idempotency) is shared. The single substitution:
 
 | | WayForPay | WhitePay |
 |---|---|---|
-| One attempt = | server-side `CHARGE` with `recToken` (immediate success/fail, unattended) | **fire `payment.due` event + await webhook (≤48h)** — user pays a freshly-minted link |
+| One attempt = | server-side `CHARGE` with `recToken` (immediate success/fail, unattended; decline → retry on schedule, D9) | **fire `payment.manual_required` event + await webhook (≤48h)** — user pays a freshly-minted link |
 
-## Open questions for WhitePay (confirm at onboarding — none block this design)
+## Provider-agnostic recurring charge (D7/D8)
 
-1. **Order / `acquiring_url` TTL, and when the rate locks** (at creation vs when the user opens
-   the page). On-click minting is safe regardless; this only decides whether we *could* also
-   embed links directly.
+The due-date trigger is one function on the `PaymentProvider` boundary ([05-domain-model.md](05-domain-model.md)),
+so the scheduler stays source-agnostic:
+
+```
+attemptCharge(payment):
+  if hasUsableToken(payment):          # per-PAYMENT, not per-provider
+      autocharge server-side           # WayForPay recToken CHARGE (existing flow B)
+      on decline → retry on schedule   # D9: NO same-cycle manual fallback
+  else:
+      create our 48h checkout session (method defaulted to last-used provider, changeable)
+      emit `payment.manual_required`  # the prompt-to-pay event
+```
+
+Truth table:
+
+| Case | `hasUsableToken` | Branch |
+|---|---|---|
+| WhitePay (any) | always false | **manual** (prompt-to-pay) |
+| WayForPay + stored token | true | **autocharge** |
+| WayForPay, no token yet (e.g. original payment predates recurring-token capture) | false | **manual** — and it **graduates**: a completed manual WayForPay payment returns a `recToken`, so subsequent cycles autocharge |
+
+**Our 48h checkout session (first-class object).** The manual branch creates *our* session (TTL ~48h,
+opaque `payUrl`, `method` defaulted to the last-used provider but changeable). The event carries the
+session link — so the button is live the instant the user receives it. The **WhitePay order is minted
+only when the user clicks Pay** inside the session (D3), keeping the ~2-min WhitePay rate clock always
+fresh. Two independent clocks: **our session TTL (48h)** = the attempt window; **WhitePay order TTL
+(unknown, ~2-min rate lock minimum)** = starts at click.
+
+> Naming note (locked, D10): `payment.manual_required` is the renamed `payment.due` ("pay now")
+> event, repositioned as the `else` branch of `attemptCharge`. It is a **single** event — no second
+> overlapping event — to avoid dedup pain.
+
+## Open questions
+
+**Answered by doc 23 (2026-07-23):**
+- ~~Who selects coin/network~~ → **the payer**, on WhitePay's page; create-order is fiat-only (D6).
+- ~~Can we preselect/default a coin/network~~ → **no** on the live endpoint; "default to previous" is
+  provider-level, not coin/network (D8).
+- **Rate lock** → ~2 min (120 s), fixed when the payer selects the currency. On-click minting confirmed
+  correct.
+
+**Still open for WhitePay (confirm at onboarding — none block this design):**
+1. **Order / `acquiring_url` TTL** — the ~2-min figure is only the *rate re-quote* window; the actual
+   order lifetime has no known field and needs the authenticated docs or a live test. (Only affects
+   whether we *could* also embed links directly; on-click minting is safe regardless.)
 2. **`external_order_id` reuse** — must it be unique per order, or can attempts reuse it? Drives
    charge-id-per-attempt vs an order-suffix scheme.
 3. **Does WhitePay push a webhook on expiry/decline, or only on `COMPLETE`?** If only `COMPLETE`,
    our ≤48h timer is the sole lapse signal.
+4. **Can a merchant restrict the pay-in coin/network menu** shown to payers, or is the full asset list
+   always exposed? (401-gated; see doc 23.)
+
+*(Former open Q "autocharge-decline fallback" is now **resolved → D9**: retry on schedule, no
+same-cycle manual fallback.)*

@@ -106,8 +106,8 @@ card processor — *not* WhiteBIT's crypto WhitePay. Do not integrate against it
 | Create order | `POST /private-api/crypto-orders/{slug}` (also seen as `/private-api/orders`). Returns `order.id` + `order.acquiring_url` (hosted checkout link). |
 | Get order details | `GET /private-api/crypto-orders/{slug}/{orderID}` |
 | Auth | `Authorization: Bearer <API token>`; token generated in CRM **Settings → Tokens** (requires 2FA / Google Authenticator enabled first). Per-merchant **`slug`** appended to the path. **No request-body HMAC.** |
-| Request body (official docs example) | `{"amount": 5, "currency_id": "<UUID>", "external_order_id": "order_id_2342423", "method": "WALLET", "network": "TRX"}` — note `currency_id` is a **UUID** (fetch the currency list to resolve it), plus `method` and `network`. Optional `successful_link`/`failure_link` (a.k.a. `return_url`/`cancel_url`). |
-| Request body (plugin variant) | Minimal plugins send only `{amount, currency:"UAH", external_order_id}` to `crypto-orders/{slug}`. This is a **subset/older shape**, not the full contract — the official `currency_id`+`method`+`network` form above is authoritative. **Confirm against authenticated docs.** |
+| Request body (**live** `/crypto-orders` — CORRECTED 2026-07-23) | `{amount, currency, external_order_id}` + optional `successful_link`/`failure_link` (a.k.a. `return_url`/`cancel_url`). **`currency` is a FIAT ticker** (e.g. `UAH`/`USD`) — the order is **fiat-denominated**. There is **no `currency_id`/`method`/`network`**: the **payer** selects coin + network on the hosted page. Verified 3-0 across all four integrations (WooCommerce mirror, OpenCart, Magento2, Go SDK `CreateNewOrderRequest`). See [23-whitepay-checkout-selection-research.md](23-whitepay-checkout-selection-research.md). |
+| Request body `currency_id`+`method`+`network` — **DEPRECATED endpoint, do NOT use** | The `{amount, currency_id (UUID), method:"WALLET", network:"TRX"}` shape belongs to the **separate `POST /acquiring/{slug}/pay`** endpoint, explicitly marked `// Deprecated: DO NOT USE THIS METHODS RIGHT NOW` in the Go SDK — **not** the live hosted-checkout contract. An earlier version of this table wrongly labeled it "authoritative"; corrected 2026-07-23. |
 | Order object fields | `id, currency, value, expected_amount, received_total, exchange_rate, is_internal, deposited_currency, received_currency, status, external_order_id, created_at, completed_at, acquiring_url, successful_link, failure_link, order_number, transactions[]`. **No token/mandate/recToken/saved-method/card-on-file field.** |
 | Order statuses | `INIT, OPEN, COMPLETE, DECLINED, PARTIALLY_FULFILLED, CANCELED`. `PARTIALLY_FULFILLED` matters — crypto amounts can arrive underpaid (tie to `received_total`). |
 | Crypto mechanics | fiat→crypto rate locked for ~2 minutes; optional auto-conversion of receipts to USDT/USDC; QR of merchant wallet shown to the payer. |
@@ -219,9 +219,11 @@ checkout/callback pipeline.
    order?"** (Get the negative in writing; also ask whether any allowance/subscription product
    is on the roadmap.)
 3. Ask for the **authenticated API docs access** (the public docs are 401-gated) and confirm:
-   exact create-order request schema (`currency_id` UUID list, `method`, `network` values),
-   the full **webhook event list + retry/at-least-once semantics + header casing**, and whether
-   webhooks fire for every status transition.
+   the exact **live** create-order schema — expected to be **fiat-only `{amount, currency, external_order_id}`**
+   with the **payer** picking coin+network on the hosted page (see doc 23), NOT `currency_id`/`method`/`network`
+   (those are the deprecated `/acquiring/{slug}/pay` shape) — the full **webhook event list +
+   retry/at-least-once semantics + header casing**, whether webhooks fire for every status transition,
+   and the **order/`acquiring_url` TTL**.
 4. Confirm whether the **fiat/national-currency acquiring** side offers any card tokenization
    (expected: no) and its settlement terms.
 
@@ -254,9 +256,12 @@ The adversarial pass **refuted 15 overreaching claims.** The recurring themes:
 - ❌ *"Onboarding is not self-serve at all"* — **overreach**; you *can* self-register via a
   verified WhiteBIT account and get a 24h demo. ✅ Correct: **KYB + a signed agreement are
   mandatory to go live**, regardless of entry route.
-- ❌ *"The order request requires only amount/currency/external_order_id"* — **false**; that's a
-  minimal plugin's subset. ✅ The official documented body uses `amount`, **`currency_id` (UUID)**,
-  `external_order_id`, **`method`**, **`network`**.
+- ⚠️ **CORRECTED 2026-07-23 — this item was itself wrong.** The earlier claim that the create-order
+  body "requires `currency_id`+`method`+`network`" conflated the **deprecated `/acquiring/{slug}/pay`**
+  endpoint with the **live `/private-api/crypto-orders/{slug}`** endpoint. ✅ Correct: the live body is
+  **`{amount, currency (FIAT), external_order_id}`** (+ optional redirect links); the **payer** selects
+  coin + network on the hosted page. Verified 3-0 across four independent integrations + vendor
+  walkthroughs — see [23-whitepay-checkout-selection-research.md](23-whitepay-checkout-selection-research.md).
 
 ## What this means for our billing service
 
@@ -278,9 +283,10 @@ Mapping onto the WayForPay flows in [17-payment-flows](14-wayforpay-research.md)
 ## Known gaps / follow-ups for WhitePay support
 
 1. **Authoritative API schema** — public docs are 401-gated. Get authenticated-docs access;
-   confirm the exact create-order body (`currency_id` UUID resolution, `method`/`network`
-   enums), and whether `api.whitepay.com` vs `pay.whitepay.com` and `/crypto-orders/{slug}` vs
-   `/orders` are current.
+   confirm the **live** create-order body is fiat-only `{amount, currency, external_order_id}`
+   (payer picks coin+network on the hosted page — see doc 23; `currency_id`/`method`/`network`
+   belong to the deprecated `/acquiring/{slug}/pay`), and whether `api.whitepay.com` vs
+   `pay.whitepay.com` and `/crypto-orders/{slug}` vs `/orders` are current.
 2. **Webhook retry / at-least-once semantics + header casing** — undocumented publicly; confirm
    so we size idempotency/dedup correctly.
 3. **Recurring/token capability in writing** — get an explicit yes/no on any merchant-initiated
