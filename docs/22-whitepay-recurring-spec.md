@@ -15,7 +15,7 @@
 > **payer** selects the coin **and** network (the create-order call is **fiat-denominated only** —
 > we neither collect nor pass a coin/network), and generalized the recurring trigger into one
 > **provider-agnostic charge function** (autocharge if a usable token exists, else fire a
-> `payment.manual_required` prompt). See decisions D6–D10 and "Provider-agnostic recurring charge".
+> `payment.manual_required` prompt). See decisions D6–D12 and "Provider-agnostic recurring charge".
 
 ## Decisions locked (with the user)
 
@@ -31,6 +31,8 @@
 | D8 | "Default to previous method" is provider-level | Because the payer re-picks coin/network on WhitePay every cycle and we can only reliably record the coin (not the chain, doc 23 Q4), "default to previous method" means **defaulting the provider/method** (WayForPay-card vs WhitePay-crypto), **changeable** by the user — *not* a coin/network default within WhitePay. |
 | D9 | Autocharge decline → **retry on schedule** | When a usable token *is* present and the server-side autocharge **declines**, we **retry on the existing recurring schedule** — we do **not** fire a same-cycle `payment.manual_required` fallback. (Locked 2026-07-23.) |
 | D10 | Event name | The prompt-to-pay event is **`payment.manual_required`** (renamed from the earlier `payment.due` / "pay now"). **One** event only. (Locked 2026-07-23.) |
+| D11 | Manual session is multi-provider; card pay captures the token (graduation) | The 48h session supports **both** provider checkouts. If the user switches to **card**, it runs as a one-time **WayForPay** checkout that **captures a `recToken`** → the existing **`RecurringToken`** (doc 05) flips `missing → active`, so the **next** cycle autocharges. The branch is decided purely from the **latest payment's token state** (D7/Q2), so graduation needs no extra mechanism. (Locked 2026-07-23.) |
+| D12 | `payment.manual_required` is recurring-only | The **initial** payment is always a manual checkout already, so we do **not** fire `payment.manual_required` for it — the event fires only for **recurring** attempts (2nd cycle onward). (Locked 2026-07-23.) |
 
 ## Model
 
@@ -94,6 +96,12 @@ Attempt (one scheduled try, on its due date)
 - Match `order.external_order_id (= chargeId)` → charge → Payment. Statuses:
   `COMPLETE → paid`, `DECLINED/CANCELED → attempt failed`, `PARTIALLY_FULFILLED → underpaid`
   (treat as not-yet-paid; reconcile).
+- **Where `PARTIALLY_FULFILLED` comes from (Q4):** only the crypto push model — the payer sends
+  **less** than `expected_amount` from their own wallet (wrong amount, network fees, partial/multi-send,
+  or rate drift vs the ~2-min quote). It is **not `COMPLETE`**, so the Payment stays `DUE` and the
+  attempt lapses normally; but funds *were* received, so raise an **ops/reconcile alert** (top-up or
+  refund is a manual decision). **No state-machine branch.** Rare in the hosted flow (amount + QR are
+  pre-filled); confirm exact semantics at onboarding.
 - Raw-log every callback; ack HTTP 200. Same at-least-once handling as the WayForPay `serviceUrl`
   callback.
 
@@ -123,7 +131,7 @@ raw-log + idempotency) is shared. The single substitution:
 |---|---|---|
 | One attempt = | server-side `CHARGE` with `recToken` (immediate success/fail, unattended; decline → retry on schedule, D9) | **fire `payment.manual_required` event + await webhook (≤48h)** — user pays a freshly-minted link |
 
-## Provider-agnostic recurring charge (D7/D8)
+## Provider-agnostic recurring charge (D7–D12)
 
 The due-date trigger is one function on the `PaymentProvider` boundary ([05-domain-model.md](05-domain-model.md)),
 so the scheduler stays source-agnostic:
@@ -144,7 +152,13 @@ Truth table:
 |---|---|---|
 | WhitePay (any) | always false | **manual** (prompt-to-pay) |
 | WayForPay + stored token | true | **autocharge** |
-| WayForPay, no token yet (e.g. original payment predates recurring-token capture) | false | **manual** — and it **graduates**: a completed manual WayForPay payment returns a `recToken`, so subsequent cycles autocharge |
+| WayForPay, no token yet (e.g. original payment predates recurring-token capture) | false | **manual** — and it **graduates**: a completed manual WayForPay **card** payment captures a `recToken` → `RecurringToken` `missing → active` (doc 05), so subsequent cycles autocharge |
+
+> **`hasUsableToken(payment)` = the customer's `RecurringToken` (doc 05) is `active`.** WhitePay never
+> creates one (always `missing` → always manual). Per D7/Q2, each cycle reads the **latest** token state,
+> so a card payment that just captured a token makes the next cycle autocharge with no special
+> graduation code. The manual session is **multi-provider** (D11): the user can pay by WhitePay-crypto
+> *or* switch to card; a card pay is the graduation trigger.
 
 **Our 48h checkout session (first-class object).** The manual branch creates *our* session (TTL ~48h,
 opaque `payUrl`, `method` defaulted to the last-used provider but changeable). The event carries the
