@@ -179,6 +179,12 @@ Poller design details live in [15-wayforpay-poller-spec.md](15-wayforpay-poller-
    still open: behavior on huge result sets within a window (no pagination documented)
    and journal retention depth.
 3. Whether serviceUrl callbacks fire for WFP-initiated regular charges (success and failure).
-4. Whether tokenization (`recToken` issuance) needs account-level enablement.
+4. ~~Whether tokenization (`recToken` issuance) needs account-level enablement.~~
+   **Resolved 2026-07-27**: yes — WFP grants it per-merchant. Now active on `nexttick_it1`:
+   a real checkout issued a non-empty `recToken` (len 36, Approved 1100) and an unattended
+   token `CHARGE` returned Approved 1100 with **no 3DS** once the request carried
+   `merchantTransactionSecureType=NON3DS` + `merchantTransactionType=SALE` (see `charge()`
+   in `wayforpay/client.ts`; operational record in
+   billing-service-deploy `21-wayforpay-account-setup.md`).
 5. WFP legacy retry termination: how many daily retries before a recurrent is suspended.
 6. Callback retry schedule within the 4-day window.
