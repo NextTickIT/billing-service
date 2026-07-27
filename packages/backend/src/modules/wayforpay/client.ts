@@ -311,6 +311,12 @@ const charge =
         productCount: [1],
         productPrice: [amount],
         recToken: params.recToken,
+        // Unattended token charge: request a non-3DS merchant-initiated SALE so the
+        // scheduler can run without a cardholder present. Without this the account's
+        // token CHARGE returns 5100 "Wait 3ds data" (docs 21-wayforpay-account-setup);
+        // neither field is part of the signed base, so signPurchase is unchanged.
+        merchantTransactionType: 'SALE',
+        merchantTransactionSecureType: 'NON3DS',
         merchantSignature,
       });
       // A Declined charge is a valid response; the scheduler branches on it.
