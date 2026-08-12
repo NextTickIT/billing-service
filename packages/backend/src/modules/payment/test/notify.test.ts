@@ -54,7 +54,9 @@ it.effect('paymentReactivated: id is deterministic from paymentId and at', () =>
 
     // id encodes paymentId and at — same input same id regardless of now
     expect(e1.id).toBe(e2.id);
-    expect(e1.id).toBe(`evt_pay_abc_reactivated_${reactivateNotify.at.toString()}`);
+    expect(e1.id).toBe(
+      `evt_pay_abc_reactivated_${reactivateNotify.at.toString()}`,
+    );
   }),
 );
 

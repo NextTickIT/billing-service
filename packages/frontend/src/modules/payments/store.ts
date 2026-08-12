@@ -77,7 +77,9 @@ export const usePaymentsStore = defineStore('payments', () => {
     await loadDetail(id);
   });
 
-  async function create(body: CreatePaymentRequest): Promise<CreateAccepted | null> {
+  async function create(
+    body: CreatePaymentRequest,
+  ): Promise<CreateAccepted | null> {
     loading.value = true;
     error.value = null;
     try {

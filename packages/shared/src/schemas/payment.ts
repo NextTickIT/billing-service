@@ -133,17 +133,23 @@ export const CreatePaymentRequest = Schema.Struct({
   method: Schema.optional(PaymentMethodSchema),
 });
 
-export type CreatePaymentRequest = Schema.Schema.Type<typeof CreatePaymentRequest>;
+export type CreatePaymentRequest = Schema.Schema.Type<
+  typeof CreatePaymentRequest
+>;
 
 /** POST /api/payment/:id/cancel body: operator cancels a Payment. */
 export const CancelPaymentRequest = Schema.Struct({
   reason: Schema.optional(Schema.String),
 });
 
-export type CancelPaymentRequest = Schema.Schema.Type<typeof CancelPaymentRequest>;
+export type CancelPaymentRequest = Schema.Schema.Type<
+  typeof CancelPaymentRequest
+>;
 
 /** POST /api/payment/:id/cancel response. */
-export const CancelAccepted = Schema.Struct({ status: Schema.Literal('cancelled') });
+export const CancelAccepted = Schema.Struct({
+  status: Schema.Literal('cancelled'),
+});
 
 export type CancelAccepted = Schema.Schema.Type<typeof CancelAccepted>;
 
@@ -163,7 +169,9 @@ export const DeferPaymentRequest = Schema.Struct({
   days: Schema.Int,
 });
 
-export type DeferPaymentRequest = Schema.Schema.Type<typeof DeferPaymentRequest>;
+export type DeferPaymentRequest = Schema.Schema.Type<
+  typeof DeferPaymentRequest
+>;
 
 /** POST /api/payment/:id/defer response: the new paid-through date. */
 export const DeferAccepted = Schema.Struct({

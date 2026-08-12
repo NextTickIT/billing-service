@@ -13,10 +13,8 @@ import {
   ReactivateAccepted,
   Role,
 } from '@billing-service/shared';
-import { Clock, Effect, Option, Schema } from 'effect';
+import { Clock, Effect, Option, Redacted, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-
-import { Redacted } from 'effect';
 
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
@@ -44,7 +42,6 @@ import { addPeriod, isValidPeriod } from '@/modules/payment/period.js';
 const route = makeRoute((app: FastifyInstance) => app.runtime);
 
 const operatorActor = (request: FastifyRequest) => {
-
   const presented = extractBearer(request);
   if (presented === null) {
     return Effect.fail(new Unauthorized({ reason: 'missing bearer token' }));
@@ -70,10 +67,9 @@ interface ListQuery {
   readonly cancelling?: string;
 }
 
-const PAYMENT_STATUSES: readonly PaymentStatus[] =
-  Object.values(PaymentStatus).filter(
-    (v): v is PaymentStatus => typeof v === 'number',
-  );
+const PAYMENT_STATUSES: readonly PaymentStatus[] = Object.values(
+  PaymentStatus,
+).filter((v): v is PaymentStatus => typeof v === 'number');
 
 /** Coerce the repeated `status` + `cancelling` query params into a filter. */
 const readListFilter = (request: FastifyRequest): PaymentListFilter => {
@@ -82,9 +78,7 @@ const readListFilter = (request: FastifyRequest): PaymentListFilter => {
   const values = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
   const statuses = values
     .map(Number)
-    .filter((n): n is PaymentStatus =>
-      PAYMENT_STATUSES.includes(n),
-    );
+    .filter((n): n is PaymentStatus => PAYMENT_STATUSES.includes(n));
   return { statuses, cancelling: query.cancelling === 'true' };
 };
 

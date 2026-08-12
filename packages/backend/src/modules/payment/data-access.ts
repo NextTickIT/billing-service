@@ -238,8 +238,7 @@ const listFilterConditions = (
 };
 
 const listAll =
-  (sql: SqlClient.SqlClient) =>
-  (limit: number, filter?: PaymentListFilter) => {
+  (sql: SqlClient.SqlClient) => (limit: number, filter?: PaymentListFilter) => {
     const conditions =
       filter === undefined ? [] : listFilterConditions(sql, filter);
     const where =

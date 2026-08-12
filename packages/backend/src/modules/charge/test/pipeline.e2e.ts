@@ -607,7 +607,9 @@ const driveLapse = Effect.gen(function* () {
     {
       subs,
       // A soft-cancelled due payment must never be charged.
-      client: { charge: () => Effect.die('WFP charge must not run on a lapse') },
+      client: {
+        charge: () => Effect.die('WFP charge must not run on a lapse'),
+      },
       ingest: pipeline.ingest,
       publish: outbox.publish,
       lapse: (sub) =>

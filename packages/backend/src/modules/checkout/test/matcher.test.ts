@@ -1,5 +1,8 @@
 import { it } from '@effect/vitest';
-import { type CheckoutSession, CheckoutSessionKind } from '@billing-service/shared';
+import {
+  type CheckoutSession,
+  CheckoutSessionKind,
+} from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 

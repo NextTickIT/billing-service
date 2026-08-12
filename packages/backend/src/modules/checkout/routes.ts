@@ -161,7 +161,9 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
       payment.status === PaymentStatus.RenewalFailed;
     if (!owed && !config.cardVerifyEnabled) {
       return yield* Effect.fail(
-        new CardChangeUnavailable({ reason: 'card verification is unavailable' }),
+        new CardChangeUnavailable({
+          reason: 'card verification is unavailable',
+        }),
       );
     }
     const nowMillis = yield* Clock.currentTimeMillis;

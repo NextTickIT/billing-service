@@ -79,7 +79,8 @@ export default {
       3: 'Cancelled',
       cancelling: 'Cancelling',
     },
-    cancellingNotice: 'Access until {date} — recurrent payment will not be charged.',
+    cancellingNotice:
+      'Access until {date} — recurrent payment will not be charged.',
     reactivateTitle: 'Reactivate payment',
     reactivateButton: 'Reactivate',
     deferTitle: 'Defer next charge',

@@ -439,7 +439,11 @@ it('cardChangeSucceeded/Failed carry the method and decline reason', () => {
   expect(ok.aggregateId).toBe('pay_2');
 
   const bad = cardChangeFailed(
-    { ...decodedCharge('cc5'), status: 'failed', payload: { reason: 'Declined' } },
+    {
+      ...decodedCharge('cc5'),
+      status: 'failed',
+      payload: { reason: 'Declined' },
+    },
     {
       matched: true,
       kind: 'card_change',

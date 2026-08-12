@@ -1,4 +1,7 @@
-import { CheckoutSessionKind, CheckoutSessionStatus } from '@billing-service/shared';
+import {
+  CheckoutSessionKind,
+  CheckoutSessionStatus,
+} from '@billing-service/shared';
 import { Redacted } from 'effect';
 import { describe, expect, test } from 'vitest';
 

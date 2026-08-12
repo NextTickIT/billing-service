@@ -13,8 +13,7 @@ import { Redacted } from 'effect';
  * the provider's chain.
  */
 export type DatabaseSsl =
-  | false
-  | { readonly rejectUnauthorized: boolean; readonly ca?: string };
+  false | { readonly rejectUnauthorized: boolean; readonly ca?: string };
 
 export interface DatabaseConfig {
   readonly host: string;

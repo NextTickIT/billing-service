@@ -20,15 +20,21 @@ const cancelReason = ref('');
 const deferDays = ref(1);
 const deferError = ref<string | null>(null);
 
-onMounted(() => { void store.loadDetail(id); });
+onMounted(() => {
+  void store.loadDetail(id);
+});
 
 const isCancelling = computed((): boolean => {
   const p = store.current;
-  return p !== null && p.status === PaymentStatus.Active && p.cancelRequestedAt !== null;
+  return (
+    p !== null &&
+    p.status === PaymentStatus.Active &&
+    p.cancelRequestedAt !== null
+  );
 });
 
-const isActive = computed((): boolean =>
-  store.current?.status === PaymentStatus.Active,
+const isActive = computed(
+  (): boolean => store.current?.status === PaymentStatus.Active,
 );
 
 function statusLabel(s: number): string {
@@ -51,7 +57,11 @@ async function handleReactivate(): Promise<void> {
 
 async function handleDefer(): Promise<void> {
   deferError.value = null;
-  if (deferDays.value < 1 || deferDays.value > 30 || !Number.isInteger(deferDays.value)) {
+  if (
+    deferDays.value < 1 ||
+    deferDays.value > 30 ||
+    !Number.isInteger(deferDays.value)
+  ) {
     deferError.value = t('payments.deferDaysError');
     return;
   }
@@ -76,7 +86,9 @@ async function handleDefer(): Promise<void> {
         </div>
         <div class="info-row">
           <span class="lbl">{{ t('common.amount') }}</span>
-          <span>{{ formatAmount(store.current.amount, store.current.currency) }}</span>
+          <span>{{
+            formatAmount(store.current.amount, store.current.currency)
+          }}</span>
         </div>
         <div class="info-row">
           <span class="lbl">{{ t('common.period') }}</span>
@@ -88,21 +100,31 @@ async function handleDefer(): Promise<void> {
         </div>
         <div class="info-row">
           <span class="lbl">{{ t('payments.periodStart') }}</span>
-          <span>{{ formatDateTime(store.current.currentPeriodStart, locale) }}</span>
+          <span>{{
+            formatDateTime(store.current.currentPeriodStart, locale)
+          }}</span>
         </div>
         <div class="info-row">
           <span class="lbl">{{ t('payments.periodEnd') }}</span>
-          <span>{{ formatDateTime(store.current.currentPeriodEnd, locale) }}</span>
+          <span>{{
+            formatDateTime(store.current.currentPeriodEnd, locale)
+          }}</span>
         </div>
         <div class="info-row">
           <span class="lbl">{{ t('payments.nextPayment') }}</span>
-          <span>{{ formatDateTime(store.current.nextPaymentDate, locale) }}</span>
+          <span>{{
+            formatDateTime(store.current.nextPaymentDate, locale)
+          }}</span>
         </div>
       </div>
 
       <!-- Cancelling notice -->
       <div v-if="isCancelling" class="notice notice--cancelling">
-        {{ t('payments.cancellingNotice', { date: formatDateTime(store.current.currentPeriodEnd, locale) }) }}
+        {{
+          t('payments.cancellingNotice', {
+            date: formatDateTime(store.current.currentPeriodEnd, locale),
+          })
+        }}
       </div>
 
       <!-- Reactivate (only while in cancelling state) -->
@@ -148,8 +170,12 @@ async function handleDefer(): Promise<void> {
           </tr>
         </thead>
         <tbody>
-          <tr v-if="!store.current.charges || store.current.charges.length === 0">
-            <td colspan="4" class="charges-empty">{{ t('payments.noResults') }}</td>
+          <tr
+            v-if="!store.current.charges || store.current.charges.length === 0"
+          >
+            <td colspan="4" class="charges-empty">
+              {{ t('payments.noResults') }}
+            </td>
           </tr>
           <tr v-for="c in store.current.charges" :key="c.id">
             <td>{{ formatDateTime(c.occurredAt, locale) }}</td>
@@ -163,7 +189,10 @@ async function handleDefer(): Promise<void> {
       <div class="cancel-section">
         <h2 class="section-title">{{ t('payments.cancelTitle') }}</h2>
         <div class="cancel-row">
-          <BaseInput v-model="cancelReason" :placeholder="t('payments.cancelReason')" />
+          <BaseInput
+            v-model="cancelReason"
+            :placeholder="t('payments.cancelReason')"
+          />
           <BaseButton
             :label="t('payments.cancelButton')"
             variant="danger"
@@ -177,20 +206,44 @@ async function handleDefer(): Promise<void> {
 </template>
 
 <style scoped>
-.detail-page { padding: 20px; max-width: 800px; }
-.back-link { display: inline-block; margin-bottom: 16px; color: var(--muted); }
-.back-link:hover { color: var(--text); }
-.detail-center { text-align: center; padding: 20px 0; }
-.detail-error { color: var(--red); }
-.info-grid { margin-bottom: 20px; }
-.info-row {
-  display: flex; justify-content: space-between;
-  padding: 8px 0; border-bottom: 1px solid var(--line);
+.detail-page {
+  padding: 20px;
+  max-width: 800px;
 }
-.lbl { color: var(--muted); }
+.back-link {
+  display: inline-block;
+  margin-bottom: 16px;
+  color: var(--muted);
+}
+.back-link:hover {
+  color: var(--text);
+}
+.detail-center {
+  text-align: center;
+  padding: 20px 0;
+}
+.detail-error {
+  color: var(--red);
+}
+.info-grid {
+  margin-bottom: 20px;
+}
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.lbl {
+  color: var(--muted);
+}
 .section-title {
-  font-size: 11px; color: var(--muted); margin: 20px 0 8px;
-  text-transform: uppercase; letter-spacing: 0.06em; font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin: 20px 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: var(--mono);
 }
 .notice {
   padding: 10px 14px;
@@ -210,7 +263,12 @@ async function handleDefer(): Promise<void> {
   border-radius: 6px;
   margin-bottom: 16px;
 }
-.defer-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.defer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
 .defer-input {
   width: 64px;
   padding: 6px 8px;
@@ -221,15 +279,44 @@ async function handleDefer(): Promise<void> {
   font-size: 13px;
   font-family: var(--mono);
 }
-.defer-unit { color: var(--muted); font-size: 13px; }
-.action-error { color: var(--red); font-size: 13px; margin-top: 8px; }
-.charges-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 20px; }
-.charges-table th {
-  text-align: left; padding: 8px 12px;
-  border-bottom: 1px solid var(--line); color: var(--muted);
-  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+.defer-unit {
+  color: var(--muted);
+  font-size: 13px;
 }
-.charges-table td { padding: 8px 12px; border-bottom: 1px solid var(--line); }
-.cancel-section { padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
-.cancel-row { display: flex; gap: 8px; margin-top: 10px; }
+.action-error {
+  color: var(--red);
+  font-size: 13px;
+  margin-top: 8px;
+}
+.charges-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-bottom: 20px;
+}
+.charges-table th {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.charges-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.cancel-section {
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.cancel-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
 </style>

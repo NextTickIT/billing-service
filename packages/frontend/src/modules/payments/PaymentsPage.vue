@@ -132,13 +132,13 @@ async function onCreate(): Promise<void> {
 
       <div class="filter-bar">
         <button
-          v-for="chip in ([
+          v-for="chip in [
             PaymentStatus.Active,
             'cancelling',
             PaymentStatus.PastDue,
             PaymentStatus.Cancelled,
             PaymentStatus.RenewalFailed,
-          ] as const)"
+          ] as const"
           :key="String(chip)"
           type="button"
           :class="chipClass(chip)"
@@ -171,7 +171,9 @@ async function onCreate(): Promise<void> {
         <template #head>
           <th>{{ t('common.amount') }}</th>
           <th>{{ t('common.period') }}</th>
-          <th>{{ t('payments.periodStart') }} – {{ t('payments.periodEnd') }}</th>
+          <th>
+            {{ t('payments.periodStart') }} – {{ t('payments.periodEnd') }}
+          </th>
           <th>{{ t('payments.nextPayment') }}</th>
           <th>{{ t('common.status') }}</th>
         </template>
@@ -229,7 +231,11 @@ async function onCreate(): Promise<void> {
 </template>
 
 <style scoped>
-.payments-page { display: flex; flex-direction: column; gap: 0; }
+.payments-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
 
 .add-btn {
   display: inline-flex;
@@ -243,9 +249,14 @@ async function onCreate(): Promise<void> {
   background: var(--surface);
   color: var(--muted);
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
 }
-.add-btn:hover { color: var(--green); border-color: var(--green); }
+.add-btn:hover {
+  color: var(--green);
+  border-color: var(--green);
+}
 
 .filter-bar {
   display: flex;
@@ -262,9 +273,15 @@ async function onCreate(): Promise<void> {
   color: var(--muted);
   font-size: 12px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  transition:
+    color 0.15s,
+    border-color 0.15s,
+    background 0.15s;
 }
-.chip:hover { color: var(--text); border-color: var(--line-2); }
+.chip:hover {
+  color: var(--text);
+  border-color: var(--line-2);
+}
 .chip--active {
   background: var(--green);
   border-color: var(--green);
@@ -272,17 +289,46 @@ async function onCreate(): Promise<void> {
   font-weight: 600;
 }
 
-.state-center { text-align: center; padding: 32px 0; }
-.state-error { color: var(--red); padding: 8px 0; font-size: 13px; }
+.state-center {
+  text-align: center;
+  padding: 32px 0;
+}
+.state-error {
+  color: var(--red);
+  padding: 8px 0;
+  font-size: 13px;
+}
 
-.status--Active { color: var(--green); }
-.status--Cancelling { color: var(--amber); }
-.status--PastDue { color: var(--amber); }
+.status--Active {
+  color: var(--green);
+}
+.status--Cancelling {
+  color: var(--amber);
+}
+.status--PastDue {
+  color: var(--amber);
+}
 .status--RenewalFailed,
-.status--Cancelled { color: var(--red); }
+.status--Cancelled {
+  color: var(--red);
+}
 
-.create-form { display: flex; flex-direction: column; gap: 12px; }
-.form-field { display: flex; flex-direction: column; gap: 4px; }
-.form-label { color: var(--dim); font-size: 12px; }
-.form-error { color: var(--red); font-size: 13px; }
+.create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.form-label {
+  color: var(--dim);
+  font-size: 12px;
+}
+.form-error {
+  color: var(--red);
+  font-size: 13px;
+}
 </style>

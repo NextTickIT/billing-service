@@ -133,15 +133,12 @@ export const runScheduler = (
   deps: SchedulerDeps,
   config: SchedulerConfig,
 ): Effect.Effect<never> =>
-  scheduleTick(deps, config)
-    .pipe(
-      Effect.catchAllCause((cause) =>
-        Effect.logError('scheduler tick failed').pipe(
-          Effect.annotateLogs('cause', Cause.pretty(cause)),
-        ),
+  scheduleTick(deps, config).pipe(
+    Effect.catchAllCause((cause) =>
+      Effect.logError('scheduler tick failed').pipe(
+        Effect.annotateLogs('cause', Cause.pretty(cause)),
       ),
-    )
-    .pipe(
-      Effect.andThen(Effect.sleep(Duration.seconds(config.intervalSeconds))),
-      Effect.forever,
-    );
+    ),
+    Effect.andThen(Effect.sleep(Duration.seconds(config.intervalSeconds))),
+    Effect.forever,
+  );

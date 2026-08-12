@@ -79,7 +79,8 @@ export default {
       3: 'Отменён',
       cancelling: 'Отменяется',
     },
-    cancellingNotice: 'Доступ до {date} — повторное списание производиться не будет.',
+    cancellingNotice:
+      'Доступ до {date} — повторное списание производиться не будет.',
     reactivateTitle: 'Возобновить платёж',
     reactivateButton: 'Возобновить',
     deferTitle: 'Отложить следующее списание',

@@ -15,7 +15,9 @@ export interface ListPaymentsFilter {
   cancelling?: boolean;
 }
 
-export async function listPayments(filter?: ListPaymentsFilter): Promise<Payment[]> {
+export async function listPayments(
+  filter?: ListPaymentsFilter,
+): Promise<Payment[]> {
   const params = new URLSearchParams();
   if (filter?.externalUserId) {
     params.set('externalUserId', filter.externalUserId);
@@ -62,7 +64,9 @@ export async function createPayment(
 }
 
 export async function reactivatePayment(id: string): Promise<void> {
-  const res = await apiFetch(`/api/payment/${id}/reactivate`, { method: 'POST' });
+  const res = await apiFetch(`/api/payment/${id}/reactivate`, {
+    method: 'POST',
+  });
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
 }
 

@@ -128,7 +128,9 @@ export const deferNotify =
     Schema.decodeUnknown(DeferNotify)(payload).pipe(
       Effect.flatMap((notify) =>
         Clock.currentTimeMillis.pipe(
-          Effect.flatMap((ms) => publish(paymentDeferred(notify, new Date(ms)))),
+          Effect.flatMap((ms) =>
+            publish(paymentDeferred(notify, new Date(ms))),
+          ),
         ),
       ),
       Effect.catchTag('ParseError', (error) =>
