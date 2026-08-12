@@ -117,33 +117,38 @@ mechanism is **status-dependent**:
 
 | Current payment state | Mechanism | Money moves? | On success |
 |-----------------------|-----------|--------------|------------|
-| `active` (current)    | **Card Verify** (WFP wiki 852189), 0-amount | No | rewrite `recurringTokenRef` only |
-| `past_due` (a due charge failed) | **priced Purchase for the owed amount** with the new card | Yes (the arrears) | rewrite token, collect, advance period, **reset retry ladder**, emit `recurring_payment_succeeded` |
+| `active` (current, nothing owed) | **Card Verify** (WFP wiki 852189), 0-amount | No | rewrite `recurringTokenRef` only |
+| `past_due` **or** `renewal_failed` (money owed) | **priced Purchase for the owed amount** with the new card | Yes (the arrears) | **keep the same payment**: rewrite token, collect, advance the period, **reset the retry ladder**, set `active`, emit `recurring_payment_succeeded` |
 
-The requester's rule — *"if a user has a past-due subscription, instead of the verify call
-they should be charged the proper amount right away"* — is captured by this branch: past-due
-skips verify and runs the real Purchase, whose callback both tokenizes and collects.
+The requester's rule — *"if a recurrent payment is past-due, instead of the verify call it should
+be charged the proper amount right away"* — is captured by this branch: an owing payment skips
+verify and runs the real Purchase, whose callback both tokenizes and collects. A **terminally
+failed** (`renewal_failed`) recurrent payment is handled the **same way** — the card change
+**revives the same payment in place** (never a new record); it is *not* forced to a fresh checkout.
+Only a `cancelled` payment (a deliberate stop) or a user with no payment is refused.
 
 ### Flow
 
 1. **Initiation** — `POST /api/payment/card-change` (**service token, SendPulse-only**; no
-   operator-console trigger), body `{ externalUserId }`. Resolve the one active Payment for that
-   user, create a `CheckoutSession` with `kind = 'card_change'` and `paymentId` set, and:
+   operator-console trigger), body `{ externalUserId }`. Resolve the user's recurrent payment,
+   create a `CheckoutSession` with `kind = 'card_change'` and `paymentId` set, and branch by state:
    - `active` → `amount = 0`, verify mode;
-   - `past_due` → `amount = <owed>` (the payment's charge amount).
+   - `past_due` or `renewal_failed` (money owed) → `amount = <owed>` (the payment's charge amount);
+   - `cancelled`, or no payment → **refuse (409)** — a deliberate stop is not re-tokenizable; start
+     a fresh checkout.
    Return `{ checkoutUrl, sessionId, expiresAt }`. SendPulse presents the URL to the user.
 2. **Hosted page** — reuse the checkout page (copy = "update your card"). Verify mode submits a
-   WayForPay **Card Verify** request; past-due mode submits the normal Purchase for the owed
+   WayForPay **Card Verify** request; the owed-money mode submits the normal Purchase for the owed
    amount.
 3. **Callback** — the provider callback is routed by `session.kind`:
-   - `card_change` + verify success → write `recurringTokenRef` on the referenced Payment
-     (via `payment.extend`'s existing token-update path); emit `card_change_succeeded`.
-   - `card_change` + past-due Purchase success → write token, advance
-     `currentPeriodStart/End`, reset `retryAttempt = 0` / `firstFailureAt = null` /
-     `status = active`, emit `recurring_payment_succeeded` (existing) **and**
-     `card_change_succeeded`. State updated before events (consistency rule).
-   - any decline / error → emit `card_change_failed` with the provider `reason`; the Payment is
-     unchanged (a past-due one stays past_due; its normal ladder continues).
+   - `card_change` + verify success → write `recurringTokenRef` on the referenced payment via a
+     dedicated token-only update (never the date-rewriting `extend`); emit `card_change_succeeded`.
+   - `card_change` + owed-money Purchase success (`past_due` **or** `renewal_failed`) → **keep the
+     same payment**: write token, advance `currentPeriodStart/End`, reset `retryAttempt = 0` /
+     `firstFailureAt = null` / `status = active`, emit `recurring_payment_succeeded` (existing)
+     **and** `card_change_succeeded`. State updated before events (consistency rule).
+   - any decline / error → emit `card_change_failed` with the provider `reason`; the payment is
+     unchanged (an owing one keeps its state; a `past_due` one keeps its ladder).
 4. **Result signalling** — SendPulse initiated the change, so it receives **both**
    `card_change_succeeded` and `card_change_failed` for explicit tracking (chosen over
    failure-only or polling).
@@ -203,7 +208,10 @@ these up automatically (as in [22](22-scenario-payment-events.md)); only i18n la
 - Refunds / `payment_refunded` (still deferred).
 - **Operator-console** card-change trigger (SendPulse-only by decision).
 - Deferring a `past_due` payment / pausing the retry ladder.
-- Reactivation after the period has lapsed (terminal — fresh checkout instead).
+- **Reactivating** (un-cancelling) a payment after the period has lapsed — that path is
+  grace-window-only. (Distinct from card change: a terminally-failed `renewal_failed` payment
+  *can* be revived by a card change that pays the arrears — see Component 3.)
+- Reviving a `cancelled` payment via card change (a deliberate stop → fresh checkout; 409).
 - Minimal-charge or full-re-checkout tokenization fallbacks (Card Verify is the chosen path;
   fallback only revisited if account enablement fails).
 
@@ -223,12 +231,14 @@ these up automatically (as in [22](22-scenario-payment-events.md)); only i18n la
       is audited; N>30 is rejected; repeat deferrals stack and each is audited.
 - [ ] AC-C3a: Card-change on an `active` payment runs a 0-amount Card Verify; success rewrites
       `recurringTokenRef` and emits `card_change_succeeded`; no money moves; no new Payment.
-- [ ] AC-C3b: Card-change on a `past_due` payment runs a priced Purchase for the owed amount;
-      success rewrites the token, advances the period, resets the ladder, and emits both
+- [ ] AC-C3b: Card-change on a `past_due` **or** `renewal_failed` payment runs a priced Purchase
+      for the owed amount; success keeps the **same** payment record (no new row), rewrites the
+      token, advances the period, resets the ladder, sets `active`, and emits both
       `recurring_payment_succeeded` and `card_change_succeeded`.
-- [ ] AC-C3c: A declined card-change emits `card_change_failed(reason)` and leaves the Payment
-      unchanged (past-due ladder continues).
-- [ ] AC-C3d: `POST /api/payment/card-change` requires a service token; operator/anon are 401/403.
+- [ ] AC-C3c: A declined card-change emits `card_change_failed(reason)` and leaves the payment
+      unchanged (a `past_due` ladder continues; a `renewal_failed` payment stays failed).
+- [ ] AC-C3d: `POST /api/payment/card-change` requires a service token (operator/anon → 401/403);
+      a `cancelled` payment or a user with no payment → 409.
 - [ ] AC-global: All four new events are stored raw in the outbox before delivery (AC3), fan out
       to every sink, and reach the stub sink within 60 s (AC1); `externalUserId` is verbatim (AC9).
 

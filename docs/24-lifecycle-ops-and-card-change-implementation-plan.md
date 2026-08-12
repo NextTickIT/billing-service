@@ -18,8 +18,10 @@ Three independently-shippable components (docs/23 §Scope):
 2. **Payment deferral** — `/defer {days ≤ 30}` (operator, audited, repeatable): `currentPeriodEnd
    += days`, re-derive `nextPaymentDate` from the anchor, emit `payment_deferred(newPeriodEnd)`.
 3. **Card change** — `POST /api/payment/card-change` (service token): `active` → 0-amount Card
-   Verify (rewrite token only); `past_due` → priced Purchase for the owed amount (collect + rewrite
-   + advance + reset ladder). Report `card_change_succeeded` / `card_change_failed` to the sink.
+   Verify (rewrite token only); `past_due` **or** `renewal_failed` (money owed) → priced Purchase
+   for the owed amount that **keeps the same payment** (collect + rewrite + advance + reset ladder +
+   set `active`, reviving a terminally-failed one in place); `cancelled`/no payment → 409. Report
+   `card_change_succeeded` / `card_change_failed` to the sink.
 
 Four new event names; four new queue message types; two migrations; no core edits for the new
 events (AC8).
@@ -168,8 +170,9 @@ events (AC8).
 - New queue message types **`PAYMENT_REACTIVATE`** + handlers in the worker (worker-boot.ts,
   mirroring `cancelNotify`, cancel.ts:25/worker-boot.ts:57): the handler publishes
   `payment_reactivated` with a deterministic id.
-- `billing/scheduler.ts` — before the charge (line 69-96): if `sub.cancelRequestedAt != null`,
-  `enqueue` **`PAYMENT_LAPSE`** (idemKey `lapse:<paymentId>`) and skip the charge + ladder; the
+- `billing/scheduler.ts` — before the charge (line 69-96): if the due payment's
+  `cancelRequestedAt` is set, `enqueue` **`PAYMENT_LAPSE`** (idemKey `lapse:<paymentId>`) and skip
+  the charge + ladder; the
   worker handler flips `cancelled` (`markCancelledLapsed`) and publishes
   `renewal_failed(reason:'cancelled')`. No inline publish (P2/pre-mortem 1).
 
@@ -202,17 +205,18 @@ events (AC8).
 
 ### Phase 6 — Card-change flow (checkout + a dedicated applier)
 - `checkout/routes.ts` — `POST /api/payment/card-change` (**service token**) body
-  `{ externalUserId }`: resolve the user's Payment; if **none active or past_due** (i.e. only
-  `cancelled`/`renewal_failed`, or no payment) → `Conflict` 409 "no re-tokenizable payment; start a
-  new checkout". Otherwise create a `card_change` session (`kind=CardChange`, `paymentId` set,
-  `amount = 0` if Active else the owed amount), reuse the checkout session TTL/`expiresAt`, return
-  `{ checkoutUrl, sessionId, expiresAt }`.
+  `{ externalUserId }`: resolve the user's recurrent payment; if it is `cancelled` **or** there is
+  no payment → `Conflict` 409 "not re-tokenizable; start a new checkout". Otherwise create a
+  `card_change` session (`kind=CardChange`, `paymentId` set, `amount = 0` if `Active` else the owed
+  amount — `past_due` and `renewal_failed` both take the owed-amount path), reuse the checkout
+  session TTL/`expiresAt`, return `{ checkoutUrl, sessionId, expiresAt }`.
 - Provider callback — branch on `session.kind === CardChange` in the applier layer (not the generic
   matcher), keyed on `session.paymentId`, routed through a durable handler (idempotent):
   - **Verify success (Active):** `updateToken(paymentId, recToken)` (Decision 4); publish
     `card_change_succeeded`.
-  - **Purchase success (past_due):** `updateToken` + `advanceAfterSuccess(paymentId, anchor)` +
-    reset ladder (`retryAttempt=0`, `firstFailureAt=null`, `status=active`); publish
+  - **Purchase success (`past_due` or `renewal_failed`):** `updateToken` +
+    `advanceAfterSuccess(paymentId, anchor)` + reset ladder (`retryAttempt=0`, `firstFailureAt=null`,
+    `status=active`) — the **same** payment, reviving a terminally-failed one in place; publish
     `recurring_payment_succeeded` with the **full** payload (`amount, currency, method, period,
     source`) **and** `card_change_succeeded` (P2 order; P6 — advance-by-id, never `createOrExtend`).
     Note the builder signature: `recurringPaymentSucceeded(charge, match, paymentId)`
@@ -258,15 +262,16 @@ events (AC8).
 - **C3a** (`checkout`/`charge` e2e): card-change on an Active payment runs a 0-amount verify;
   success calls `updateToken` (dates unchanged), emits one `card_change_succeeded`, makes **no**
   `charge` call, and leaves the `payments` row count unchanged.
-- **C3b** (e2e): card-change on a `past_due` payment runs a priced Purchase for the owed amount;
-  success updates the token, advances the period, resets `retryAttempt/firstFailureAt/status`, and
-  emits **both** `recurring_payment_succeeded` (with a full `amount/currency/method/period/source`
-  payload) and `card_change_succeeded`; `payments` row count unchanged (advanced by id, not
-  create-or-extend).
+- **C3b** (e2e): card-change on a `past_due` **or** `renewal_failed` payment runs a priced Purchase
+  for the owed amount; success updates the token, advances the period, resets
+  `retryAttempt/firstFailureAt/status`, and emits **both** `recurring_payment_succeeded` (with a
+  full `amount/currency/method/period/source` payload) and `card_change_succeeded`; `payments` row
+  count unchanged (the **same** payment advanced by id, not create-or-extend — a `renewal_failed`
+  one revived in place).
 - **C3c** (e2e): a declined card-change emits one `card_change_failed(reason)` and leaves the
-  Payment (and its ladder) byte-unchanged.
+  payment (and its ladder/failed state) byte-unchanged.
 - **C3d** (e2e): `POST /api/payment/card-change` returns 200 with a service token; **401** with no
-  token and **403** with an operator token; **409** when the user has no active/past_due payment.
+  token and **403** with an operator token; **409** when the payment is `cancelled` or absent.
 - **AC-global** (outbox e2e): each of the 4 new events is stored raw before delivery, fans out to
   every sink, is delivered within 60 s, decodes against its shared struct field-by-field, and
   carries `externalUserId` verbatim.
@@ -322,16 +327,22 @@ until its ACs' tests pass with concrete assertions.
 - **Consequences.** Four new queue message types + handlers; two migrations; a dedicated
   card-change applier; the scheduler gains one branch and a row lock. Card Verify stays gated until
   live-confirmed.
-- **Follow-ups.** Confirm Card Verify on `nexttick_it1`; resolve the hosted-vs-API verify mechanics
-  (wiki 852189); decide whether Active card-change should be allowed when the user is `renewal_failed`
-  (currently 409 → fresh checkout).
+- **Follow-ups.** Probe the standalone Card Verify method on `nexttick_it1` (recToken issuance is
+  already live; only the zero-amount Verify call + its hosted-vs-API mechanics remain to confirm,
+  wiki 852189). **Resolved:** a `renewal_failed` payment **is** re-tokenizable via card change —
+  the owed charge revives the same payment in place (user decision); only `cancelled`/no-payment → 409.
 
 ## 12. Open questions
 
-- Exact Card Verify hosted-vs-API mechanics (wiki 852189) — resolve against the live merchant
-  before enabling the flag (does not block building the gated path).
-- Whether a `renewal_failed` user should be re-tokenizable via `/card-change` (charge the owed
-  amount to recover) or forced to a fresh checkout — currently the latter (409).
+- Card Verify (wiki 852189): **recToken issuance is already confirmed live** on `nexttick_it1`
+  (docs/14 addendum) — so tokenization is enabled for the account. The remaining unknown is only
+  whether the *standalone zero-amount Verify* method (provisioned separately from Purchase-time
+  tokenization) is enabled, plus its exact hosted-vs-API mechanics. A short live probe of that one
+  call resolves it; the flag stays only to gate that probe, not tokenization in general. If Verify
+  is not enabled, the fallback for the proactive path is a minimal-amount Purchase.
+- ~~Whether a `renewal_failed` payment should be re-tokenizable via `/card-change`~~ — **resolved
+  (user decision):** yes — the owed charge revives the **same** payment in place; only a
+  `cancelled` payment or no payment is refused (409).
 
 ## 13. Consensus review outcome + changelog
 
@@ -371,3 +382,11 @@ id keeps AC2 intact. Two MINOR nits raised and now folded into this revision: (1
 `shared/schemas/message.ts` edit (Phase 0); (2) the `recurringPaymentSucceeded` `Charge`+`Match`
 signature clarification (Phase 6). Remaining items are the two live-only follow-ups in §12 (not
 blockers to building the gated paths).
+
+**Post-consensus user refinements (2026-08-12).** (a) **Card Verify gating narrowed** — recToken
+issuance is confirmed live, so the flag now gates only a live probe of the standalone zero-amount
+Verify method, not tokenization in general (§9, §12). (b) **`renewal_failed` is re-tokenizable** —
+a card change on a terminally-failed recurrent payment revives the **same** payment in place
+(owed charge + new token), not a fresh record; only `cancelled`/no-payment → 409 (§1, §6 Phase 6,
+§7 C3b/C3d, §11–12). (c) **Terminology** — "subscription" scrubbed; the domain has only payments /
+recurrent payments.
