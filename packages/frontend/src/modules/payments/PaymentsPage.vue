@@ -34,9 +34,43 @@ const createCurrency = ref<number>(Currency.UAH);
 const createPeriod = ref('P4W');
 const createMethod = ref<number>(PaymentMethod.Card);
 
+// Status filter state — null means "show all"
+const activeChip = ref<'cancelling' | PaymentStatus | null>(null);
+
+function chipClass(chip: 'cancelling' | PaymentStatus): string {
+  return activeChip.value === chip ? 'chip chip--active' : 'chip';
+}
+
+function toggleChip(chip: 'cancelling' | PaymentStatus): void {
+  activeChip.value = activeChip.value === chip ? null : chip;
+  applyFilter();
+}
+
+function applyFilter(): void {
+  const chip = activeChip.value;
+  const uid = store.filter.externalUserId;
+  const base = uid !== undefined ? { externalUserId: uid } : {};
+  if (chip === null) {
+    void store.loadList(base);
+  } else if (chip === 'cancelling') {
+    void store.loadList({ ...base, cancelling: true });
+  } else {
+    void store.loadList({ ...base, statuses: [chip] });
+  }
+}
+
 onMounted(() => {
   void store.loadList();
 });
+
+function isCancelling(p: Payment): boolean {
+  return p.status === PaymentStatus.Active && p.cancelRequestedAt !== null;
+}
+
+function statusLabel(p: Payment): string {
+  if (isCancelling(p)) return t('payments.statuses.cancelling');
+  return t(`payments.statuses.${p.status}`);
+}
 
 function matchUser(p: Payment, q: string): boolean {
   return p.externalUserId.toLowerCase().includes(q);
@@ -48,8 +82,9 @@ function onRowClick(p: Payment): void {
   void router.push(`/operator/payments/${p.id}`);
 }
 
-function statusClass(s: PaymentStatus): string {
-  return `status--${PaymentStatus[s]}`;
+function statusClass(p: Payment): string {
+  if (isCancelling(p)) return 'status--Cancelling';
+  return `status--${PaymentStatus[p.status]}`;
 }
 
 function buildBody(): CreatePaymentRequest {
@@ -95,6 +130,28 @@ async function onCreate(): Promise<void> {
         </button>
       </template>
 
+      <div class="filter-bar">
+        <button
+          v-for="chip in ([
+            PaymentStatus.Active,
+            'cancelling',
+            PaymentStatus.PastDue,
+            PaymentStatus.Cancelled,
+            PaymentStatus.RenewalFailed,
+          ] as const)"
+          :key="String(chip)"
+          type="button"
+          :class="chipClass(chip)"
+          @click="toggleChip(chip)"
+        >
+          {{
+            chip === 'cancelling'
+              ? t('payments.statuses.cancelling')
+              : t(`payments.statuses.${chip}`)
+          }}
+        </button>
+      </div>
+
       <div v-if="store.loading" class="state-center">
         <BaseSpinner />
       </div>
@@ -127,8 +184,8 @@ async function onCreate(): Promise<void> {
             {{ formatDate(item.currentPeriodEnd, locale) }}
           </td>
           <td>{{ formatDate(item.nextPaymentDate, locale) }}</td>
-          <td :class="statusClass(item.status)">
-            {{ t(`payments.statuses.${item.status}`) }}
+          <td :class="statusClass(item)">
+            {{ statusLabel(item) }}
           </td>
         </template>
       </DataTable>
@@ -190,10 +247,36 @@ async function onCreate(): Promise<void> {
 }
 .add-btn:hover { color: var(--green); border-color: var(--green); }
 
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 0 12px;
+}
+
+.chip {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.chip:hover { color: var(--text); border-color: var(--line-2); }
+.chip--active {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--bg);
+  font-weight: 600;
+}
+
 .state-center { text-align: center; padding: 32px 0; }
 .state-error { color: var(--red); padding: 8px 0; font-size: 13px; }
 
 .status--Active { color: var(--green); }
+.status--Cancelling { color: var(--amber); }
 .status--PastDue { color: var(--amber); }
 .status--RenewalFailed,
 .status--Cancelled { color: var(--red); }
