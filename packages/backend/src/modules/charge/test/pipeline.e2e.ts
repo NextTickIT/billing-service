@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { SqlClient } from '@effect/sql';
-import { CheckoutSessionKind } from '@billing-service/shared';
+import { CheckoutSessionKind, PaymentStatus } from '@billing-service/shared';
 import { Duration, Effect } from 'effect';
 
 import type { AppConfig } from '@/config.js';
@@ -21,8 +21,8 @@ import { ChargePipeline } from '@/modules/charge/domain.js';
 import { scheduleTick } from '@/modules/billing/scheduler.js';
 import { normalizeCallback } from '@/modules/wayforpay/callback.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
-import { cancelNotify } from '@/modules/payment/cancel.js';
-import { PAYMENT_CANCEL } from '@/modules/payment/contracts.js';
+import { cancelNotify, lapseNotify } from '@/modules/payment/cancel.js';
+import { PAYMENT_CANCEL, PAYMENT_LAPSE } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import type { W4pTransaction } from '@/modules/wayforpay/contracts.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
@@ -59,11 +59,12 @@ const charge = (idemKey: string): Charge => ({
   payload: { note: 'e2e' },
 });
 
-/** Register the three worker handlers. */
+/** Register the worker handlers the scenarios drive. */
 const registerHandlers = Effect.gen(function* () {
   const registry = yield* TaskRegistry;
   const outbox = yield* Outbox;
   const pipeline = yield* ChargePipeline;
+  const sql = yield* SqlClient.SqlClient;
   yield* registry.register(PAYMENT_EVENT_RECEIVED, (p) =>
     pipeline.handleFromPayload(p),
   );
@@ -72,6 +73,10 @@ const registerHandlers = Effect.gen(function* () {
   );
   yield* registry.register(DELIVER_EVENT, (p) => outbox.deliverFromPayload(p));
   yield* registry.register(PAYMENT_CANCEL, cancelNotify(outbox.publish));
+  yield* registry.register(
+    PAYMENT_LAPSE,
+    lapseNotify(makePaymentRepo(sql), outbox.publish),
+  );
 });
 
 /** Run the dispatch loop for `seconds`, then stop (the loop is `Effect<never>`). */
@@ -573,6 +578,285 @@ const cancelPayment: EffectScenario = {
   },
 };
 
+/** Insert a soft-cancelled, past-due payment, then run a scheduler tick: the
+ * cancel-pending branch lapses it (enqueue PAYMENT_LAPSE) instead of charging —
+ * the WFP client MUST NOT be called. The lapse handler flips it to cancelled and
+ * emits the terminal renewal_failed (reason `cancelled`). AC-C1b (docs/23). */
+const driveLapse = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makePaymentRepo(sql);
+  const created = yield* subs.insert({
+    externalUserId: 'sp:lapse',
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: 0,
+    currentPeriodStart: new Date('2026-06-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2026-07-01T00:00:00Z'),
+    nextPaymentDate: new Date('2026-07-01T00:00:00Z'), // due in the past
+    recurringTokenRef: 'tok',
+    firstFailureAt: null,
+    retryAttempt: 0,
+  });
+  yield* subs.requestCancel(created.id); // sets cancelRequestedAt = now
+  const outbox = yield* Outbox;
+  const pipeline = yield* ChargePipeline;
+  yield* scheduleTick(
+    {
+      subs,
+      // A soft-cancelled due payment must never be charged.
+      client: { charge: () => Effect.die('WFP charge must not run on a lapse') },
+      ingest: pipeline.ingest,
+      publish: outbox.publish,
+      lapse: (sub) =>
+        enqueue(sql)({
+          messageType: PAYMENT_LAPSE,
+          idemKey: `lapse:${sub.id}`,
+          payload: { paymentId: sub.id, externalUserId: sub.externalUserId },
+        }).pipe(Effect.asVoid),
+    },
+    { intervalSeconds: 60, batchSize: 10 },
+  );
+  yield* runFor(2);
+});
+
+const assertLapse = async (query: EffectE2eContext['query']): Promise<void> => {
+  await eq(
+    query,
+    `SELECT status::text FROM payments`,
+    '3',
+    'the cancel-pending payment lapsed to cancelled (AC-C1b)',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM domain_events WHERE name = 'renewal_failed'
+       AND payload->>'reason' = 'cancelled'`,
+    '1',
+    'exactly one renewal_failed (reason cancelled) emitted for the lapse',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM domain_events WHERE name = 'charge_retry_failed'`,
+    '0',
+    'a lapse takes no retry ladder — no charge_retry_failed',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM charge_fixations`,
+    '0',
+    'the WFP charge was never invoked (no fixation)',
+  );
+};
+
+const softCancelLapses: EffectScenario = {
+  name: 'scheduler: a soft-cancelled due payment lapses instead of charging (AC-C1b)',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveLapse);
+      await assertLapse(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
+const CARD_CHANGE_OWED_ID = 'chk_cc_owed';
+
+/** Seed a past_due payment + an owed card-change session, then feed a succeeded
+ * callback carrying the new token: the card-change applier re-tokenizes AND
+ * advances the SAME payment (revive in place, one-active-payment invariant). The
+ * pipeline emits recurring_payment_succeeded (owed money) + card_change_succeeded.
+ * AC-C3b (docs/23). */
+const driveCardChangeOwed = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makePaymentRepo(sql);
+  const created = yield* subs.insert({
+    externalUserId: 'sp:cc',
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: PaymentStatus.PastDue,
+    currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
+    nextPaymentDate: new Date('2026-01-08T00:00:00Z'),
+    recurringTokenRef: 'old',
+    firstFailureAt: new Date('2026-01-01T00:00:00Z'),
+    retryAttempt: 2,
+  });
+  yield* makeCheckoutRepo(sql).insert({
+    id: CARD_CHANGE_OWED_ID,
+    externalUserId: 'sp:cc',
+    amount: 30000, // owed > 0
+    currency: 0,
+    period: 'P1M',
+    kind: CheckoutSessionKind.CardChange,
+    paymentId: created.id,
+    expiresAt: new Date('2030-01-01T00:00:00Z'),
+  });
+  const pipeline = yield* ChargePipeline;
+  yield* pipeline.ingest({
+    source: 'wayforpay_callback',
+    idemKey: 'w4pcb:chk_cc_owed|Approved',
+    externalRef: CARD_CHANGE_OWED_ID,
+    externalUserId: null,
+    amount: 30000,
+    currency: 0,
+    status: 'succeeded',
+    occurredAt: new Date('2026-01-05T00:00:00Z'),
+    payload: { recToken: 'new' },
+  });
+  yield* runFor(2);
+});
+
+const assertCardChangeOwed = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT "recurringTokenRef" FROM payments`,
+    'new',
+    'the card token was rewritten on the existing payment (AC-C3b)',
+  );
+  await eq(
+    query,
+    `SELECT status::text FROM payments`,
+    '0',
+    'the past_due payment was revived to active in place',
+  );
+  await eq(
+    query,
+    `SELECT "retryAttempt"::text FROM payments`,
+    '0',
+    'the retry ladder was reset on the advance',
+  );
+  await eq(
+    query,
+    `SELECT to_char("currentPeriodEnd", 'YYYY-MM-DD') FROM payments`,
+    '2026-02-01',
+    'the period anchor advanced by one period from currentPeriodEnd',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM payments`,
+    '1',
+    'advanced by id — no second payment row (one-active-payment invariant)',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM domain_events WHERE name = 'recurring_payment_succeeded'`,
+    '1',
+    'an owed card change collected money → recurring_payment_succeeded',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM domain_events WHERE name = 'card_change_succeeded'`,
+    '1',
+    'card_change_succeeded emitted',
+  );
+};
+
+const cardChangeOwedRevives: EffectScenario = {
+  name: 'card-change: an owed change revives a past_due payment in place (AC-C3b)',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveCardChangeOwed);
+      await assertCardChangeOwed(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
+const CARD_CHANGE_DECLINE_ID = 'chk_cc_declined';
+
+/** Same owed setup, but the card-change callback FAILS: no token rewrite, no
+ * advance — the payment is untouched and only card_change_failed is emitted.
+ * AC-C3c (docs/23). */
+const driveCardChangeDecline = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makePaymentRepo(sql);
+  const created = yield* subs.insert({
+    externalUserId: 'sp:ccd',
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: PaymentStatus.PastDue,
+    currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
+    nextPaymentDate: new Date('2026-01-08T00:00:00Z'),
+    recurringTokenRef: 'old',
+    firstFailureAt: new Date('2026-01-01T00:00:00Z'),
+    retryAttempt: 2,
+  });
+  yield* makeCheckoutRepo(sql).insert({
+    id: CARD_CHANGE_DECLINE_ID,
+    externalUserId: 'sp:ccd',
+    amount: 30000,
+    currency: 0,
+    period: 'P1M',
+    kind: CheckoutSessionKind.CardChange,
+    paymentId: created.id,
+    expiresAt: new Date('2030-01-01T00:00:00Z'),
+  });
+  const pipeline = yield* ChargePipeline;
+  yield* pipeline.ingest({
+    source: 'wayforpay_callback',
+    idemKey: 'w4pcb:chk_cc_declined|Declined',
+    externalRef: CARD_CHANGE_DECLINE_ID,
+    externalUserId: null,
+    amount: 30000,
+    currency: 0,
+    status: 'failed',
+    occurredAt: new Date('2026-01-05T00:00:00Z'),
+    payload: { recToken: 'new', reason: 'Insufficient funds' },
+  });
+  yield* runFor(2);
+});
+
+const assertCardChangeDecline = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT count(*) FROM domain_events WHERE name = 'card_change_failed'`,
+    '1',
+    'a declined card change emits card_change_failed (AC-C3c)',
+  );
+  await eq(
+    query,
+    `SELECT status::text FROM payments`,
+    '1',
+    'the payment stays past_due — a decline does not revive it',
+  );
+  await eq(
+    query,
+    `SELECT "recurringTokenRef" FROM payments`,
+    'old',
+    'the stored token is unchanged on a decline',
+  );
+};
+
+const cardChangeDeclineLeavesPayment: EffectScenario = {
+  name: 'card-change: a declined change leaves the past_due payment untouched (AC-C3c)',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveCardChangeDecline);
+      await assertCardChangeDecline(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
   bindReprocesses,
@@ -580,4 +864,7 @@ export const effectScenarios: readonly EffectScenario[] = [
   checkoutCreatesPayment,
   schedulerChargesDue,
   cancelPayment,
+  softCancelLapses,
+  cardChangeOwedRevives,
+  cardChangeDeclineLeavesPayment,
 ];
