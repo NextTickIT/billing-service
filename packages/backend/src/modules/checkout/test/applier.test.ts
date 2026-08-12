@@ -55,6 +55,7 @@ it.effect(
             return {
               ...input,
               id: 'sub_1',
+              cancelRequestedAt: null,
               createdAt: new Date(0),
               updatedAt: new Date(0),
             };

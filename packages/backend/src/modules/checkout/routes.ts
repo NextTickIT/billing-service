@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { SqlClient } from '@effect/sql';
 import {
+  CheckoutSessionKind,
   CheckoutSessionPublic,
   CheckoutSessionStatus,
   CreateCheckoutSession,
@@ -64,6 +65,8 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
       amount: input.amount,
       currency: input.currency,
       period: input.period,
+      kind: CheckoutSessionKind.Checkout,
+      paymentId: null,
       expiresAt,
     });
     return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };

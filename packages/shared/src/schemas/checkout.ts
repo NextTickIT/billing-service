@@ -17,6 +17,19 @@ export enum CheckoutSessionStatus {
 
 export const CheckoutSessionStatusSchema = Schema.Enums(CheckoutSessionStatus);
 
+/**
+ * What a session is for. `Checkout` is the normal first-payment flow; `CardChange`
+ * re-tokenizes an existing payment (0-amount verify when current, or a priced
+ * Purchase for the owed amount when behind) and its callback updates that payment
+ * rather than creating one. Numeric at rest. Owned by the checkout slice.
+ */
+export enum CheckoutSessionKind {
+  Checkout = 0,
+  CardChange = 1,
+}
+
+export const CheckoutSessionKindSchema = Schema.Enums(CheckoutSessionKind);
+
 /** A checkout session at rest. `method` is null until chosen on the page. */
 export const CheckoutSession = Schema.Struct({
   id: Schema.String,
@@ -26,6 +39,9 @@ export const CheckoutSession = Schema.Struct({
   period: Schema.String,
   method: Schema.NullOr(PaymentMethodSchema),
   status: CheckoutSessionStatusSchema,
+  kind: CheckoutSessionKindSchema,
+  // The payment a card-change session re-tokenizes; null for a normal checkout.
+  paymentId: Schema.NullOr(Schema.String),
   expiresAt: Schema.Date,
   createdAt: Schema.Date,
 });
@@ -63,6 +79,17 @@ export const SessionCreated = Schema.Struct({
 });
 
 export type SessionCreated = Schema.Schema.Type<typeof SessionCreated>;
+
+/**
+ * POST /api/payment/card-change body (docs/23): SendPulse initiates a card change
+ * for a user; the server resolves the one recurrent payment and issues a
+ * card-change checkout link. Reuses `SessionCreated` as the response.
+ */
+export const CardChangeRequest = Schema.Struct({
+  externalUserId: Schema.String,
+});
+
+export type CardChangeRequest = Schema.Schema.Type<typeof CardChangeRequest>;
 
 /**
  * GET /api/checkout-sessions/:id response (public, BFF-proxied, AC-9):

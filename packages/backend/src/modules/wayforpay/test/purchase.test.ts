@@ -1,4 +1,4 @@
-import { CheckoutSessionStatus } from '@billing-service/shared';
+import { CheckoutSessionKind, CheckoutSessionStatus } from '@billing-service/shared';
 import { Redacted } from 'effect';
 import { describe, expect, test } from 'vitest';
 
@@ -28,6 +28,8 @@ describe('buildPurchase', () => {
       period: 'P1M',
       method: 0,
       status: CheckoutSessionStatus.Pending,
+      kind: CheckoutSessionKind.Checkout,
+      paymentId: null,
       expiresAt: new Date(0),
       createdAt: new Date(0),
     },

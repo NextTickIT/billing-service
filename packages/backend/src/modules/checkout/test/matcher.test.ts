@@ -1,5 +1,5 @@
 import { it } from '@effect/vitest';
-import type { CheckoutSession } from '@billing-service/shared';
+import { type CheckoutSession, CheckoutSessionKind } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
@@ -15,6 +15,8 @@ const session: CheckoutSession = {
   period: 'P1M',
   method: 0,
   status: 1,
+  kind: CheckoutSessionKind.Checkout,
+  paymentId: null,
   expiresAt: new Date(0),
   createdAt: new Date(0),
 };

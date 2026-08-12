@@ -9,12 +9,18 @@ export const PAYMENT_EVENT_RECEIVED = 'payment_event_received';
 export const PAYMENT_REBIND = 'payment_rebind';
 export const DELIVER_EVENT = 'deliver_event';
 export const PAYMENT_CANCEL = 'payment_cancel';
+export const PAYMENT_REACTIVATE = 'payment_reactivate';
+export const PAYMENT_DEFER = 'payment_defer';
+export const PAYMENT_LAPSE = 'payment_lapse';
 
 export const MESSAGE_TYPES = [
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
   DELIVER_EVENT,
   PAYMENT_CANCEL,
+  PAYMENT_REACTIVATE,
+  PAYMENT_DEFER,
+  PAYMENT_LAPSE,
 ] as const;
 
 export const MessageType = Schema.Literal(...MESSAGE_TYPES);

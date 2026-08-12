@@ -20,6 +20,17 @@ const addMonthsClamped = (date: Date, monthSpan: number): void => {
 export const isValidPeriod = (period: string): boolean =>
   DURATION.test(period) && period !== 'P';
 
+/**
+ * Add whole days to a date in UTC — used by deferral (docs/23), which pushes the
+ * paid-through anchor by N days. Plain day arithmetic, no month clamping (a day
+ * offset never lands on an invalid day).
+ */
+export const addDays = (date: Date, days: number): Date => {
+  const result = new Date(date.getTime());
+  result.setUTCDate(result.getUTCDate() + days);
+  return result;
+};
+
 export const addPeriod = (date: Date, period: string): Date => {
   const match = DURATION.exec(period);
   if (match === null || period === 'P') {

@@ -36,6 +36,7 @@ const activePayment: Payment = {
   recurringTokenRef: 'tok_old',
   firstFailureAt: null,
   retryAttempt: 0,
+  cancelRequestedAt: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
 };
@@ -52,6 +53,7 @@ const makeFakeRepo = (existing: Payment | null) => {
         return {
           ...input,
           id: 'sub_new',
+          cancelRequestedAt: null,
           createdAt: new Date(0),
           updatedAt: new Date(0),
         };

@@ -21,6 +21,7 @@ const sub: Payment = {
   recurringTokenRef: 'tok',
   firstFailureAt: null,
   retryAttempt: 0,
+  cancelRequestedAt: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
 };

@@ -51,6 +51,12 @@ export interface WayForPayConfig {
   readonly rateLimitRps: number;
   /** Migration poller (docs/15): off until production credentials are provisioned. */
   readonly pollerEnabled: boolean;
+  /**
+   * Standalone Card Verify (wiki 852189, docs/23/24): the 0-amount tokenization
+   * used by a proactive card change. Off until the specific method is confirmed
+   * enabled on the merchant account (recToken issuance itself is already live).
+   */
+  readonly cardVerifyEnabled: boolean;
   readonly pollIntervalSeconds: number;
   readonly windowOverlapSeconds: number;
   readonly maxWindowSeconds: number;
@@ -164,6 +170,7 @@ const loadWayForPayConfig = (): WayForPayConfig => ({
     'https://api.wayforpay.com/regularApi',
   merchantDomainName: process.env['W4P_DOMAIN_NAME'] ?? '',
   rateLimitRps: Number(process.env['W4P_RATE_LIMIT_RPS'] ?? '2'),
+  cardVerifyEnabled: process.env['W4P_CARD_VERIFY_ENABLED'] === 'true',
   ...loadW4pPollerConfig(),
   ...loadW4pCheckoutConfig(),
 });

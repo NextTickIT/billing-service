@@ -21,6 +21,10 @@ export const EVENT_NAMES = [
   'renewal_failed',
   'payment_created',
   'payment_cancelled',
+  'payment_reactivated',
+  'payment_deferred',
+  'card_change_succeeded',
+  'card_change_failed',
   'unknown_payment_quarantined',
 ] as const;
 
@@ -156,8 +160,71 @@ export type PaymentCancelledEvent = Schema.Schema.Type<
 >;
 
 /**
- * An incoming payment that matched no subscription (FR-009). `externalUserId` is
- * null by definition — the user is unknown until an operator binds it.
+ * A cancel request reversed inside the grace window (docs/23): the operator
+ * un-cancelled before the period lapsed, so the next scheduled charge proceeds
+ * as normal. Tells the access owner to reverse the earlier `payment_cancelled`.
+ */
+export const PaymentReactivatedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('payment_reactivated'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({}),
+});
+
+export type PaymentReactivatedEvent = Schema.Schema.Type<
+  typeof PaymentReactivatedEvent
+>;
+
+/**
+ * An operator granted N free days (docs/23): the paid period was extended, so
+ * the access owner should extend access to `newPeriodEnd`. `days` is the grant
+ * size for the audit trail.
+ */
+export const PaymentDeferredEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('payment_deferred'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({
+    newPeriodEnd: Schema.String,
+    days: Schema.Int,
+  }),
+});
+
+export type PaymentDeferredEvent = Schema.Schema.Type<
+  typeof PaymentDeferredEvent
+>;
+
+/**
+ * A SendPulse-initiated card change tokenized (verify) or collected (owed) the
+ * new card (docs/23). `method` is the payment method used.
+ */
+export const CardChangeSucceededEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('card_change_succeeded'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({ method: Schema.Int }),
+});
+
+export type CardChangeSucceededEvent = Schema.Schema.Type<
+  typeof CardChangeSucceededEvent
+>;
+
+/** A card-change attempt that the provider declined/errored (docs/23). */
+export const CardChangeFailedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('card_change_failed'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({ reason: Schema.String }),
+});
+
+export type CardChangeFailedEvent = Schema.Schema.Type<
+  typeof CardChangeFailedEvent
+>;
+
+/**
+ * An incoming payment that matched no recurrent payment (FR-009).
+ * `externalUserId` is null by definition — the user is unknown until an operator
+ * binds it.
  */
 export const UnknownPaymentQuarantinedEvent = Schema.Struct({
   ...envelope,
@@ -191,6 +258,10 @@ export const DomainEvent = Schema.Union(
   ChargeRetryFailedEvent,
   RenewalFailedEvent,
   PaymentCancelledEvent,
+  PaymentReactivatedEvent,
+  PaymentDeferredEvent,
+  CardChangeSucceededEvent,
+  CardChangeFailedEvent,
   UnknownPaymentQuarantinedEvent,
 );
 

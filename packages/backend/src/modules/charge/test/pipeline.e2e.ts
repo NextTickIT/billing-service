@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { SqlClient } from '@effect/sql';
+import { CheckoutSessionKind } from '@billing-service/shared';
 import { Duration, Effect } from 'effect';
 
 import type { AppConfig } from '@/config.js';
@@ -336,6 +337,8 @@ const driveCheckout = Effect.gen(function* () {
     amount: 30000,
     currency: 0,
     period: 'P1M',
+    kind: CheckoutSessionKind.Checkout,
+    paymentId: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;

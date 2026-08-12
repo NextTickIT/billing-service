@@ -75,15 +75,19 @@ export const Payment = Schema.Struct({
   recurringTokenRef: Schema.NullOr(Schema.String),
   firstFailureAt: Schema.NullOr(Schema.Date),
   retryAttempt: Schema.Int,
+  // Set when an operator soft-cancels: the payment stays `active` (access runs to
+  // currentPeriodEnd) and the scheduler lapses it at the due date instead of
+  // charging. Null in normal operation. See docs/23.
+  cancelRequestedAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
 });
 
 export type Payment = Schema.Schema.Type<typeof Payment>;
 
-/** Create params: the server owns `id` and the timestamps. */
+/** Create params: the server owns `id`, the timestamps, and the cancel flag. */
 export const CreatePayment = Payment.pipe(
-  Schema.omit('id', 'createdAt', 'updatedAt'),
+  Schema.omit('id', 'createdAt', 'updatedAt', 'cancelRequestedAt'),
 );
 
 export type CreatePayment = Schema.Schema.Type<typeof CreatePayment>;
@@ -142,6 +146,32 @@ export type CancelPaymentRequest = Schema.Schema.Type<typeof CancelPaymentReques
 export const CancelAccepted = Schema.Struct({ status: Schema.Literal('cancelled') });
 
 export type CancelAccepted = Schema.Schema.Type<typeof CancelAccepted>;
+
+/** POST /api/payment/:id/reactivate response (un-cancel within the grace window). */
+export const ReactivateAccepted = Schema.Struct({
+  status: Schema.Literal('active'),
+});
+
+export type ReactivateAccepted = Schema.Schema.Type<typeof ReactivateAccepted>;
+
+/**
+ * POST /api/payment/:id/defer body: grant N free days (docs/23). Bounds are
+ * enforced in the domain (1..30) with a typed error, not by the schema, so the
+ * route returns a 422 with a reason rather than a generic decode 400.
+ */
+export const DeferPaymentRequest = Schema.Struct({
+  days: Schema.Int,
+});
+
+export type DeferPaymentRequest = Schema.Schema.Type<typeof DeferPaymentRequest>;
+
+/** POST /api/payment/:id/defer response: the new paid-through date. */
+export const DeferAccepted = Schema.Struct({
+  status: Schema.Literal('deferred'),
+  newPeriodEnd: Schema.Date,
+});
+
+export type DeferAccepted = Schema.Schema.Type<typeof DeferAccepted>;
 
 /** POST /api/payment response: the new Payment id. */
 export const CreateAccepted = Schema.Struct({ id: Schema.String });
