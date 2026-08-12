@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 
 import { SqlClient } from '@effect/sql';
 import {
+  CardChangeRequest,
   CheckoutSessionKind,
   CheckoutSessionPublic,
   CheckoutSessionStatus,
   CreateCheckoutSession,
+  PaymentStatus,
   PurchaseForm,
   SelectMethod,
   SessionCreated,
@@ -15,13 +17,18 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
-import { NotFound, Unauthorized } from '@/infra/http/errors.js';
+import {
+  CardChangeUnavailable,
+  NotFound,
+  Unauthorized,
+} from '@/infra/http/errors.js';
 import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { PAYMENT_EVENT_RECEIVED } from '@/modules/charge/contracts.js';
 import { authenticateToken } from '@/modules/auth/domain.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import { checkoutPath } from '@/modules/checkout/domain.js';
+import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import {
   ackResponse,
   type CallbackPayload,
@@ -126,6 +133,53 @@ const callback = (body: unknown, request: FastifyRequest) =>
     return ackResponse(config, event.externalRef, time);
   });
 
+/**
+ * SendPulse-initiated card change (docs/23). Resolve the user's payment: a cancelled
+ * one (or none) is refused (409 — start a fresh checkout); a current payment needs the
+ * standalone Card Verify method enabled (0-amount); a past_due/renewal_failed payment
+ * takes the owed-amount path (a priced Purchase that revives it in place). Either way a
+ * `card_change` session is issued and its callback re-tokenizes the SAME payment.
+ */
+const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
+  Effect.gen(function* () {
+    yield* serviceActor(request);
+    const config = request.server.appConfig.wayforpay;
+    const sql = yield* SqlClient.SqlClient;
+    const found = yield* makePaymentRepo(sql).findByExternalUser(
+      input.externalUserId,
+    );
+    const payment = found[0];
+    if (payment === undefined || payment.status === PaymentStatus.Cancelled) {
+      return yield* Effect.fail(
+        new CardChangeUnavailable({
+          reason: 'no re-tokenizable payment; start a new checkout',
+        }),
+      );
+    }
+    const owed =
+      payment.status === PaymentStatus.PastDue ||
+      payment.status === PaymentStatus.RenewalFailed;
+    if (!owed && !config.cardVerifyEnabled) {
+      return yield* Effect.fail(
+        new CardChangeUnavailable({ reason: 'card verification is unavailable' }),
+      );
+    }
+    const nowMillis = yield* Clock.currentTimeMillis;
+    const id = `chk_${randomUUID()}`;
+    const expiresAt = new Date(nowMillis + config.sessionTtlSeconds * 1000);
+    yield* makeCheckoutRepo(sql).insert({
+      id,
+      externalUserId: payment.externalUserId,
+      amount: owed ? payment.amount : 0,
+      currency: payment.currency,
+      period: payment.period,
+      kind: CheckoutSessionKind.CardChange,
+      paymentId: payment.id,
+      expiresAt,
+    });
+    return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };
+  });
+
 export default function checkout(fastify: FastifyInstance): void {
   route(fastify, {
     method: 'POST',
@@ -134,6 +188,15 @@ export default function checkout(fastify: FastifyInstance): void {
     output: SessionCreated,
     status: 201,
     handler: createSession,
+  });
+
+  route(fastify, {
+    method: 'POST',
+    path: '/api/payment/card-change',
+    input: CardChangeRequest,
+    output: SessionCreated,
+    status: 201,
+    handler: cardChange,
   });
 
   // Public JSON read (AC-9): BFF-proxied; no externalUserId in response.

@@ -1,14 +1,17 @@
-import { PaymentMethod } from '@billing-service/shared';
+import type { SqlError } from '@effect/sql';
+import { CheckoutSessionKind, PaymentMethod } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
 import type {
   AppliedCharge,
   ChargeApplier,
   ChargeMatcher,
+  Match,
 } from '@/modules/charge/contracts.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import { createOrExtend } from '@/modules/payment/domain.js';
+import { addPeriod } from '@/modules/payment/period.js';
 
 /** The public checkout page URL for a session id (served by the frontend SPA). */
 export const checkoutPath = (sessionId: string): string =>
@@ -34,6 +37,11 @@ export const makeCheckoutMatcher =
         return { matched: false };
       }
       const session = found.value;
+      // A card-change session is handled by its own matcher/applier — never as a
+      // first checkout (which would create-or-extend a second payment).
+      if (session.kind !== CheckoutSessionKind.Checkout) {
+        return { matched: false };
+      }
       return {
         matched: true,
         kind: 'checkout',
@@ -44,6 +52,41 @@ export const makeCheckoutMatcher =
       };
     });
 
+/**
+ * Card-change matcher (docs/23): a callback whose session is a `card_change`
+ * resolves to that session's target payment. Runs BEFORE the checkout matcher.
+ * `owed` distinguishes a priced Purchase (past_due/renewal_failed) from a 0-amount
+ * verify. Both success and failure match here so the pipeline can emit the outcome.
+ */
+export const makeCardChangeMatcher =
+  (repo: CheckoutRepo): ChargeMatcher =>
+  (event) =>
+    Effect.gen(function* () {
+      if (event.status !== 'succeeded' && event.status !== 'failed') {
+        return { matched: false };
+      }
+      const found = yield* repo.findById(event.externalRef);
+      if (Option.isNone(found)) {
+        return { matched: false };
+      }
+      const session = found.value;
+      if (
+        session.kind !== CheckoutSessionKind.CardChange ||
+        session.paymentId === null
+      ) {
+        return { matched: false };
+      }
+      return {
+        matched: true,
+        kind: 'card_change',
+        subscriptionId: session.paymentId,
+        externalUserId: session.externalUserId,
+        period: session.period,
+        method: session.method ?? PaymentMethod.Card,
+        owed: session.amount > 0,
+      };
+    });
+
 /** The recToken the provider returns on a card checkout, if any. */
 const recToken = (payload: Record<string, unknown>): string | null =>
   typeof payload['recToken'] === 'string' && payload['recToken'].length > 0
@@ -51,14 +94,56 @@ const recToken = (payload: Record<string, unknown>): string | null =>
     : null;
 
 /**
+ * Card-change applier (docs/23): rewrite the stored token on the target payment and,
+ * for an owed change, advance the SAME payment (never create-or-extend, so the
+ * one-active-payment invariant holds) — `advanceAfterSuccess` also resets the retry
+ * ladder and sets `active`, reviving a past_due/renewal_failed payment in place. The
+ * new period anchors on the existing `currentPeriodEnd` (drift-free).
+ */
+const applyCardChange =
+  (payments: PaymentRepo, checkout: CheckoutRepo) =>
+  (
+    event: Parameters<ChargeApplier>[0],
+    paymentId: string,
+    owed: boolean,
+  ): Effect.Effect<AppliedCharge, SqlError.SqlError> =>
+    Effect.gen(function* () {
+      const token = recToken(event.payload);
+      if (token !== null) {
+        yield* payments.updateToken(paymentId, token);
+      }
+      if (owed) {
+        const found = yield* payments.findById(paymentId);
+        if (Option.isSome(found)) {
+          const p = found.value;
+          const currentPeriodEnd = addPeriod(p.currentPeriodEnd, p.period);
+          yield* payments.advanceAfterSuccess(paymentId, {
+            currentPeriodStart: p.currentPeriodEnd,
+            currentPeriodEnd,
+            nextPaymentDate: currentPeriodEnd,
+          });
+        }
+      }
+      yield* checkout.markCompleted(event.externalRef);
+      return { subscriptionId: paymentId, created: false };
+    });
+
+/**
  * Checkout applier (FR-003): a matched checkout payment creates or extends the
- * user's subscription (storing the card token) and marks the session completed. A
- * `recurring` match already has its subscription — the scheduler advances it (M6) —
- * so the applier just reports it.
+ * user's payment (storing the card token) and marks the session completed. A
+ * `recurring` match already has its payment — the scheduler advances it (M6) — so the
+ * applier just reports it. A `card_change` match re-tokenizes an existing payment.
  */
 export const makeCheckoutApplier =
   (payments: PaymentRepo, checkout: CheckoutRepo): ChargeApplier =>
-  (event, match) => {
+  (event, match: Match) => {
+    if (match.kind === 'card_change' && match.subscriptionId !== null) {
+      return applyCardChange(payments, checkout)(
+        event,
+        match.subscriptionId,
+        match.owed === true,
+      );
+    }
     if (match.kind === 'recurring' && match.subscriptionId !== null) {
       const applied: AppliedCharge = {
         subscriptionId: match.subscriptionId,

@@ -1,9 +1,9 @@
 import type { SqlError } from '@effect/sql';
-import { PaymentStatus } from '@billing-service/shared';
+import { type Payment, PaymentStatus } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
-import { addPeriod } from '@/modules/payment/period.js';
+import { addDays, addPeriod } from '@/modules/payment/period.js';
 
 /**
  * The billing terms a successful charge establishes for a user (FR-003). The
@@ -68,3 +68,16 @@ export const createOrExtend =
       });
       return { subscriptionId: created.id, created: true };
     });
+
+/**
+ * Deferral (docs/23): grant N free days by pushing the paid-through anchor. The
+ * next charge date is re-derived FROM the new anchor (`currentPeriodEnd`), never
+ * hand-set — so drift stays structurally impossible (CLAUDE.md §6).
+ */
+export const computeDeferral = (
+  payment: Payment,
+  days: number,
+): { newPeriodEnd: Date; newNextPaymentDate: Date } => {
+  const newPeriodEnd = addDays(payment.currentPeriodEnd, days);
+  return { newPeriodEnd, newNextPaymentDate: newPeriodEnd };
+};

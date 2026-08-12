@@ -1,6 +1,8 @@
 import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
 import type {
+  CardChangeFailedEvent,
+  CardChangeSucceededEvent,
   DomainEvent,
   InitialPaymentFailedEvent,
   InitialPaymentSucceededEvent,
@@ -184,6 +186,34 @@ export const boundPaymentSucceeded = (
   },
 });
 
+/** card_change_succeeded — a card change tokenized/collected the new card (docs/23). */
+export const cardChangeSucceeded = (
+  event: Charge,
+  match: Match,
+): CardChangeSucceededEvent => ({
+  id: eventId(event.idemKey, 'card_change'),
+  name: 'card_change_succeeded',
+  occurredAt: event.occurredAt,
+  correlationId: event.idemKey,
+  externalUserId: match.externalUserId,
+  aggregateId: match.subscriptionId ?? event.externalRef,
+  payload: { method: match.method },
+});
+
+/** card_change_failed — the provider declined/errored a card change (docs/23). */
+export const cardChangeFailed = (
+  event: Charge,
+  match: Match,
+): CardChangeFailedEvent => ({
+  id: eventId(event.idemKey, 'card_change_failed'),
+  name: 'card_change_failed',
+  occurredAt: event.occurredAt,
+  correlationId: event.idemKey,
+  externalUserId: match.externalUserId,
+  aggregateId: match.subscriptionId ?? event.externalRef,
+  payload: { reason: declineReason(event.payload) },
+});
+
 interface IngestDeps {
   readonly enqueue: (
     input: EnqueueInput,
@@ -236,6 +266,44 @@ const recordMatchedSuccess = (
     yield* deps.publish(paymentSucceeded(event, match, applied.subscriptionId));
   });
 
+/**
+ * A card-change callback (docs/23). The applier has updated the stored token (and,
+ * for an owed change, advanced the existing payment — never create-or-extend, so the
+ * one-active-payment invariant holds). An owed change collected real money, so it
+ * records the fixation and emits `recurring_payment_succeeded` like any renewal; both
+ * the verify and owed cases emit `card_change_succeeded`. A decline emits
+ * `card_change_failed` and leaves the payment untouched.
+ */
+const recordCardChange = (
+  deps: HandleDeps,
+  event: Charge,
+  match: Match,
+  incomingId: string,
+) =>
+  Effect.gen(function* () {
+    yield* deps.repo.setMatchResult(incomingId, 'matched');
+    if (event.status !== 'succeeded') {
+      yield* deps.publish(cardChangeFailed(event, match));
+      return;
+    }
+    const applied = yield* deps.applier(event, match);
+    if (match.owed === true) {
+      yield* deps.repo.insertPayment({
+        incomingEventId: incomingId,
+        paymentId: applied.subscriptionId,
+        externalUserId: match.externalUserId,
+        amount: event.amount,
+        currency: event.currency,
+        source: event.source,
+        occurredAt: event.occurredAt,
+      });
+      yield* deps.publish(
+        recurringPaymentSucceeded(event, match, applied.subscriptionId),
+      );
+    }
+    yield* deps.publish(cardChangeSucceeded(event, match));
+  });
+
 const process = (deps: HandleDeps, event: Charge) =>
   Effect.gen(function* () {
     const incomingId = yield* deps.repo.upsertIncomingCharge(event);
@@ -245,6 +313,9 @@ const process = (deps: HandleDeps, event: Charge) =>
       yield* deps.repo.setMatchResult(incomingId, 'quarantined');
       yield* deps.publish(quarantined(event, quarantineId, incomingId));
       return;
+    }
+    if (match.kind === 'card_change') {
+      return yield* recordCardChange(deps, event, match, incomingId);
     }
     if (event.status !== 'succeeded') {
       // Matched a known checkout session but the charge did not succeed → a declined

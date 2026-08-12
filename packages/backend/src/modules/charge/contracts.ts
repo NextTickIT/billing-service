@@ -58,15 +58,18 @@ export const Charge = Schema.Struct({
 
 export type Charge = Schema.Schema.Type<typeof Charge>;
 
-/** How a matched charge relates to a subscription: a first checkout payment
- * (create-or-extend) or a charge against one that already exists (M6). */
-export type MatchKind = 'checkout' | 'recurring';
+/** How a matched charge relates to a gateway payment: a first checkout payment
+ * (create-or-extend), a charge against one that already exists (M6), or a
+ * SendPulse-initiated card change that re-tokenizes an existing payment (docs/23). */
+export type MatchKind = 'checkout' | 'recurring' | 'card_change';
 
 /**
- * The result of matching an incoming charge to a gateway subscription. A match
- * carries what the outgoing events need (docs/07) that the event itself doesn't
- * (period, method). `subscriptionId` is null for a checkout first payment — the
- * subscription is created while applying it. No match → the event is quarantined.
+ * The result of matching an incoming charge to a gateway payment. A match carries
+ * what the outgoing events need (docs/07) that the event itself doesn't (period,
+ * method). `subscriptionId` is null for a checkout first payment — the payment is
+ * created while applying it; for `card_change` it is the target payment id. `owed`
+ * is only meaningful for `card_change`: true when the session collected an owed
+ * amount (past_due/renewal_failed) vs a 0-amount verify. No match → quarantine.
  */
 export type MatchResult =
   | {
@@ -76,6 +79,7 @@ export type MatchResult =
       readonly externalUserId: string;
       readonly period: string;
       readonly method: number;
+      readonly owed?: boolean;
     }
   | { readonly matched: false };
 

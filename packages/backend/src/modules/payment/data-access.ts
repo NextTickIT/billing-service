@@ -1,5 +1,5 @@
 import { SqlClient } from '@effect/sql';
-import type { SqlError } from '@effect/sql';
+import type { SqlError, Statement } from '@effect/sql';
 import {
   type CreatePayment,
   Payment,
@@ -74,12 +74,51 @@ export interface PaymentRepo {
   readonly findByExternalUser: (
     externalUserId: string,
   ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
-  /** All payments, newest first — the operator's default table view. */
+  /**
+   * All payments, newest first — the operator's default table view. An optional
+   * filter narrows by status buckets and/or the derived "cancelling" state.
+   */
   readonly listAll: (
     limit: number,
+    filter?: PaymentListFilter,
   ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
-  /** Cancel unless already ended; returns false if it was already cancelled. */
-  readonly cancel: (id: string) => Effect.Effect<boolean, SqlError.SqlError>;
+  /**
+   * Soft-cancel: flag an active payment for lapse at its due date (docs/23).
+   * Keeps `status = active`; returns false if it was not active or already
+   * flagged, so the route can reject with a 422.
+   */
+  readonly requestCancel: (
+    id: string,
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
+  /** Reverse a pending cancel within the grace window; false if none pending. */
+  readonly clearCancelRequest: (
+    id: string,
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
+  /** At the due date, flip a cancel-pending payment to `cancelled` (idempotent). */
+  readonly markCancelledLapsed: (
+    id: string,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  /** Deferral: push the anchor + re-derived next date on an active payment. */
+  readonly defer: (
+    id: string,
+    newPeriodEnd: Date,
+    newNextPaymentDate: Date,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  /** Rewrite only the stored token — a card change must not shift any date. */
+  readonly updateToken: (
+    id: string,
+    recToken: string,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+}
+
+/**
+ * The operator list filter (docs/23): a set of status buckets OR'd together,
+ * with `cancelling` as a derived bucket (`active AND cancelRequestedAt NOT NULL`)
+ * — modelled as a boolean, not a `PaymentStatus`, since it is not an enum value.
+ */
+export interface PaymentListFilter {
+  readonly statuses?: readonly PaymentStatus[];
+  readonly cancelling?: boolean;
 }
 
 const COLUMNS = columnList(Payment.fields);
@@ -104,6 +143,7 @@ const findDue = (sql: SqlClient.SqlClient) => (now: Date, limit: number) =>
       AND "recurringTokenRef" IS NOT NULL
     ORDER BY "nextPaymentDate"
     LIMIT ${limit}
+    FOR UPDATE SKIP LOCKED
   `;
 
 const insert = (sql: SqlClient.SqlClient) => (input: CreatePayment) =>
@@ -171,19 +211,86 @@ const findByExternalUser =
       ORDER BY "createdAt" DESC
     `;
 
-const listAll = (sql: SqlClient.SqlClient) => (limit: number) =>
-  sql<Payment>`
-    SELECT ${sql.unsafe(COLUMNS)} FROM payments
-    ORDER BY "createdAt" DESC
-    LIMIT ${limit}
-  `;
+/**
+ * Turn the filter into disjoint status buckets OR'd together. `active` excludes
+ * cancel-pending rows (they render as "cancelling"); `cancelling` is that derived
+ * bucket. `sql.or` of equality fragments — not `sql.in`, whose pg quirk drops the
+ * `IN` keyword (CLAUDE.md §5).
+ */
+const listFilterConditions = (
+  sql: SqlClient.SqlClient,
+  filter: PaymentListFilter,
+): readonly Statement.Fragment[] => {
+  const conditions: Statement.Fragment[] = [];
+  for (const status of filter.statuses ?? []) {
+    conditions.push(
+      status === PaymentStatus.Active
+        ? sql`(status = ${PaymentStatus.Active} AND "cancelRequestedAt" IS NULL)`
+        : sql`status = ${status}`,
+    );
+  }
+  if (filter.cancelling === true) {
+    conditions.push(
+      sql`(status = ${PaymentStatus.Active} AND "cancelRequestedAt" IS NOT NULL)`,
+    );
+  }
+  return conditions;
+};
 
-const cancel = (sql: SqlClient.SqlClient) => (id: string) =>
+const listAll =
+  (sql: SqlClient.SqlClient) =>
+  (limit: number, filter?: PaymentListFilter) => {
+    const conditions =
+      filter === undefined ? [] : listFilterConditions(sql, filter);
+    const where =
+      conditions.length === 0 ? sql`` : sql`WHERE ${sql.or(conditions)}`;
+    return sql<Payment>`
+      SELECT ${sql.unsafe(COLUMNS)} FROM payments
+      ${where}
+      ORDER BY "createdAt" DESC
+      LIMIT ${limit}
+    `;
+  };
+
+const requestCancel = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<{ readonly id: string }>`
-    UPDATE payments SET status = ${PaymentStatus.Cancelled}, "updatedAt" = now()
-    WHERE id = ${id} AND status <> ${PaymentStatus.Cancelled}
+    UPDATE payments SET "cancelRequestedAt" = now(), "updatedAt" = now()
+    WHERE id = ${id} AND status = ${PaymentStatus.Active}
+      AND "cancelRequestedAt" IS NULL
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
+
+const clearCancelRequest = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql<{ readonly id: string }>`
+    UPDATE payments SET "cancelRequestedAt" = NULL, "updatedAt" = now()
+    WHERE id = ${id} AND status = ${PaymentStatus.Active}
+      AND "cancelRequestedAt" IS NOT NULL
+    RETURNING id
+  `.pipe(Effect.map((rows) => rows.length > 0));
+
+const markCancelledLapsed = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql`
+    UPDATE payments SET status = ${PaymentStatus.Cancelled}, "updatedAt" = now()
+    WHERE id = ${id} AND "cancelRequestedAt" IS NOT NULL
+  `.pipe(Effect.asVoid);
+
+const defer =
+  (sql: SqlClient.SqlClient) =>
+  (id: string, newPeriodEnd: Date, newNextPaymentDate: Date) =>
+    sql`
+      UPDATE payments
+      SET "currentPeriodEnd" = ${newPeriodEnd},
+          "nextPaymentDate" = ${newNextPaymentDate}, "updatedAt" = now()
+      WHERE id = ${id} AND status = ${PaymentStatus.Active}
+    `.pipe(Effect.asVoid);
+
+const updateToken =
+  (sql: SqlClient.SqlClient) => (id: string, recToken: string) =>
+    sql`
+      UPDATE payments
+      SET "recurringTokenRef" = ${recToken}, "updatedAt" = now()
+      WHERE id = ${id}
+    `.pipe(Effect.asVoid);
 
 export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   findActiveByExternalUser: findActiveByExternalUser(sql),
@@ -196,5 +303,9 @@ export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   markRenewalFailed: markRenewalFailed(sql),
   findByExternalUser: findByExternalUser(sql),
   listAll: listAll(sql),
-  cancel: cancel(sql),
+  requestCancel: requestCancel(sql),
+  clearCancelRequest: clearCancelRequest(sql),
+  markCancelledLapsed: markCancelledLapsed(sql),
+  defer: defer(sql),
+  updateToken: updateToken(sql),
 });

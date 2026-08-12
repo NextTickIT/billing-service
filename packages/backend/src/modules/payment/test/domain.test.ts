@@ -69,7 +69,11 @@ const makeFakeRepo = (existing: Payment | null) => {
     markRenewalFailed: () => Effect.die('unused'),
     findByExternalUser: () => Effect.die('unused'),
     listAll: () => Effect.die('unused'),
-    cancel: () => Effect.die('unused'),
+    requestCancel: () => Effect.die('unused'),
+    clearCancelRequest: () => Effect.die('unused'),
+    markCancelledLapsed: () => Effect.die('unused'),
+    defer: () => Effect.die('unused'),
+    updateToken: () => Effect.die('unused'),
   };
   return { repo, getInserted: () => inserted, getExtended: () => extended };
 };

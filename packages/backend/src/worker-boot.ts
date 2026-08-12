@@ -21,9 +21,20 @@ import {
   type ChargePipelineService,
 } from '@/modules/charge/domain.js';
 import { runScheduler } from '@/modules/billing/scheduler.js';
-import { cancelNotify } from '@/modules/payment/cancel.js';
-import { PAYMENT_CANCEL } from '@/modules/payment/contracts.js';
+import {
+  cancelNotify,
+  deferNotify,
+  lapseNotify,
+  reactivateNotify,
+} from '@/modules/payment/cancel.js';
+import {
+  PAYMENT_CANCEL,
+  PAYMENT_DEFER,
+  PAYMENT_LAPSE,
+  PAYMENT_REACTIVATE,
+} from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
+import { enqueue } from '@/infra/queue/store.js';
 import { WayForPay } from '@/modules/wayforpay/client.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
 import { runPoller } from '@/modules/wayforpay/poller.js';
@@ -43,6 +54,7 @@ const registerHandlers = (
   registry: TaskRegistryService,
   outbox: OutboxService,
   pipeline: ChargePipelineService,
+  sql: SqlClient.SqlClient,
 ) =>
   Effect.gen(function* () {
     yield* registry.register(PAYMENT_EVENT_RECEIVED, (payload) =>
@@ -55,6 +67,15 @@ const registerHandlers = (
       outbox.deliverFromPayload(payload),
     );
     yield* registry.register(PAYMENT_CANCEL, cancelNotify(outbox.publish));
+    yield* registry.register(
+      PAYMENT_REACTIVATE,
+      reactivateNotify(outbox.publish),
+    );
+    yield* registry.register(PAYMENT_DEFER, deferNotify(outbox.publish));
+    yield* registry.register(
+      PAYMENT_LAPSE,
+      lapseNotify(makePaymentRepo(sql), outbox.publish),
+    );
   });
 
 /** Fork the WayForPay migration poller (docs/15) if enabled. */
@@ -93,7 +114,21 @@ const startScheduler = (
     const sql = yield* SqlClient.SqlClient;
     yield* Effect.forkDaemon(
       runScheduler(
-        { subs: makePaymentRepo(sql), client, ingest, publish },
+        {
+          subs: makePaymentRepo(sql),
+          client,
+          ingest,
+          publish,
+          lapse: (sub) =>
+            enqueue(sql)({
+              messageType: PAYMENT_LAPSE,
+              idemKey: `lapse:${sub.id}`,
+              payload: {
+                paymentId: sub.id,
+                externalUserId: sub.externalUserId,
+              },
+            }).pipe(Effect.asVoid),
+        },
         {
           intervalSeconds: config.scheduler.intervalSeconds,
           batchSize: config.scheduler.batchSize,
@@ -117,7 +152,8 @@ export const bootWorker = (config: AppConfig) =>
     const registry = yield* TaskRegistry;
     const outbox = yield* Outbox;
     const pipeline = yield* ChargePipeline;
-    yield* registerHandlers(registry, outbox, pipeline);
+    const sql = yield* SqlClient.SqlClient;
+    yield* registerHandlers(registry, outbox, pipeline, sql);
     yield* startPoller(config, pipeline.ingest);
     yield* startScheduler(config, pipeline.ingest, outbox.publish);
     const queue = yield* Queue;

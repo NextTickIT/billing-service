@@ -14,6 +14,7 @@ import { makeCompositeMatcher } from '@/modules/charge/contracts.js';
 import { makeChargePipelineLayer } from '@/modules/charge/domain.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
+  makeCardChangeMatcher,
   makeCheckoutApplier,
   makeCheckoutMatcher,
 } from '@/modules/checkout/domain.js';
@@ -90,6 +91,7 @@ export const makeWorkerLayer = (config: AppConfig) => {
   const pipeline = makeChargePipelineLayer(
     (sql) =>
       makeCompositeMatcher([
+        makeCardChangeMatcher(makeCheckoutRepo(sql)),
         makeCheckoutMatcher(makeCheckoutRepo(sql)),
         makeRecurringMatcher(makePaymentRepo(sql)),
       ]),

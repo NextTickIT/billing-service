@@ -14,6 +14,8 @@ import {
 } from '@/modules/charge/contracts.js';
 import type { ChargeRepo } from '@/modules/charge/data-access.js';
 import {
+  cardChangeFailed,
+  cardChangeSucceeded,
   handleChargeEvent,
   ingest,
   initialPaymentFailed,
@@ -21,6 +23,16 @@ import {
   rebindFromPayload,
   recurringPaymentSucceeded,
 } from '@/modules/charge/domain.js';
+
+const cardChangeMatch = (owed: boolean): MatchResult => ({
+  matched: true,
+  kind: 'card_change',
+  subscriptionId: 'pay_1',
+  externalUserId: 'sp:cc',
+  period: 'P1M',
+  method: 0,
+  owed,
+});
 
 /** The JSON-encoded `payment_event_received` payload the handler decodes. */
 const encodedPayload = (idemKey: string) => ({
@@ -344,4 +356,99 @@ it('quarantined carries a null user and references the quarantine record', () =>
   expect(event.externalUserId).toBeNull();
   expect(event.aggregateId).toBe('q_1');
   expect(event.payload.incomingEventId).toBe('inc_1');
+});
+
+it.effect(
+  'a verify card-change (not owed) emits only card_change_succeeded, no fixation',
+  () =>
+    Effect.gen(function* () {
+      const { repo, payments } = makeFakeRepo();
+      const pub = recordingPublish();
+
+      yield* handleChargeEvent({
+        repo,
+        matcher: matcherOf(cardChangeMatch(false)),
+        applier: applierOf({ subscriptionId: 'pay_1', created: false }),
+        publish: pub.publish,
+      })(encodedPayload('cc1'));
+
+      expect(payments.size).toBe(0); // no money moved → no charge fixation
+      expect(pub.events.map((e) => e.name)).toEqual(['card_change_succeeded']);
+      expect(pub.events[0]?.aggregateId).toBe('pay_1');
+      expect(pub.events[0]?.id).toBe('evt_cc1:card_change');
+    }),
+);
+
+it.effect(
+  'an owed card-change emits recurring_payment_succeeded then card_change_succeeded and records a fixation',
+  () =>
+    Effect.gen(function* () {
+      const { repo, payments } = makeFakeRepo();
+      const pub = recordingPublish();
+
+      yield* handleChargeEvent({
+        repo,
+        matcher: matcherOf(cardChangeMatch(true)),
+        applier: applierOf({ subscriptionId: 'pay_1', created: false }),
+        publish: pub.publish,
+      })(encodedPayload('cc2'));
+
+      expect(payments.size).toBe(1); // the collected charge is fixed
+      expect(pub.events.map((e) => e.name)).toEqual([
+        'recurring_payment_succeeded',
+        'card_change_succeeded',
+      ]);
+    }),
+);
+
+it.effect(
+  'a declined card-change emits only card_change_failed and never applies',
+  () =>
+    Effect.gen(function* () {
+      const { repo, payments } = makeFakeRepo();
+      const pub = recordingPublish();
+
+      yield* handleChargeEvent({
+        repo,
+        matcher: matcherOf(cardChangeMatch(true)),
+        applier: noApplier, // a failed card-change must not touch the payment
+        publish: pub.publish,
+      })({
+        ...encodedPayload('cc3'),
+        status: 'failed',
+        payload: { reason: 'Declined' },
+      });
+
+      expect(payments.size).toBe(0);
+      expect(pub.events.map((e) => e.name)).toEqual(['card_change_failed']);
+      expect(pub.events[0]?.id).toBe('evt_cc3:card_change_failed');
+    }),
+);
+
+it('cardChangeSucceeded/Failed carry the method and decline reason', () => {
+  const ok = cardChangeSucceeded(decodedCharge('cc4'), {
+    matched: true,
+    kind: 'card_change',
+    subscriptionId: 'pay_2',
+    externalUserId: 'sp:cc',
+    period: 'P1M',
+    method: 1,
+  });
+  expect(ok.name).toBe('card_change_succeeded');
+  expect(ok.payload).toEqual({ method: 1 });
+  expect(ok.aggregateId).toBe('pay_2');
+
+  const bad = cardChangeFailed(
+    { ...decodedCharge('cc5'), status: 'failed', payload: { reason: 'Declined' } },
+    {
+      matched: true,
+      kind: 'card_change',
+      subscriptionId: 'pay_2',
+      externalUserId: 'sp:cc',
+      period: 'P1M',
+      method: 1,
+    },
+  );
+  expect(bad.name).toBe('card_change_failed');
+  expect(bad.payload).toEqual({ reason: 'Declined' });
 });

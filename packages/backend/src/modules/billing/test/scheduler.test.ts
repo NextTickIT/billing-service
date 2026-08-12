@@ -19,6 +19,8 @@ import {
   type SchedulerDeps,
 } from '@/modules/billing/scheduler.js';
 
+interface LapseCalls { lapsed: Payment[] }
+
 const config = { intervalSeconds: 60, batchSize: 10 };
 
 const baseSub: Payment = {
@@ -43,6 +45,7 @@ const baseSub: Payment = {
 const die = () => Effect.die('unused');
 
 const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
+  const lapseCalls: LapseCalls = { lapsed: [] };
   const calls = {
     advanced: null as { id: string; anchor: AdvanceAnchor } | null,
     retry: null as { id: string; state: RetryState } | null,
@@ -70,7 +73,11 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
     extend: die,
     findByExternalUser: die,
     listAll: die,
-    cancel: die,
+    requestCancel: die,
+    clearCancelRequest: die,
+    markCancelledLapsed: die,
+    defer: die,
+    updateToken: die,
   };
   const deps: SchedulerDeps = {
     subs,
@@ -83,8 +90,12 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
       Effect.sync(() => {
         calls.published.push(event);
       }),
+    lapse: (payment) =>
+      Effect.sync(() => {
+        lapseCalls.lapsed.push(payment);
+      }),
   };
-  return { deps, calls };
+  return { deps, calls, lapseCalls };
 };
 
 it.effect(
@@ -208,5 +219,47 @@ it.effect(
       expect(
         calls.advanced?.anchor.nextPaymentDate.toISOString().slice(0, 10),
       ).toBe('2026-03-15');
+    }),
+);
+
+it.effect(
+  'a cancel-pending payment lapses instead of being charged',
+  () =>
+    Effect.gen(function* () {
+      const sub: Payment = {
+        ...baseSub,
+        cancelRequestedAt: new Date('2026-01-20T00:00:00Z'),
+      };
+      const { deps, calls, lapseCalls } = makeDeps(sub, {
+        transactionStatus: 'Approved',
+        createdDate: '1700000000',
+      });
+
+      yield* scheduleTick(deps, config);
+
+      expect(lapseCalls.lapsed).toHaveLength(1);
+      expect(lapseCalls.lapsed[0]?.id).toBe('sub-1');
+      // No charge was attempted and no payment was advanced or published
+      expect(calls.advanced).toBeNull();
+      expect(calls.ingested).toHaveLength(0);
+      expect(calls.published).toHaveLength(0);
+    }),
+);
+
+it.effect(
+  'a normal due payment is charged (lapse branch not taken)',
+  () =>
+    Effect.gen(function* () {
+      // baseSub has cancelRequestedAt: null — normal path
+      const { deps, calls, lapseCalls } = makeDeps(baseSub, {
+        transactionStatus: 'Approved',
+        createdDate: '1700000000',
+      });
+
+      yield* scheduleTick(deps, config);
+
+      expect(lapseCalls.lapsed).toHaveLength(0);
+      expect(calls.advanced?.id).toBe('sub-1');
+      expect(calls.ingested).toHaveLength(1);
     }),
 );

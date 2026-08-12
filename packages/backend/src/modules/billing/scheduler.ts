@@ -27,6 +27,7 @@ export interface SchedulerDeps {
   readonly publish: (
     event: DomainEvent,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly lapse: (sub: Payment) => Effect.Effect<void, SqlError.SqlError>;
 }
 
 export interface SchedulerConfig {
@@ -68,6 +69,13 @@ const onFailure = (
 
 const chargeOne = (deps: SchedulerDeps, sub: Payment, now: Date) =>
   Effect.gen(function* () {
+    if (sub.cancelRequestedAt !== null) {
+      // A soft-cancelled payment lapses at the due date instead of charging —
+      // no charge, no retry ladder (docs/23). The lapse is enqueued (not published
+      // inline) so the worker-owned outbox emits the terminal event durably.
+      yield* deps.lapse(sub);
+      return;
+    }
     if (sub.recurringTokenRef === null) {
       return; // no token on file — nothing to charge (findDue filters these out)
     }

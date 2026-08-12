@@ -449,6 +449,7 @@ const driveScheduler = Effect.gen(function* () {
       },
       ingest: pipeline.ingest,
       publish: outbox.publish,
+      lapse: () => Effect.void,
     },
     { intervalSeconds: 60, batchSize: 10 },
   );
@@ -517,7 +518,7 @@ const driveCancel = Effect.gen(function* () {
     firstFailureAt: null,
     retryAttempt: 0,
   });
-  yield* subs.cancel(created.id);
+  yield* subs.requestCancel(created.id);
   yield* enqueue(sql)({
     messageType: PAYMENT_CANCEL,
     idemKey: `cancel:${created.id}`,
@@ -536,8 +537,14 @@ const assertCancel = async (
   await eq(
     query,
     `SELECT status::text FROM payments`,
-    '3',
-    'subscription is cancelled (FR-012)',
+    '0',
+    'payment stays active during the grace window (soft-cancel, docs/23)',
+  );
+  await eq(
+    query,
+    `SELECT ("cancelRequestedAt" IS NOT NULL)::text FROM payments`,
+    'true',
+    'cancellation is pending until the due date (docs/23)',
   );
   await eq(
     query,

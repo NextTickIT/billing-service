@@ -39,7 +39,11 @@ const repo = (found: Payment | null): PaymentRepo => ({
   markRenewalFailed: die,
   findByExternalUser: die,
   listAll: die,
-  cancel: die,
+  requestCancel: die,
+  clearCancelRequest: die,
+  markCancelledLapsed: die,
+  defer: die,
+  updateToken: die,
 });
 
 const event = (

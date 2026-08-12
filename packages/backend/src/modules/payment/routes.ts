@@ -4,10 +4,13 @@ import {
   CancelPaymentRequest,
   CreateAccepted,
   CreatePaymentRequest,
+  DeferAccepted,
+  DeferPaymentRequest,
   Payment,
   PaymentDetail,
   PaymentMethod,
   PaymentStatus,
+  ReactivateAccepted,
   Role,
 } from '@billing-service/shared';
 import { Clock, Effect, Option, Schema } from 'effect';
@@ -26,8 +29,16 @@ import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { authenticate, requireRole } from '@/modules/auth/domain.js';
 import { makeChargeRepo } from '@/modules/charge/data-access.js';
-import { PAYMENT_CANCEL } from '@/modules/payment/contracts.js';
-import { makePaymentRepo } from '@/modules/payment/data-access.js';
+import {
+  PAYMENT_CANCEL,
+  PAYMENT_DEFER,
+  PAYMENT_REACTIVATE,
+} from '@/modules/payment/contracts.js';
+import {
+  makePaymentRepo,
+  type PaymentListFilter,
+} from '@/modules/payment/data-access.js';
+import { computeDeferral } from '@/modules/payment/domain.js';
 import { addPeriod, isValidPeriod } from '@/modules/payment/period.js';
 
 const route = makeRoute((app: FastifyInstance) => app.runtime);
@@ -54,6 +65,29 @@ const readId = (request: FastifyRequest): string =>
 const readExternalUser = (request: FastifyRequest): string =>
   (request.query as { readonly externalUserId?: string }).externalUserId ?? '';
 
+interface ListQuery {
+  readonly status?: string | readonly string[];
+  readonly cancelling?: string;
+}
+
+const PAYMENT_STATUSES: readonly PaymentStatus[] =
+  Object.values(PaymentStatus).filter(
+    (v): v is PaymentStatus => typeof v === 'number',
+  );
+
+/** Coerce the repeated `status` + `cancelling` query params into a filter. */
+const readListFilter = (request: FastifyRequest): PaymentListFilter => {
+  const query = request.query as ListQuery;
+  const raw = query.status;
+  const values = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
+  const statuses = values
+    .map(Number)
+    .filter((n): n is PaymentStatus =>
+      PAYMENT_STATUSES.includes(n),
+    );
+  return { statuses, cancelling: query.cancelling === 'true' };
+};
+
 const listPayments = (_input: unknown, request: FastifyRequest) =>
   Effect.gen(function* () {
     assertBffSecret(request);
@@ -62,7 +96,7 @@ const listPayments = (_input: unknown, request: FastifyRequest) =>
     const externalUserId = readExternalUser(request);
     const repo = makePaymentRepo(sql);
     return externalUserId === ''
-      ? yield* repo.listAll(500)
+      ? yield* repo.listAll(500, readListFilter(request))
       : yield* repo.findByExternalUser(externalUserId);
   });
 
@@ -131,10 +165,12 @@ const cancelPayment = (
     if (Option.isNone(found)) {
       return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
-    const cancelled = yield* repo.cancel(id);
-    if (!cancelled) {
+    const requested = yield* repo.requestCancel(id);
+    if (!requested) {
       return yield* Effect.fail(
-        new UnprocessableEntity({ reason: 'payment already cancelled' }),
+        new UnprocessableEntity({
+          reason: 'payment is not active (cannot soft-cancel)',
+        }),
       );
     }
     const reason = body.reason ?? 'operator';
@@ -155,6 +191,104 @@ const cancelPayment = (
       },
     });
     return { status: 'cancelled' as const };
+  });
+
+const reactivatePayment = (_input: unknown, request: FastifyRequest) =>
+  Effect.gen(function* () {
+    assertBffSecret(request);
+    const actor = yield* operatorActor(request);
+    const id = readId(request);
+    const sql = yield* SqlClient.SqlClient;
+    const repo = makePaymentRepo(sql);
+    const found = yield* repo.findById(id);
+    if (Option.isNone(found)) {
+      return yield* Effect.fail(new NotFound({ resource: 'payment' }));
+    }
+    const ok = yield* repo.clearCancelRequest(id);
+    if (!ok) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({
+          reason: 'payment is not pending cancellation',
+        }),
+      );
+    }
+    const at = yield* Clock.currentTimeMillis;
+    yield* makeChargeRepo(sql).insertAudit({
+      actor: Role[actor.role],
+      action: 'reactivate_payment',
+      targetType: 'payment',
+      targetId: id,
+      detail: {},
+    });
+    yield* enqueue(sql)({
+      messageType: PAYMENT_REACTIVATE,
+      idemKey: `reactivate:${id}:${at.toString()}`,
+      payload: {
+        paymentId: id,
+        externalUserId: found.value.externalUserId,
+        at,
+      },
+    });
+    return { status: 'active' as const };
+  });
+
+/** Deferral preconditions (docs/23): only an active payment, 1..30 days. */
+const assertDeferrable = (payment: Payment, days: number) => {
+  if (payment.status !== PaymentStatus.Active) {
+    return Effect.fail(
+      new UnprocessableEntity({
+        reason: 'only an active payment can be deferred',
+      }),
+    );
+  }
+  if (days < 1 || days > 30) {
+    return Effect.fail(
+      new UnprocessableEntity({ reason: 'days must be between 1 and 30' }),
+    );
+  }
+  return Effect.void;
+};
+
+const deferPayment = (
+  body: Schema.Schema.Type<typeof DeferPaymentRequest>,
+  request: FastifyRequest,
+) =>
+  Effect.gen(function* () {
+    assertBffSecret(request);
+    const actor = yield* operatorActor(request);
+    const id = readId(request);
+    const sql = yield* SqlClient.SqlClient;
+    const repo = makePaymentRepo(sql);
+    const found = yield* repo.findById(id);
+    if (Option.isNone(found)) {
+      return yield* Effect.fail(new NotFound({ resource: 'payment' }));
+    }
+    yield* assertDeferrable(found.value, body.days);
+    const { newPeriodEnd, newNextPaymentDate } = computeDeferral(
+      found.value,
+      body.days,
+    );
+    yield* repo.defer(id, newPeriodEnd, newNextPaymentDate);
+    const at = yield* Clock.currentTimeMillis;
+    yield* makeChargeRepo(sql).insertAudit({
+      actor: Role[actor.role],
+      action: 'defer_payment',
+      targetType: 'payment',
+      targetId: id,
+      detail: { days: body.days },
+    });
+    yield* enqueue(sql)({
+      messageType: PAYMENT_DEFER,
+      idemKey: `defer:${id}:${at.toString()}`,
+      payload: {
+        paymentId: id,
+        externalUserId: found.value.externalUserId,
+        newPeriodEnd: newPeriodEnd.toISOString(),
+        days: body.days,
+        at,
+      },
+    });
+    return { status: 'deferred' as const, newPeriodEnd };
   });
 
 export default function payments(fastify: FastifyInstance): void {
@@ -190,5 +324,23 @@ export default function payments(fastify: FastifyInstance): void {
     output: CancelAccepted,
     status: 202,
     handler: cancelPayment,
+  });
+
+  route(fastify, {
+    method: 'POST',
+    path: '/api/payment/:id/reactivate',
+    input: Schema.Unknown,
+    output: ReactivateAccepted,
+    status: 202,
+    handler: reactivatePayment,
+  });
+
+  route(fastify, {
+    method: 'POST',
+    path: '/api/payment/:id/defer',
+    input: DeferPaymentRequest,
+    output: DeferAccepted,
+    status: 202,
+    handler: deferPayment,
   });
 }
