@@ -1,5 +1,9 @@
 import type { SqlError } from '@effect/sql';
-import { CheckoutSessionKind, PaymentMethod } from '@billing-service/shared';
+import {
+  CheckoutSessionKind,
+  PaymentMethod,
+  PaymentStatus,
+} from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
 import type {
@@ -93,6 +97,10 @@ const recToken = (payload: Record<string, unknown>): string | null =>
     ? payload['recToken']
     : null;
 
+/** A payment that still owes for the current period (a card change collects it). */
+const owesMoney = (status: PaymentStatus): boolean =>
+  status === PaymentStatus.PastDue || status === PaymentStatus.RenewalFailed;
+
 /**
  * Card-change applier (docs/23): rewrite the stored token on the target payment and,
  * for an owed change, advance the SAME payment (never create-or-extend, so the
@@ -114,7 +122,12 @@ const applyCardChange =
       }
       if (owed) {
         const found = yield* payments.findById(paymentId);
-        if (Option.isSome(found)) {
+        // Guard the advance on the payment still OWING (past_due/renewal_failed):
+        // `advanceAfterSuccess` moves the anchor unconditionally, so a reaper
+        // redelivery would advance a second period. A redelivered callback finds the
+        // payment already `active` and skips — the anchor moves exactly once. The
+        // token update, the fixation, and the emitted events are id-idempotent.
+        if (Option.isSome(found) && owesMoney(found.value.status)) {
           const p = found.value;
           const currentPeriodEnd = addPeriod(p.currentPeriodEnd, p.period);
           yield* payments.advanceAfterSuccess(paymentId, {
