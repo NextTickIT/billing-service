@@ -43,6 +43,7 @@ export default {
     declined: 'Payment declined. Please try again.',
     periodLabel: 'Billing period',
     expiresAt: 'Valid until',
+    redirecting: 'Redirecting to card verification…',
   },
   session: {
     loginTitle: 'Operator login',

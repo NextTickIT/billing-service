@@ -4,6 +4,8 @@ import {
   ackSignatureBase,
   callbackSignatureBase,
   purchaseSignatureBase,
+  signVerify,
+  verifySignatureBase,
 } from '@/modules/wayforpay/signature.js';
 
 describe('purchaseSignatureBase', () => {
@@ -45,5 +47,27 @@ describe('callbackSignatureBase', () => {
 describe('ackSignatureBase', () => {
   test('orderReference;status;time', () => {
     expect(ackSignatureBase('o', 'accept', 100)).toBe('o;accept;100');
+  });
+});
+
+describe('verifySignatureBase / signVerify', () => {
+  const fields = {
+    merchantAccount: 'test_merch_n1',
+    merchantDomainName: 'shop.example',
+    orderReference: 'chk_abc',
+    amount: 0,
+    currency: 'UAH',
+  };
+
+  test('joins the five verify fields in order', () => {
+    expect(verifySignatureBase(fields)).toBe(
+      'test_merch_n1;shop.example;chk_abc;0;UAH',
+    );
+  });
+
+  test('signVerify reproduces a fixed vector (locks the algorithm)', () => {
+    expect(signVerify(fields, 'flk3409refn54t54t*FNJRET')).toBe(
+      '9748722f6530c42c5eaf41adef6bd2ea',
+    );
   });
 });

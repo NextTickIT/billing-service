@@ -61,6 +61,8 @@ export interface WayForPayConfig {
   readonly maxWindowSeconds: number;
   /** Hosted checkout page the Purchase form posts to. */
   readonly checkoutUrl: string;
+  /** Card Verify (0-amount tokenization) endpoint the server POSTs JSON to. */
+  readonly verifyUrl: string;
   /** serviceUrl (our callback) and returnUrl (browser) sent with a Purchase. */
   readonly serviceUrl: string;
   readonly returnUrl: string;
@@ -146,6 +148,8 @@ const loadW4pPollerConfig = () => ({
 const loadW4pCheckoutConfig = () => ({
   checkoutUrl:
     process.env['W4P_CHECKOUT_URL'] ?? 'https://secure.wayforpay.com/pay',
+  verifyUrl:
+    process.env['W4P_VERIFY_URL'] ?? 'https://secure.wayforpay.com/verify',
   serviceUrl: process.env['W4P_SERVICE_URL'] ?? '',
   returnUrl:
     process.env['W4P_RETURN_URL'] ??

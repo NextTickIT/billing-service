@@ -88,6 +88,34 @@ export const signPurchase = (
   secretKey: string,
 ): string => hmacMd5Hex(purchaseSignatureBase(f), secretKey);
 
+export interface VerifySignatureFields {
+  readonly merchantAccount: string;
+  readonly merchantDomainName: string;
+  readonly orderReference: string;
+  readonly amount: number;
+  readonly currency: string;
+}
+
+/**
+ * Card Verify (0-amount tokenization) signature base (wiki 852189): exactly these
+ * five fields, `;`-joined. Unlike Purchase there are no products — a verify has no
+ * order lines, so the base stops after `currency`. Live-confirmed against merchant
+ * nexttick_it1 (docs/24).
+ */
+export const verifySignatureBase = (f: VerifySignatureFields): string =>
+  [
+    f.merchantAccount,
+    f.merchantDomainName,
+    f.orderReference,
+    String(f.amount),
+    f.currency,
+  ].join(';');
+
+export const signVerify = (
+  f: VerifySignatureFields,
+  secretKey: string,
+): string => hmacMd5Hex(verifySignatureBase(f), secretKey);
+
 export interface CallbackSignatureFields {
   readonly merchantAccount: string;
   readonly orderReference: string;

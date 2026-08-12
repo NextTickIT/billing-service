@@ -43,6 +43,7 @@ export default {
     declined: 'Платіж відхилено. Спробуйте ще раз.',
     periodLabel: 'Розрахунковий період',
     expiresAt: 'Дійсне до',
+    redirecting: 'Перенаправлення на перевірку картки…',
   },
   session: {
     loginTitle: 'Вхід для операторів',

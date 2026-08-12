@@ -12,8 +12,8 @@ import {
   SelectMethod,
   SessionCreated,
 } from '@billing-service/shared';
-import { Clock, Effect, Schema } from 'effect';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { Clock, Effect, Redacted, Schema } from 'effect';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
@@ -22,12 +22,14 @@ import {
   NotFound,
   Unauthorized,
 } from '@/infra/http/errors.js';
+import { toHttp } from '@/infra/http/reply.js';
 import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
+import { makeRateLimiter } from '@/infra/rate-limiter.js';
 import { PAYMENT_EVENT_RECEIVED } from '@/modules/charge/contracts.js';
 import { authenticateToken } from '@/modules/auth/domain.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
-import { checkoutPath } from '@/modules/checkout/domain.js';
+import { checkoutPath, verifyCardChange } from '@/modules/checkout/domain.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import {
   ackResponse,
@@ -35,6 +37,7 @@ import {
   normalizeCallback,
   verifyCallback,
 } from '@/modules/wayforpay/callback.js';
+import { makeWayForPayClient } from '@/modules/wayforpay/client.js';
 import { buildPurchase } from '@/modules/wayforpay/purchase.js';
 
 const CallbackAckSchema = Schema.Struct({
@@ -88,8 +91,8 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
     if (found._tag === 'None') {
       return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
     }
-    const { amount, currency, period, status, expiresAt } = found.value;
-    return { amount, currency, period, status, expiresAt };
+    const { amount, currency, period, status, kind, expiresAt } = found.value;
+    return { amount, currency, period, status, kind, expiresAt };
   });
 
 const pay = (input: SelectMethod, request: FastifyRequest) =>
@@ -182,6 +185,74 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
     return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };
   });
 
+/** Build a WayForPay client bound to app config, with a fresh per-request rate
+ * limiter (the app runtime carries no RateLimiterService; a card verify is a single
+ * user-driven call, so a short-lived limiter is enough to stay within NFR-03). */
+const w4pClientFor = (
+  config: FastifyRequest['server']['appConfig']['wayforpay'],
+) =>
+  Effect.gen(function* () {
+    const rateLimiter = yield* makeRateLimiter(config.rateLimitRps);
+    return makeWayForPayClient({
+      merchantAccount: config.merchantAccount,
+      merchantSecretKey: Redacted.value(config.merchantSecretKey),
+      merchantPassword: Redacted.value(config.merchantPassword),
+      merchantDomainName: config.merchantDomainName,
+      apiUrl: config.apiUrl,
+      regularApiUrl: config.regularApiUrl,
+      verifyUrl: config.verifyUrl,
+      fetch: (url, init) => globalThis.fetch(url, init),
+      rateLimiter,
+    });
+  });
+
+/** Compose the verify step from request-scoped services (client + repo + config). */
+const verifyPage = (request: FastifyRequest) =>
+  Effect.gen(function* () {
+    const config = request.server.appConfig.wayforpay;
+    const sql = yield* SqlClient.SqlClient;
+    const client = yield* w4pClientFor(config);
+    return yield* verifyCardChange(
+      {
+        repo: makeCheckoutRepo(sql),
+        client,
+        cardVerifyEnabled: config.cardVerifyEnabled,
+        returnUrl: config.returnUrl,
+        serviceUrl: config.serviceUrl,
+      },
+      readId(request),
+    );
+  });
+
+/**
+ * Serve the verify widget with a RAW reply: the response is text/html, not the JSON
+ * that makeRoute's DSL encodes, so this route bypasses it. A typed failure renders
+ * through the shared `toHttp` transform (a provider transport error is unmapped → 500,
+ * which is acceptable while the live verify call is unconfirmed).
+ */
+const serveVerify =
+  (fastify: FastifyInstance) =>
+  async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    try {
+      // assertBffSecret throws synchronously (a defect, not a typed failure), so gate
+      // here — outside the effect — where the throw maps cleanly to its HTTP reply.
+      assertBffSecret(request);
+    } catch (error) {
+      const http = toHttp(error);
+      await reply.status(http.status).send(http.body);
+      return;
+    }
+    const result = await fastify.runtime.runPromise(
+      verifyPage(request).pipe(Effect.either),
+    );
+    if (result._tag === 'Right') {
+      await reply.type('text/html; charset=utf-8').send(result.right);
+      return;
+    }
+    const http = toHttp(result.left);
+    await reply.status(http.status).send(http.body);
+  };
+
 export default function checkout(fastify: FastifyInstance): void {
   route(fastify, {
     method: 'POST',
@@ -216,6 +287,14 @@ export default function checkout(fastify: FastifyInstance): void {
     input: SelectMethod,
     output: PurchaseForm,
     handler: pay,
+  });
+
+  // Card Verify widget — served as raw text/html, so it is registered directly
+  // rather than through makeRoute's JSON DSL.
+  fastify.route({
+    method: 'GET',
+    url: '/api/checkout-sessions/:id/verify',
+    handler: serveVerify(fastify),
   });
 
   route(fastify, {

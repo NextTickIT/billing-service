@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue';
+import { computed, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
-import { CheckoutSessionStatus } from '@billing-service/shared';
+import {
+  CheckoutSessionKind,
+  CheckoutSessionStatus,
+} from '@billing-service/shared';
 import { useCheckoutStore } from './store.js';
 import { formatDate } from '@/app/datetime.js';
 import { useMoney } from '@/app/money.js';
@@ -19,7 +22,33 @@ const store = useCheckoutStore();
 
 const id = route.params['id'] as string;
 
-onMounted(() => { void store.load(id); });
+// A 0-amount card change is a WayForPay Card Verify: the cardholder enters the new
+// card in the provider's hosted widget, not our page. The backend serves that widget
+// as text/html, so hand off with a full-page navigation (not a fetch).
+const isVerify = computed(
+  () =>
+    store.session?.kind === CheckoutSessionKind.CardChange &&
+    store.session.amount === 0,
+);
+
+const isPayable = computed(
+  () =>
+    store.session?.status !== CheckoutSessionStatus.Completed &&
+    store.session?.status !== CheckoutSessionStatus.Expired,
+);
+
+onMounted(() => {
+  void store.load(id);
+});
+
+watch(
+  () => store.session,
+  () => {
+    if (isVerify.value && isPayable.value) {
+      window.location.href = `/api/checkout-sessions/${id}/verify`;
+    }
+  },
+);
 
 function submitW4PForm(action: string, fields: Record<string, unknown>): void {
   const form = document.createElement('form');
@@ -78,6 +107,10 @@ async function onPay(): Promise<void> {
           {{ t('checkout.completed') }}
         </div>
 
+        <div v-else-if="isVerify" class="checkout__msg">
+          {{ t('checkout.redirecting') }}
+        </div>
+
         <div v-else class="checkout__content">
           <div class="checkout__row">
             <span class="checkout__label">{{ t('common.amount') }}</span>
@@ -128,9 +161,15 @@ async function onPay(): Promise<void> {
   font-size: 14px;
 }
 
-.checkout__msg--error { color: var(--red); }
-.checkout__msg--warn { color: var(--amber); }
-.checkout__msg--ok { color: var(--green); }
+.checkout__msg--error {
+  color: var(--red);
+}
+.checkout__msg--warn {
+  color: var(--amber);
+}
+.checkout__msg--ok {
+  color: var(--green);
+}
 
 .checkout__content {
   display: flex;
@@ -145,8 +184,12 @@ async function onPay(): Promise<void> {
   border-bottom: 1px solid var(--line);
 }
 
-.checkout__label { color: var(--dim); }
-.checkout__value { color: var(--txt); }
+.checkout__label {
+  color: var(--dim);
+}
+.checkout__value {
+  color: var(--txt);
+}
 
 .checkout__action {
   margin-top: 16px;

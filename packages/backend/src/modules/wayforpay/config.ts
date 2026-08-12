@@ -18,6 +18,8 @@ export interface W4pConfigService {
   readonly merchantDomainName: string;
   /** Hosted checkout page the Purchase form posts to. */
   readonly checkoutUrl: string;
+  /** Card Verify (0-amount tokenization) endpoint the server POSTs JSON to. */
+  readonly verifyUrl: string;
   /** serviceUrl (our callback) + returnUrl (browser) sent with a Purchase. */
   readonly serviceUrl: string;
   readonly returnUrl: string;

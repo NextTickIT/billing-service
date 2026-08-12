@@ -93,11 +93,12 @@ export type CardChangeRequest = Schema.Schema.Type<typeof CardChangeRequest>;
 
 /**
  * GET /api/checkout-sessions/:id response (public, BFF-proxied, AC-9):
- * amount/currency/period/status/expiresAt only — no externalUserId so subscriber
- * data does not appear on the public checkout page.
+ * amount/currency/period/status/kind/expiresAt only — no externalUserId so subscriber
+ * data does not appear on the public checkout page. `kind` lets the checkout page tell
+ * a 0-amount card-change (verify widget) from a priced Purchase.
  */
 export const CheckoutSessionPublic = CheckoutSession.pipe(
-  Schema.pick('amount', 'currency', 'period', 'status', 'expiresAt'),
+  Schema.pick('amount', 'currency', 'period', 'status', 'kind', 'expiresAt'),
 );
 
 export type CheckoutSessionPublic = Schema.Schema.Type<

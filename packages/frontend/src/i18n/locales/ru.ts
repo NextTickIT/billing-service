@@ -43,6 +43,7 @@ export default {
     declined: 'Платёж отклонён. Попробуйте ещё раз.',
     periodLabel: 'Расчётный период',
     expiresAt: 'Действительно до',
+    redirecting: 'Перенаправление на проверку карты…',
   },
   session: {
     loginTitle: 'Вход для операторов',

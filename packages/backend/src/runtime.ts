@@ -60,6 +60,7 @@ const wayForPayLayer = (config: AppConfig) =>
         regularApiUrl: config.wayforpay.regularApiUrl,
         merchantDomainName: config.wayforpay.merchantDomainName,
         checkoutUrl: config.wayforpay.checkoutUrl,
+        verifyUrl: config.wayforpay.verifyUrl,
         serviceUrl: config.wayforpay.serviceUrl,
         returnUrl: config.wayforpay.returnUrl,
       }),

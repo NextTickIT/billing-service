@@ -20,6 +20,7 @@ const config: W4pConfigService = {
   regularApiUrl: '',
   merchantDomainName: 'd',
   checkoutUrl: '',
+  verifyUrl: '',
   serviceUrl: '',
   returnUrl: '',
 };

@@ -16,6 +16,7 @@ const config: W4pConfigService = {
   regularApiUrl: '',
   merchantDomainName: 'shop.example',
   checkoutUrl: 'https://secure.wayforpay.com/pay',
+  verifyUrl: 'https://secure.wayforpay.com/verify',
   serviceUrl: 'https://us/callback',
   returnUrl: 'https://us/return',
 };
