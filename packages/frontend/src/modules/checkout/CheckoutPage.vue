@@ -23,8 +23,10 @@ const store = useCheckoutStore();
 const id = route.params['id'] as string;
 
 // A 0-amount card change is a WayForPay Card Verify: the cardholder enters the new
-// card in the provider's hosted widget, not our page. The backend serves that widget
-// as text/html, so hand off with a full-page navigation (not a fetch).
+// card in the provider's hosted widget, not our page. It hands off the SAME way as a
+// normal Purchase — we fetch a signed form (POST /pay) and the browser posts it
+// directly to WayForPay — the only difference being that a verify needs no button, so
+// we auto-start the handoff the moment the session loads.
 const isVerify = computed(
   () =>
     store.session?.kind === CheckoutSessionKind.CardChange &&
@@ -45,7 +47,9 @@ watch(
   () => store.session,
   () => {
     if (isVerify.value && isPayable.value) {
-      window.location.href = `/api/checkout-sessions/${id}/verify`;
+      // Fetch the verify form via POST /pay; the `watch(() => store.form)` below
+      // submits it to WayForPay, exactly like a user-clicked Purchase.
+      void store.pay(id);
     }
   },
 );

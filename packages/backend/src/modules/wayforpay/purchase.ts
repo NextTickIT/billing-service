@@ -2,7 +2,7 @@ import { type CheckoutSession, CurrencyCode } from '@billing-service/shared';
 import { Redacted } from 'effect';
 
 import type { W4pConfigService } from '@/modules/wayforpay/config.js';
-import { signPurchase } from '@/modules/wayforpay/signature.js';
+import { signPurchase, signVerify } from '@/modules/wayforpay/signature.js';
 
 /** A ready-to-submit WayForPay Purchase form: POST `fields` to `action`. */
 export interface PurchaseForm {
@@ -57,3 +57,42 @@ export const buildPurchase = (
     },
   };
 };
+
+/**
+ * Build a signed WayForPay Card Verify (0-amount tokenization, wiki 852189 / docs/24)
+ * as a ready-to-submit form — the SAME handoff shape as {@link buildPurchase}. The
+ * hosted `/verify` needs a real browser FORM POST (top-level navigation), not a
+ * server-side JSON request, so the browser submits `fields` to `action` directly and
+ * the cardholder fills in the widget. A verify holds no money: amount is 0 and
+ * currency UAH, and the 5-field signature covers exactly account;domain;order;amount;currency.
+ */
+export const buildVerify = (
+  config: W4pConfigService,
+  session: CheckoutSession,
+): PurchaseForm => ({
+  action: config.verifyUrl,
+  fields: {
+    merchantAccount: config.merchantAccount,
+    merchantDomainName: config.merchantDomainName,
+    merchantAuthType: 'simpleSignature',
+    merchantSignature: signVerify(
+      {
+        merchantAccount: config.merchantAccount,
+        merchantDomainName: config.merchantDomainName,
+        orderReference: session.id,
+        amount: 0,
+        currency: 'UAH',
+      },
+      Redacted.value(config.merchantSecretKey),
+    ),
+    apiVersion: 1,
+    orderReference: session.id,
+    amount: 0,
+    currency: 'UAH',
+    paymentSystem: 'lookupCard',
+    // returnUrl is a template (…/checkout/{orderReference}/return); fill the token so
+    // the browser lands on the real return page, not a literal `{orderReference}`.
+    returnUrl: config.returnUrl.replace('{orderReference}', session.id),
+    serviceUrl: config.serviceUrl,
+  },
+});

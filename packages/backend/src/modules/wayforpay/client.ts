@@ -24,10 +24,6 @@ import {
   W4pWindowTooLargeError,
 } from '@/modules/wayforpay/errors.js';
 import { signPurchase, signRequest } from '@/modules/wayforpay/signature.js';
-import {
-  requestVerifyPage,
-  type VerifyParams,
-} from '@/modules/wayforpay/verify.js';
 import type { DateWindow } from '@/modules/wayforpay/windows.js';
 
 /**
@@ -53,14 +49,6 @@ export interface WayForPayClient {
   readonly charge: (
     params: ChargeParams,
   ) => Effect.Effect<W4pChargeResponse, W4pError>;
-  /**
-   * Card Verify (0-amount tokenization): POST the signed JSON and return the hosted
-   * verify-widget HTML (not JSON — see verify.ts). The cardholder enters the new card
-   * in the widget and the recToken arrives on the serviceUrl callback.
-   */
-  readonly verifyPage: (
-    params: VerifyParams,
-  ) => Effect.Effect<string, W4pError>;
 }
 
 export interface ChargeParams {
@@ -95,7 +83,6 @@ export interface WayForPayClientOptions {
   readonly merchantDomainName: string;
   readonly apiUrl: string;
   readonly regularApiUrl: string;
-  readonly verifyUrl: string;
   readonly fetch: FetchLike;
   readonly rateLimiter: RateLimiter;
 }
@@ -336,21 +323,6 @@ const charge =
       return yield* decode(W4pChargeResponseSchema, 'CHARGE')(body);
     });
 
-const verifyPage =
-  (ctx: WayForPayClientOptions): WayForPayClient['verifyPage'] =>
-  (params) =>
-    requestVerifyPage(
-      {
-        merchantAccount: ctx.merchantAccount,
-        merchantSecretKey: ctx.merchantSecretKey,
-        merchantDomainName: ctx.merchantDomainName,
-        verifyUrl: ctx.verifyUrl,
-        fetch: ctx.fetch,
-        rateLimiter: ctx.rateLimiter,
-      },
-      params,
-    );
-
 export const makeWayForPayClient = (
   options: WayForPayClientOptions,
 ): WayForPayClient => ({
@@ -358,7 +330,6 @@ export const makeWayForPayClient = (
   checkStatus: checkStatus(options),
   regularStatus: regularStatus(options),
   charge: charge(options),
-  verifyPage: verifyPage(options),
 });
 
 export const WayForPayLive = Layer.effect(
@@ -373,7 +344,6 @@ export const WayForPayLive = Layer.effect(
       merchantDomainName: config.merchantDomainName,
       apiUrl: config.apiUrl,
       regularApiUrl: config.regularApiUrl,
-      verifyUrl: config.verifyUrl,
       fetch: (url, init) => globalThis.fetch(url, init),
       rateLimiter,
     });

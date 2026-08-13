@@ -27,7 +27,6 @@ const clientFor = (body: unknown) =>
     merchantDomainName: 'd',
     apiUrl: 'http://x/api',
     regularApiUrl: 'http://x/reg',
-    verifyUrl: 'http://x/verify',
     fetch: fetchReturning(body),
     rateLimiter: noLimit,
   });

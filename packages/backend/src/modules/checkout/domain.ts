@@ -6,7 +6,6 @@ import {
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
-import { CardChangeUnavailable, NotFound } from '@/infra/http/errors.js';
 import type {
   AppliedCharge,
   ChargeApplier,
@@ -17,66 +16,10 @@ import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import { createOrExtend } from '@/modules/payment/domain.js';
 import { addPeriod } from '@/modules/payment/period.js';
-import type { WayForPayClient } from '@/modules/wayforpay/client.js';
-import type { W4pError } from '@/modules/wayforpay/errors.js';
 
 /** The public checkout page URL for a session id (served by the frontend SPA). */
 export const checkoutPath = (sessionId: string): string =>
   `https://bill.nexttick.it/checkout/${sessionId}`;
-
-/** What the verify step needs from config — the two provider URLs and the gate. */
-export interface VerifyCardChangeDeps {
-  readonly repo: CheckoutRepo;
-  readonly client: Pick<WayForPayClient, 'verifyPage'>;
-  readonly cardVerifyEnabled: boolean;
-  /** returnUrl template (`…/{orderReference}`) and our serviceUrl callback. */
-  readonly returnUrl: string;
-  readonly serviceUrl: string;
-}
-
-/**
- * Card Verify step (docs/24): resolve a 0-amount `card_change` session, request the
- * hosted verify widget, and mark the session pending. Only a 0-amount card-change
- * qualifies — a priced (past_due) change uses the Purchase form, and an unknown or
- * normal-checkout session is a 404. The verify orderReference is the session id, so
- * the inbound recToken callback matches back via makeCardChangeMatcher.
- *
- * WHY only the outbound leg is built here: the verify callback's exact signature is
- * live-UNCONFIRMED, so we do not add a bespoke inbound path — the recToken callback
- * reuses the existing tolerant `verifyCallback` (8-field HMAC) + normalizeCallback
- * pipeline; if the live signature differs it drops to quarantine, never to /dev/null.
- */
-export const verifyCardChange = (
-  deps: VerifyCardChangeDeps,
-  sessionId: string,
-): Effect.Effect<
-  string,
-  NotFound | CardChangeUnavailable | W4pError | SqlError.SqlError
-> =>
-  Effect.gen(function* () {
-    if (!deps.cardVerifyEnabled) {
-      return yield* Effect.fail(
-        new CardChangeUnavailable({
-          reason: 'card verification is unavailable',
-        }),
-      );
-    }
-    const found = yield* deps.repo.findById(sessionId);
-    if (
-      Option.isNone(found) ||
-      found.value.kind !== CheckoutSessionKind.CardChange ||
-      found.value.amount !== 0
-    ) {
-      return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
-    }
-    const html = yield* deps.client.verifyPage({
-      orderReference: sessionId,
-      returnUrl: deps.returnUrl.replace('{orderReference}', sessionId),
-      serviceUrl: deps.serviceUrl,
-    });
-    yield* deps.repo.setPending(sessionId, PaymentMethod.Card);
-    return html;
-  });
 
 /**
  * Checkout matcher: an incoming event whose `externalRef` is a known checkout
