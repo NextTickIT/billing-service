@@ -108,17 +108,21 @@ const pay = (input: SelectMethod, request: FastifyRequest) =>
       method: input.method,
       status: CheckoutSessionStatus.Pending,
     };
+    const config = request.server.appConfig.wayforpay;
     // A 0-amount card change is a WayForPay Card Verify: it hands off the SAME way as a
     // Purchase (the browser posts a signed form to the hosted widget), but to the
     // `/verify` endpoint with the 5-field verify signature — never a priced Purchase.
+    // Only when verify is enabled; otherwise a card change is a minimal tokenizing
+    // Purchase (see cardChange), so fall through to buildPurchase.
     if (
       session.kind === CheckoutSessionKind.CardChange &&
-      session.amount === 0
+      session.amount === 0 &&
+      config.cardVerifyEnabled
     ) {
-      return buildVerify(request.server.appConfig.wayforpay, session);
+      return buildVerify(config, session);
     }
     const orderDate = Math.floor((yield* Clock.currentTimeMillis) / 1000);
-    return buildPurchase(request.server.appConfig.wayforpay, session, orderDate);
+    return buildPurchase(config, session, orderDate);
   });
 
 const callback = (body: unknown, request: FastifyRequest) =>
@@ -141,10 +145,11 @@ const callback = (body: unknown, request: FastifyRequest) =>
 
 /**
  * SendPulse-initiated card change (docs/23). Resolve the user's payment: a cancelled
- * one (or none) is refused (409 — start a fresh checkout); a current payment needs the
- * standalone Card Verify method enabled (0-amount); a past_due/renewal_failed payment
- * takes the owed-amount path (a priced Purchase that revives it in place). Either way a
- * `card_change` session is issued and its callback re-tokenizes the SAME payment.
+ * one (or none) is refused (409 — start a fresh checkout); a current payment runs a
+ * 0-amount Card Verify when enabled, else falls back to a minimal tokenizing Purchase
+ * (`cardChangeChargeMinor`); a past_due/renewal_failed payment takes the owed-amount
+ * path (a priced Purchase that revives it in place). Either way a `card_change` session
+ * is issued and its callback re-tokenizes the SAME payment.
  */
 const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
   Effect.gen(function* () {
@@ -165,20 +170,22 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
     const owed =
       payment.status === PaymentStatus.PastDue ||
       payment.status === PaymentStatus.RenewalFailed;
-    if (!owed && !config.cardVerifyEnabled) {
-      return yield* Effect.fail(
-        new CardChangeUnavailable({
-          reason: 'card verification is unavailable',
-        }),
-      );
-    }
+    // Amount by state: an owed change collects the arrears (revives in place); an
+    // active change runs a 0-amount Card Verify when enabled, else falls back to a
+    // minimal tokenizing Purchase of `cardChangeChargeMinor` (0 tries free; 1 = 0.01
+    // UAH). Either way the callback re-tokenizes the SAME payment.
+    const amount = owed
+      ? payment.amount
+      : config.cardVerifyEnabled
+        ? 0
+        : config.cardChangeChargeMinor;
     const nowMillis = yield* Clock.currentTimeMillis;
     const id = `chk_${randomUUID()}`;
     const expiresAt = new Date(nowMillis + config.sessionTtlSeconds * 1000);
     yield* makeCheckoutRepo(sql).insert({
       id,
       externalUserId: payment.externalUserId,
-      amount: owed ? payment.amount : 0,
+      amount,
       currency: payment.currency,
       period: payment.period,
       kind: CheckoutSessionKind.CardChange,

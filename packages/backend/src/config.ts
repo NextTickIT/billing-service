@@ -56,6 +56,13 @@ export interface WayForPayConfig {
    * enabled on the merchant account (recToken issuance itself is already live).
    */
   readonly cardVerifyEnabled: boolean;
+  /**
+   * Fallback for an ACTIVE card change when `cardVerifyEnabled` is false: re-tokenize
+   * via a minimal tokenizing Purchase of this many MINOR units instead of a 0-amount
+   * Card Verify. 0 attempts a free charge; 1 = 0.01 UAH. The card-change applier
+   * rewrites the token WITHOUT advancing the period (an active payment is not owing).
+   */
+  readonly cardChangeChargeMinor: number;
   readonly pollIntervalSeconds: number;
   readonly windowOverlapSeconds: number;
   readonly maxWindowSeconds: number;
@@ -174,6 +181,9 @@ const loadWayForPayConfig = (): WayForPayConfig => ({
   merchantDomainName: process.env['W4P_DOMAIN_NAME'] ?? '',
   rateLimitRps: Number(process.env['W4P_RATE_LIMIT_RPS'] ?? '2'),
   cardVerifyEnabled: process.env['W4P_CARD_VERIFY_ENABLED'] === 'true',
+  cardChangeChargeMinor: Number(
+    process.env['W4P_CARD_CHANGE_CHARGE_MINOR'] ?? '0',
+  ),
   ...loadW4pPollerConfig(),
   ...loadW4pCheckoutConfig(),
 });
