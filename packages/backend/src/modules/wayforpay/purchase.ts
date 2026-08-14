@@ -59,12 +59,11 @@ export const buildPurchase = (
 };
 
 /**
- * Build a signed WayForPay Card Verify (0-amount tokenization, wiki 852189 / docs/24)
- * as a ready-to-submit form — the SAME handoff shape as {@link buildPurchase}. The
- * hosted `/verify` needs a real browser FORM POST (top-level navigation), not a
- * server-side JSON request, so the browser submits `fields` to `action` directly and
- * the cardholder fills in the widget. A verify holds no money: amount is 0 and
- * currency UAH, and the 5-field signature covers exactly account;domain;order;amount;currency.
+ * Build a signed WayForPay Card Verify (0-amount tokenization, wiki 852189) as a
+ * ready-to-submit form — same handoff as {@link buildPurchase}, but the browser FORM-
+ * POSTs it to the hosted `/verify` (a server-side JSON request is rejected there). A
+ * verify holds no money: amount 0, currency UAH; the signature covers
+ * account;domain;order;amount;currency.
  */
 export const buildVerify = (
   config: W4pConfigService,

@@ -109,11 +109,8 @@ const pay = (input: SelectMethod, request: FastifyRequest) =>
       status: CheckoutSessionStatus.Pending,
     };
     const config = request.server.appConfig.wayforpay;
-    // A 0-amount card change is a WayForPay Card Verify: it hands off the SAME way as a
-    // Purchase (the browser posts a signed form to the hosted widget), but to the
-    // `/verify` endpoint with the 5-field verify signature — never a priced Purchase.
-    // Only when verify is enabled; otherwise a card change is a minimal tokenizing
-    // Purchase (see cardChange), so fall through to buildPurchase.
+    // A 0-amount card change verifies the card (see buildVerify) when verify is enabled;
+    // otherwise it falls through to a minimal tokenizing Purchase (see cardChange).
     if (
       session.kind === CheckoutSessionKind.CardChange &&
       session.amount === 0 &&
