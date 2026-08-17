@@ -1,162 +1,202 @@
-# Legacy Payer Import
+# 25 — Legacy Payment Import
 
-Import historical payers so we hold their identity and payment history in one
-place, while never charging anyone who is already charged outside our gateway.
+Import the payment history of users who are charged through **SendPulse's own
+WayForPay integration** so the gateway holds their **Payment** record and
+**Charge** history in one place, marks them **`external`** (non-billable — the
+gateway must never charge a user already charged outside our merchant), and
+**does not echo their events back to the SendPulse sink** they came from.
+Migration to gateway-managed billing happens only when the user re-enters their
+card through **checkout** (recurring tokens are not exportable — [04](04-open-questions.md) §Data).
+Terminology and boundaries follow [01](01-scope.md), [05](05-domain-model.md),
+[07](07-events.md); engineering conventions per [16](16-conventions.md).
 
-## Motivation
+## 1. Motivation and context
 
-This service owns the recurrent payment lifecycle for **our** WayForPay checkout.
-Historically, people were charged through **SendPulse's** WayForPay integration
-(and other external channels). Those recurring charges run outside this service.
-We are migrating away from SendPulse, so we must:
+The gateway owns the billing cycle for **our** WayForPay merchant. Historically —
+and still, during migration — a population of users is charged through
+**SendPulse's** WayForPay integration, which is a **separate merchant** from ours.
+Those charges run outside this service. We are migrating off SendPulse and need to:
 
-- see every historical payer here, with full payment history
-- never double-charge a payer whose recurring charge lives outside our gateway
-- avoid echoing our domain events back to the SendPulse sink they came from
+- hold every such user's payment history here, keyed by `externalUserId` (the
+  SendPulse `contact_id`), visible through the read/operator API ([06](06-api.md));
+- guarantee the gateway never auto-charges a user already charged on SendPulse's
+  merchant (no double billing);
+- never deliver domain events for these imported records to the SendPulse sink —
+  SendPulse is their source;
+- let a user migrate to gateway-managed billing only through a fresh checkout
+  (their card, re-entered), because W4P recurring tokens are not exportable
+  ([04](04-open-questions.md)).
 
-## Core distinction
+Non-goals stay as in [01](01-scope.md): no identity resolution (opaque
+`externalUserId` only), no `paid_till` / access lifecycle (owned by the external
+system), no token migration.
 
-Every imported recurrent payment agreement gets a `billingOwnership`:
+## 2. What "legacy" means on the real model
 
-- `managed` — our WayForPay checkout. We own the recurring token on our merchant.
-  Chargeable, retryable, suspendable, cancellable by us.
-- `external` — SendPulse's WayForPay integration (or another legacy channel).
-  Charged outside our gateway. Read-only here: tracked and visible, never billed.
+There is exactly **one** billable merchant in the system today: WayForPay config
+is single-merchant and charges carry no merchant field. So `managed` vs `external`
+is drawn by **data source**, not by a merchant column:
 
-Ownership follows the recurring agreement, not the person. A person must have at
-most one **active** recurrent agreement at a time — here or in legacy (see
-Single active agreement).
+| Class      | Lives on                       | How it enters here                                                              | Billable by us |
+| ---------- | ------------------------------ | ------------------------------------------------------------------------------- | -------------- |
+| `managed`  | our WayForPay merchant         | checkout Purchase + callback, and the WayForPay poller (`charges.source` `wayforpay_callback` / `wayforpay_poller`) | yes            |
+| `external` | SendPulse's WayForPay integration | **legacy import** from SendPulse CRM (`charges.source` `sendpulse_legacy`)     | **no**         |
 
-## Source classification
+Only SendPulse CRM carries the `contact_id` that maps a legacy charge to our
+`externalUserId`; a raw WayForPay `TRANSACTION_LIST` row does not (it has
+order/email/phone, not the contact id). So legacy import reads **SendPulse CRM
+payments** (which carry `contactId`, amount, currency, method, order id, status,
+timestamp), not a second WayForPay merchant journal.
 
-Each imported payment carries an origin `source`:
+## 3. Model additions
 
-- `wayforpay` — obtained from our WayForPay merchant account → `managed`
-- `legacy_sendpulse` — seen only in SendPulse's CRM / SP's WFP integration → `external`
-- other legacy channels (`whitepay`, `paypal`, `telegram_stars`, `crypto_manual`)
-  → `external`
+### 3.1 `Payment.origin`
 
-Primary classifier: **WayForPay merchant identity** (confirmed distinct). Our
-checkout and SendPulse's WFP integration use **different** WayForPay merchant
-accounts, so merchant identity separates them cleanly: transactions on our
-merchant are `managed`; payments seen only through SendPulse's merchant (surfaced
-via the SendPulse CRM) are `external`. Money truth is each merchant's WayForPay
-`TRANSACTION_LIST`; the SendPulse CRM is used for legacy/non-WFP channels and
-person linkage.
+Add `origin` to the `Payment` entity (`packages/shared/src/schemas/payment.ts`):
 
-## Collection mode
+- `PaymentOrigin { Managed = 0, External = 1 }` — a numeric enum owned by the
+  `payment` entity slice ([16](16-conventions.md) §6).
+- `Managed` (default) — created through checkout; billable; the existing lifecycle
+  applies unchanged.
+- `External` — created by legacy import; never billable; `recurringTokenRef` is
+  always `null`.
 
-A `managed` agreement collects differently depending on the recurring token:
+An `external` Payment is a **read-only handle on a recurrent payment that lives on
+SendPulse's merchant**. It is not `paid_till` and not an access record
+([01](01-scope.md)); it is the gateway's record that this user pays elsewhere.
 
-- token present → `auto`: recurring auto-charge on the due date.
-- token missing → `manual`: collect via a manual payment method (payment link,
-  crypto-style manual flow). We never auto-charge without a token.
+### 3.2 `charges.source`
 
-`external` agreements are not collected here at all.
+Add `sendpulse_legacy` to the `charges.source` vocabulary (today
+`wayforpay_callback` | `wayforpay_poller`). A legacy charge carries
+`externalUserId = sendpulse:{contactId}`, `source = sendpulse_legacy`, the
+SendPulse payment as its opaque `payload`, and a stable `idemKey` derived from the
+SendPulse payment id.
 
-## Import mechanism
+### 3.3 No token, no paid_till
 
-Standalone re-integration. This service ships its **own** SendPulse client and
-WayForPay adapter (code and patterns may be borrowed from the analytics project,
-but no shared DB and no shared infrastructure).
+External Payments never hold a token (`recurringTokenRef IS NULL`) and never carry
+`paid_till`. Both are structurally consistent with the current schema: token-less
+Payments are already skipped by the scheduler, and `paid_till` is out of scope.
 
-A worker import command:
+## 4. Behaviour
 
-1. Pulls contacts + payments from SendPulse CRM and/or our WFP merchant.
-2. Resolves identity by priority: Telegram > Email > Phone.
-3. Classifies each agreement `managed` vs `external` by origin/merchant.
-4. Upserts `User`, the recurrent payment agreement, and read-only payment history.
-5. Records money in minor units (bigint), timestamps in UTC.
-6. Is idempotent: re-runnable, upsert by external id + content hash, no duplicates.
+### 4.1 Import
 
-## Capability matrix
+A worker command ingests SendPulse CRM payments and, per `contactId`:
 
-External (legacy) agreements:
+- upserts one `external` **Payment** (`origin=External`, `recurringTokenRef=null`,
+  with `amount` / `currency` / `method` / `period` from the SendPulse data),
+  respecting the existing one-active-per-user constraint;
+- records each SendPulse payment as a `Charge` (`source=sendpulse_legacy`) fixed to
+  that Payment (a `ChargeFixation`);
+- is idempotent and re-runnable (dedup by `idemKey` = SendPulse payment id;
+  re-import updates, never duplicates).
 
-| Capability                         | managed | external |
-| ---------------------------------- | ------- | -------- |
-| Visible in support read API        | yes     | yes      |
-| Read-only payment history          | yes     | yes      |
-| Payment link generation            | yes     | no       |
-| Payment intent / attempt creation  | yes     | no       |
-| Picked by recurring scheduler      | yes     | no       |
-| Charge / retry / suspend by us     | yes     | no       |
-| Cancel by us                       | yes     | no       |
-| Events delivered to SendPulse sink | yes     | no       |
+Money is stored in integer minor units; timestamps are UTC.
 
-`external` agreements are excluded from the scheduler, never receive a payment
-link or intent, and the cancel action is unavailable for them. For `managed`
-agreements, payment link / intent creation serves the `manual` collection mode.
+### 4.2 Non-billable guarantees (external)
 
-## Single active agreement
+Because an external Payment has no token, the **scheduler already skips it**
+(`findDue` filters `recurringTokenRef IS NOT NULL`) — no new guard is needed for
+auto-charge. In addition:
 
-A person must hold at most one **active** recurrent agreement at any time, counting
-both `managed` and `external`. This invariant spans the legacy boundary: an active
-legacy agreement blocks creating a second active managed one, except during a
-controlled takeover (below).
+- the operator **cancel** action (`POST /operator/payment/:id/cancel`) returns
+  `409` for `origin=External` — we cannot cancel a charge that runs on SendPulse's
+  merchant;
+- `reactivate` and `defer` likewise `409` for external (nothing here to
+  reactivate/extend);
+- external Payments never enter a retry ladder.
 
-## Legacy takeover and overlap
+### 4.3 Single active across both worlds
 
-When a person's `external` (legacy) agreement errors or lapses, we may create a
-`managed` agreement here to take over billing. Because legacy sync is not
-instantaneous, there is a brief window where the person has an active `managed`
-agreement here **and** a still-active `external` agreement in legacy.
+The existing partial-unique constraint
+`payments_one_active_per_user (externalUserId) WHERE status = Active` already
+enforces **one active recurrent payment per user across `managed` and `external`**:
+an active external Payment occupies the slot, blocking a second active managed one.
+This is exactly the product invariant — no concurrent double billing.
 
-- This overlap is detected on import/reconcile and on managed activation.
-- It fires a **support-notification event** (`subscription.legacy_overlap_detected`)
-  so an admin can reconcile — typically by stopping the legacy charge, which we
-  cannot cancel ourselves (external cancel is unavailable).
-- The overlap event is delivered to the support/admin sink, **never** to SendPulse.
-- Once the legacy agreement is confirmed inactive, the invariant is restored.
+### 4.4 Migration / takeover and overlap
 
-## Event handling for legacy source
+A user migrates to gateway-managed billing only by completing a **checkout**
+(re-entering their card), since tokens are not exportable. When a checkout succeeds
+for a user who has an active `external` Payment:
 
-Domain events for `external` agreements may still be written to the outbox for our
-own audit and read API, but **delivery to the SendPulse integration sink is
-suppressed** — we do not echo events back to the system we imported them from.
-Delivery suppression is per-integration and keyed off the agreement `source`.
+- the external Payment is **superseded** — moved to `Cancelled` with reason
+  `migrated`, freeing the active slot — and the new `managed` Payment is created by
+  the existing `createOrExtend` applier, in the same transaction (so the unique
+  constraint is never violated);
+- because SendPulse's merchant may still charge the user for a short window (their
+  recurring lives outside us and we cannot cancel it), the supersession raises a
+  **support notification** (operator console / audit — **not** a SendPulse event)
+  so a human confirms the SendPulse-side charge is stopped;
+- if the two ever appear concurrently through import lag, the same overlap signal is
+  raised for operator reconciliation, reusing the quarantine/operator surface
+  ([06](06-api.md)).
 
-## Domain model impact
+### 4.5 Events and the SendPulse sink
 
-- `User` — add `source` (origin). Keep external identifiers (`sendpulse:...`).
-- `Subscription` (recurrent payment agreement) — add `billingOwnership`
-  (`managed` | `external`), `collectionMode` (`auto` | `manual`, managed only),
-  `source`, `importedAt`, `externalRef`.
-- Legacy payment history — read-only records (`amountMinor`, `currency`,
-  `provider`, `merchant`, `status`, `occurredAt`, `externalId`), separate from
-  internally created `PaymentIntent` / `PaymentAttempt`.
-- `RecurringToken` — `external` agreements have no usable token on our merchant.
-- `EventDelivery` — support per-integration suppression for `external` source.
-- `Integration` — add a support/admin sink to receive
-  `subscription.legacy_overlap_detected`; SendPulse sink never receives it.
+Legacy import writes Payment and Charge **history**; it does not replay the
+historical domain-event stream. Any event that a future external-Payment action
+does produce is recorded in the outbox for audit, but its delivery to the
+**SendPulse sink is suppressed** — SendPulse is the source of these records and must
+not receive echoes. The sink filters only by event name today
+([21](21-sinks-module-plan.md)), so this adds an origin guard to the SendPulse
+connector: an event whose origin is `external` is a no-op delivery (marked
+delivered, no HTTP call), exactly like the existing `externalUserId === null` skip.
+Other and future sinks are unaffected.
 
-## Functional requirements
+## 5. API surface (deltas)
 
-- FR-013 Import all historical payers with identity and payment history.
-- FR-014 Classify each agreement `managed` vs `external` by payment origin/merchant.
-- FR-015 Guardrails: `external` agreements never get a link, intent, attempt,
-  scheduler pick, charge, or cancel.
-- FR-016 Store legacy payment history as read-only, in minor units, UTC.
-- FR-017 Suppress domain-event delivery to the SendPulse sink for `external` source.
-- FR-018 Import is idempotent and re-runnable.
-- FR-019 Enforce at most one active recurrent agreement per person across
-  `managed` and `external`.
-- FR-020 Legacy takeover: on legacy failure/lapse, allow creating a `managed`
-  agreement for the person.
-- FR-021 Detect `managed`↔`external` overlap and fire
-  `subscription.legacy_overlap_detected` to the support sink (not to SendPulse).
-- FR-022 A `managed` agreement with no recurring token collects via a manual
-  payment method (payment link / crypto-style), never auto-charge.
+- `GET /api/payment?externalUserId=...` and `GET /operator/payment?...` return
+  `origin` so callers can tell external records apart.
+- `POST /operator/payment/:id/{cancel,reactivate,defer}` → `409` for
+  `origin=External`.
+- `POST /api/payment/card-change` and `POST /api/checkout-sessions` stay available
+  for external users — they are the migration path.
+- A new worker command (no public HTTP) runs the import.
 
-## Open questions
+## 6. Acceptance criteria
 
-- Are existing SendPulse/WFP recurring tokens migratable to `managed`? (see 04)
-- Which non-WFP legacy channels must be imported now vs later?
-- Can an `external` agreement later convert to `managed` via re-authorization?
-- Cancel unavailable: hide the action, or show it disabled with a reason?
+- [ ] AC-1 Import creates one `external` Payment per SendPulse `contactId`, with
+      `origin=External` and `recurringTokenRef=null`.
+- [ ] AC-2 Each SendPulse payment becomes a `Charge` (`source=sendpulse_legacy`) +
+      `ChargeFixation` on that Payment; money in minor units, timestamps UTC.
+- [ ] AC-3 Import is idempotent: re-running does not duplicate Charges or Payments
+      (dedup by SendPulse payment id).
+- [ ] AC-4 The scheduler never selects an external Payment (token-less ⇒ already
+      filtered; asserted explicitly).
+- [ ] AC-5 `cancel` / `reactivate` / `defer` on an external Payment return `409`.
+- [ ] AC-6 At most one active Payment per `externalUserId` across managed + external
+      (constraint holds).
+- [ ] AC-7 A successful checkout for a user with an active external Payment
+      supersedes it (`Cancelled`, reason `migrated`), creates the managed Payment in
+      the same transaction, and raises the operator overlap notification.
+- [ ] AC-8 No event tied to an external Payment is delivered to the SendPulse sink;
+      the outbox still records it.
+- [ ] AC-9 `externalUserId` is carried verbatim (`sendpulse:{contactId}`) end to end.
 
-## Out of scope
+## 7. Open questions
 
-- Charging legacy payers or migrating their tokens.
-- Two-way sync back to SendPulse.
-- Analytics dashboards (that lives in the analytics project).
+- (OQ-1) External Payment **status**: does an imported external Payment sit at
+  `Active` (occupying the single-active slot) until superseded, or a value derived
+  from SendPulse payment recency? What re-import cadence keeps it fresh?
+- (OQ-2) SendPulse CRM export: which exact endpoint/fields are authorized
+  ([04](04-open-questions.md) "what fields can be exported from SendPulse" is open)?
+  Is `/crm/v1/payments/all` the agreed source?
+- (OQ-3) `period` for an external Payment — inferred from SendPulse cadence or a
+  fixed default?
+- (OQ-4) Overlap-notification transport — a new operator-only event name, an audit
+  row, or the existing quarantine surface?
+- (OQ-5) Multiple products per user ([04](04-open-questions.md) §11.5, open) — does
+  one active external Payment per user hold when a user has several SendPulse
+  products?
+- (OQ-6) Does legacy import emit any sink-facing events at all, or only
+  Payment/Charge history with zero outgoing events?
+
+## 8. Out of scope
+
+- Charging, retrying, or cancelling on SendPulse's merchant.
+- Importing `paid_till` or access state (owned externally — [01](01-scope.md)).
+- Migrating W4P recurring tokens ([04](04-open-questions.md)).
+- Two-way sync back to SendPulse; SendPulse CRM / bot / analytics replacement.
