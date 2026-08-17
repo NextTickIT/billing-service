@@ -62,7 +62,7 @@ const adminActor = (request: FastifyRequest) => {
     : authenticateAdminCredential(presented);
 };
 
-const route = makeRoute((app: FastifyInstance) => app.dbRuntime);
+const route = makeRoute((app: FastifyInstance) => app.runtime);
 
 export default function auth(fastify: FastifyInstance): void {
   route(fastify, {

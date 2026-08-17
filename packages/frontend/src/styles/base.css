@@ -1,0 +1,91 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/* Scanlines removed — clean editorial app, not a terminal. */
+
+#app {
+  min-height: 100%;
+}
+
+a {
+  color: var(--green);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--green-hover);
+  text-decoration: underline;
+}
+
+/* Only interactive controls keep monospace; inputs/selects use sans too */
+button {
+  cursor: pointer;
+  font-family: var(--sans);
+}
+
+input,
+select,
+textarea {
+  font-family: var(--sans);
+  font-size: 14px;
+}
+
+/* Labels, amounts, ids, status badges: mono via utility class */
+.mono {
+  font-family: var(--mono);
+}
+
+/* Data tables (Payments, Quarantine) share one skeleton, styled globally so the
+   DataTable structure and each page's slotted cells render identically. */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.data-table th {
+  padding: 8px 12px;
+  text-align: left;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.data-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+}
+.data-table tbody tr.is-clickable {
+  cursor: pointer;
+}
+.data-table tbody tr:hover td {
+  background: var(--surface-2);
+}
+.data-table tbody tr:focus {
+  outline: 2px solid var(--green);
+  outline-offset: -1px;
+}
+.data-row--empty td {
+  padding: 16px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}

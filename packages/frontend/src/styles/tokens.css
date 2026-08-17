@@ -1,0 +1,65 @@
+:root {
+  color-scheme: dark;
+
+  /* backgrounds */
+  --bg: #0b0d0f;
+  --bg-2: #111417;
+  --surface: #15191c;
+  --surface-2: #1c2126;
+
+  /* borders */
+  --line: #2a3138;
+  --line-2: #3a444c;
+
+  /* text */
+  --text: #d6d8da;
+  --muted: #888d92;
+  --dim: #5d6469;
+
+  /* accent */
+  --green: #7ee787;
+  --green-2: #3fb950;
+  --green-hover: #8df29a;
+  --red: #ff7b72;
+  --amber: #e3b341;
+  --cyan: #56d4dd;
+  --magenta: #bc8cff;
+  --white: #ffffff;
+
+  /* rgb tuple for rgba() usage */
+  --bg-rgb: 11, 13, 15;
+
+  /* typography */
+  --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+  /* layout */
+  --max: 1160px;
+
+  /* legacy aliases so existing components referencing --panel/--txt still work */
+  --panel: var(--surface);
+  --panel-2: var(--surface-2);
+  --txt: var(--text);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-2: #f6f8fa;
+  --surface: #f0f3f6;
+  --surface-2: #e7ecf1;
+  --line: #d4dae0;
+  --line-2: #b6bfc8;
+  --text: #1f2328;
+  --muted: #59636e;
+  --dim: #8b949e;
+  --green: #1a7f37;
+  --green-2: #116329;
+  --green-hover: #166b2e;
+  --red: #cf222e;
+  --amber: #9a6700;
+  --cyan: #0b7285;
+  --magenta: #8250df;
+  --white: #1f2328;
+  --bg-rgb: 255, 255, 255;
+}

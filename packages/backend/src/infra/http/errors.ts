@@ -36,3 +36,36 @@ export class Conflict extends Data.TaggedError('Conflict')<{
     };
   }
 }
+
+export class NotFound extends Data.TaggedError('NotFound')<{
+  readonly resource: string;
+}> {
+  toHttp(): HttpReply {
+    return { status: 404, body: { error: `${this.resource} not found` } };
+  }
+}
+
+export class UnprocessableEntity extends Data.TaggedError(
+  'UnprocessableEntity',
+)<{
+  readonly reason: string;
+}> {
+  toHttp(): HttpReply {
+    return { status: 422, body: { error: this.reason } };
+  }
+}
+
+/**
+ * A card change was requested for a payment that cannot be re-tokenized (docs/23):
+ * a cancelled payment, no payment at all, or a proactive verify while the standalone
+ * Card Verify method is not enabled. 409 → the caller starts a fresh checkout instead.
+ */
+export class CardChangeUnavailable extends Data.TaggedError(
+  'CardChangeUnavailable',
+)<{
+  readonly reason: string;
+}> {
+  toHttp(): HttpReply {
+    return { status: 409, body: { error: this.reason } };
+  }
+}

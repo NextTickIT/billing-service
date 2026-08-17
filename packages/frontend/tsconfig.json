@@ -1,10 +1,17 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "noEmit": true,
+    "jsx": "preserve",
+    "jsxImportSource": "vue",
     "paths": {
       "@/*": ["./src/*"]
-    }
+    },
+    "allowArbitraryExtensions": true
   },
-  "include": ["src"]
+  "include": ["src", "functions"]
 }

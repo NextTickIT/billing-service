@@ -5,6 +5,7 @@ import autoload from '@fastify/autoload';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import '@/types.js';
+import { parseRawBody } from '@/infra/http/raw-body.js';
 
 const currentDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -19,6 +20,12 @@ export const buildApp = async (): Promise<FastifyInstance> => {
   // in request bodies decode straight into `Redacted`).
   const app = Fastify({
     logger: { redact: ['req.headers.authorization'] },
+  });
+
+  // application/json keeps Fastify's built-in parser; any other content-type
+  // (provider callbacks) is parsed as a raw string into JSON (see parseRawBody).
+  app.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => {
+    done(null, parseRawBody(typeof body === 'string' ? body : ''));
   });
 
   // Pass 1: system plugins — loaded before modules, decorators visible to them.

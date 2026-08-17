@@ -3,6 +3,8 @@
 > Consensus plan (RALPLAN-DR, **DELIBERATE** mode) derived from [12-auth-spec.md](./12-auth-spec.md), reviewed by an independent **Architect** (verdict: **GO-WITH-CHANGES**) and **Analyst** (gap analysis). All six architect changes and the analyst's load-bearing gaps are folded in.
 > **Status:** APPROVED (2026-07-10) — implementing. The two flagged confirmations are resolved: auth-token Bearer verification is **deferred** (mint/store only this module); sign-in **user-enumeration hardening (dummy argon2 verify) is included**. This is the **first module with real logic** — real SQL, a real Postgres connection, real migrations — a deliberate, ADR-recorded deviation from the skeleton's no-logic rule.
 > Execution on worktree/branch `project-setup`. Mirrors the structure and quality bar of [11-project-setup-plan.md](./11-project-setup-plan.md).
+>
+> **Superseded (single runtime):** the two-runtime split (a DB-less `AppLayer` + a lazy DB-backed `AppDbLayer`/`dbRuntime`) chosen throughout this plan was later collapsed to a **single application runtime** — one lazy DB-backed `ManagedRuntime` that every route runs on, with `/health` a readiness probe (`SELECT 1`, 200/503) on it. `buildApp()` and the unit gate stay hermetic because the runtime is lazy. The rationale below is kept as the historical record. See CLAUDE.md §2.
 
 ## Requirements Summary
 

@@ -6,9 +6,15 @@ import { Effect } from 'effect';
 
 import { buildApp } from '@/app.js';
 import type { DatabaseConfig } from '@/config.js';
+import { loadConfig } from '@/config.js';
 import { runMigrations } from '@/infra/migrator.js';
 
 import { scenarios, type Scenario } from '@/modules/auth/test/routes.e2e.js';
+import {
+  effectScenarios,
+  type EffectScenario,
+} from '@/modules/charge/test/pipeline.e2e.js';
+import { edgeScenarios } from './edge.e2e.js';
 
 /**
  * E2E test runner. Spins up the only external dependency (Postgres) in Docker,
@@ -75,6 +81,7 @@ const testDbConfig = (database: string): DatabaseConfig => ({
   user: DB.user,
   password: DB.password,
   database,
+  ssl: false,
 });
 
 const setAppEnv = (database: string): void => {
@@ -126,28 +133,82 @@ const runScenario = async (
   }
 };
 
+/**
+ * Effect scenarios drive the worker pipeline directly (no HTTP): a throwaway DB
+ * is created + migrated, the scenario runs against it with the real config, then
+ * it is dropped. `setAppEnv` points `loadConfig` at that database.
+ */
+const runEffectScenario = async (
+  scenario: EffectScenario,
+  index: number,
+): Promise<void> => {
+  const database = `test_e${index.toString()}_${randomUUID().replace(/-/g, '')}`;
+  psql('postgres', `CREATE DATABASE ${database}`);
+  try {
+    await Effect.runPromise(runMigrations(testDbConfig(database)));
+    setAppEnv(database);
+    const query = queryTestDb(database);
+    // The pipeline scenarios assert delivery; the seed sink ships disabled (operators
+    // enable it), so enable it here to mirror a configured deployment. Its flow map is
+    // empty, so the connector skips-and-succeeds — deliveries are marked delivered with
+    // no outbound SendPulse call.
+    await query(`UPDATE sinks SET enabled = true WHERE kind = 0`);
+    await scenario.run({ config: loadConfig(), query });
+    console.log(`  ✓ ${scenario.name}`);
+  } finally {
+    psql('postgres', `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+  }
+};
+
+const runHttpScenarios = async (): Promise<void> => {
+  for (let index = 0; index < scenarios.length; index += 1) {
+    const scenario = scenarios[index];
+    if (scenario !== undefined) {
+      await runScenario(scenario, index);
+    }
+  }
+};
+
+const runEffectScenarios = async (): Promise<void> => {
+  for (let index = 0; index < effectScenarios.length; index += 1) {
+    const scenario = effectScenarios[index];
+    if (scenario !== undefined) {
+      await runEffectScenario(scenario, index);
+    }
+  }
+};
+
+const runEdgeScenarios = async (): Promise<void> => {
+  for (let index = 0; index < edgeScenarios.length; index += 1) {
+    const scenario = edgeScenarios[index];
+    if (scenario !== undefined) {
+      await runScenario(scenario, scenarios.length + index);
+    }
+  }
+};
+
+const verifyNoLeaks = (): void => {
+  dropStaleTestDbs();
+  const remaining = psql(
+    'postgres',
+    "SELECT count(*) FROM pg_database WHERE datname LIKE 'test\\_%'",
+  ).trim();
+  if (remaining !== '0') {
+    throw new Error(`leaked ${remaining} test database(s)`);
+  }
+  const total = scenarios.length + effectScenarios.length + edgeScenarios.length;
+  console.log(`e2e: ${total.toString()} scenarios passed; 0 leaked databases`);
+};
+
 const main = async (): Promise<void> => {
   console.log('e2e: starting Postgres (docker compose up --wait)...');
   compose('up', '-d', '--wait');
   try {
     dropStaleTestDbs();
-    for (let index = 0; index < scenarios.length; index += 1) {
-      const scenario = scenarios[index];
-      if (scenario !== undefined) {
-        await runScenario(scenario, index);
-      }
-    }
-    dropStaleTestDbs();
-    const remaining = psql(
-      'postgres',
-      "SELECT count(*) FROM pg_database WHERE datname LIKE 'test\\_%'",
-    ).trim();
-    if (remaining !== '0') {
-      throw new Error(`leaked ${remaining} test database(s)`);
-    }
-    console.log(
-      `e2e: ${scenarios.length.toString()} scenarios passed; 0 leaked databases`,
-    );
+    await runHttpScenarios();
+    await runEffectScenarios();
+    await runEdgeScenarios();
+    verifyNoLeaks();
   } finally {
     console.log('e2e: tearing down (docker compose down -v)...');
     compose('down', '-v');

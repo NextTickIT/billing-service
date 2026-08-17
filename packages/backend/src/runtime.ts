@@ -1,48 +1,109 @@
 import { Layer, ManagedRuntime } from 'effect';
 
 import type { AppConfig } from '@/config.js';
-import { DatabaseLive, SqlLive } from '@/infra/db.js';
+import { SqlLive } from '@/infra/db.js';
 import { HasherLive } from '@/infra/hasher.js';
+import { QueueLive } from '@/infra/queue/service.js';
+import { rateLimiterLayer } from '@/infra/rate-limiter.js';
+import { SinksLive } from '@/modules/sinks/live.js';
 import { TaskRegistryLive } from '@/infra/task-registry.js';
 import { makeAuthConfig } from '@/modules/auth/domain.js';
 import { AuthRepoLive } from '@/modules/auth/data-access.js';
+import { OutboxLive } from '@/modules/outbox/domain.js';
+import { makeCompositeMatcher } from '@/modules/charge/contracts.js';
+import { makeChargePipelineLayer } from '@/modules/charge/domain.js';
+import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
+import {
+  makeCardChangeMatcher,
+  makeCheckoutApplier,
+  makeCheckoutMatcher,
+} from '@/modules/checkout/domain.js';
+import { makeRecurringMatcher } from '@/modules/payment/matcher.js';
+import { makePaymentRepo } from '@/modules/payment/data-access.js';
+import { WayForPayLive } from '@/modules/wayforpay/client.js';
+import { makeW4pConfig } from '@/modules/wayforpay/config.js';
 
 /**
- * Two runtimes, by design (see docs/13 ADR):
- *
- * - `AppLayer` / `AppRuntime` — DB-LESS (health + task registry). Because
- *   `PgClient.layer` connects eagerly and `ManagedRuntime` builds the whole
- *   layer on first use, `SqlLive` must never appear here, or `GET /health`
- *   would require Postgres.
- * - `AppDbLayer` / `AppDbRuntime` — the DB-backed runtime (Hasher + AuthConfig +
- *   AuthRepo ⊂ SqlLive), used only by auth routes. Its `ManagedRuntime` is lazy:
- *   constructing it opens no connection; the pool is built on the first auth
- *   `run*`, keeping `buildApp()`/health hermetic.
+ * The single application runtime (HTTP server): one `Layer` — Hasher + auth config
+ * + AuthRepo over the real Postgres connection — behind one `ManagedRuntime`. Every
+ * route runs on it. `ManagedRuntime.make` is LAZY: constructing it opens no
+ * connection; `PgClient` connects on the first `runtime.run*` (an auth route or the
+ * `/health` probe), so `buildApp()` and connection-free unit tests stay hermetic
+ * even though `PgClient` connects eagerly once the layer is built.
  */
-export const AppLayer = Layer.mergeAll(DatabaseLive, TaskRegistryLive);
-
-export type AppRuntime = ManagedRuntime.ManagedRuntime<
-  Layer.Layer.Success<typeof AppLayer>,
-  never
->;
-
-export const makeRuntime = (): AppRuntime => ManagedRuntime.make(AppLayer);
-
-/** DB-backed layer for the auth module — parameterized by config because
- * `PgClient` needs connection params and the domain needs admin token + TTL. */
-export const makeAppDbLayer = (config: AppConfig) =>
+export const makeAppLayer = (config: AppConfig) =>
   Layer.mergeAll(
     HasherLive,
     makeAuthConfig({
       adminToken: config.adminToken,
       sessionTtlSeconds: config.sessionTtlSeconds,
     }),
-    // `provideMerge` (not `provide`) so `SqlClient` stays in the runtime's
-    // context — the `/health` readiness probe runs `SELECT 1` on it directly.
+    // `provideMerge` keeps `SqlClient` in the runtime's context, so route handlers
+    // and the `/health` readiness probe run queries on it directly.
     AuthRepoLive.pipe(Layer.provideMerge(SqlLive(config.database))),
   );
 
-export const makeDbRuntime = (config: AppConfig) =>
-  ManagedRuntime.make(makeAppDbLayer(config));
+export const makeAppRuntime = (config: AppConfig) =>
+  ManagedRuntime.make(makeAppLayer(config));
 
-export type AppDbRuntime = ReturnType<typeof makeDbRuntime>;
+export type AppRuntime = ReturnType<typeof makeAppRuntime>;
+
+/** The WayForPay client with its config + rate limiter satisfied. */
+const wayForPayLayer = (config: AppConfig) =>
+  WayForPayLive.pipe(
+    Layer.provide(
+      makeW4pConfig({
+        merchantAccount: config.wayforpay.merchantAccount,
+        merchantSecretKey: config.wayforpay.merchantSecretKey,
+        merchantPassword: config.wayforpay.merchantPassword,
+        apiUrl: config.wayforpay.apiUrl,
+        regularApiUrl: config.wayforpay.regularApiUrl,
+        merchantDomainName: config.wayforpay.merchantDomainName,
+        checkoutUrl: config.wayforpay.checkoutUrl,
+        verifyUrl: config.wayforpay.verifyUrl,
+        serviceUrl: config.wayforpay.serviceUrl,
+        returnUrl: config.wayforpay.returnUrl,
+      }),
+    ),
+    Layer.provide(rateLimiterLayer(config.wayforpay.rateLimitRps)),
+  );
+
+/**
+ * Worker runtime — the background process (src/worker.ts), a separate OS process
+ * with its own runtime. DB-backed: the `Queue` dispatcher and `Outbox` need
+ * `SqlClient`, the queue reads the `TaskRegistry` for the handler set, and the
+ * outbox fans out to the `Sinks`. Built eagerly on worker start. Layering: base
+ * services -> Queue (needs sql + registry) -> Outbox (needs sql + sinks + queue) ->
+ * ChargePipeline (needs sql + outbox + queue).
+ */
+export const makeWorkerLayer = (config: AppConfig) => {
+  const base = Layer.mergeAll(
+    TaskRegistryLive,
+    SqlLive(config.database),
+    wayForPayLayer(config),
+  );
+  // The real sinks service reads its config from the DB (hot-reload, docs/21), so it
+  // layers on top of `base` to get `SqlClient`; its output `Sinks` flows to the outbox.
+  const withSinks = Layer.provideMerge(SinksLive(config.sinks), base);
+  // The pipeline's matcher tries checkout (session) then recurring (our charges);
+  // its applier creates/extends the subscription. Both are plain functions built
+  // from `sql` here at the composition root — legacy _WFPREG charges match nothing
+  // and quarantine (the migration tail).
+  const pipeline = makeChargePipelineLayer(
+    (sql) =>
+      makeCompositeMatcher([
+        makeCardChangeMatcher(makeCheckoutRepo(sql)),
+        makeCheckoutMatcher(makeCheckoutRepo(sql)),
+        makeRecurringMatcher(makePaymentRepo(sql)),
+      ]),
+    (sql) => makeCheckoutApplier(makePaymentRepo(sql), makeCheckoutRepo(sql)),
+  );
+  const withQueue = Layer.provideMerge(QueueLive, withSinks);
+  const withOutbox = Layer.provideMerge(OutboxLive, withQueue);
+  return Layer.provideMerge(pipeline, withOutbox);
+};
+
+export const makeWorkerRuntime = (config: AppConfig) =>
+  ManagedRuntime.make(makeWorkerLayer(config));
+
+export type WorkerRuntime = ReturnType<typeof makeWorkerRuntime>;

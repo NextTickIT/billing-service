@@ -1,15 +1,18 @@
 # Engineering Conventions (project-wide decisions)
 
 These are the cross-cutting rules the codebase is held to. They were distilled
-from review feedback on the first real module (`auth`) and apply to every module
+from review feedback on the `auth` and payments modules and apply to every module
 that follows. Where a rule supersedes an earlier spec/plan, that is noted.
 
 ## 1. Comments answer WHY, not WHAT
 
-- No file-header / banner comments. Comment an entity (a class or a function)
-  only when there is a non-obvious reason a reader needs.
-- If a comment restates what the code already says, delete it. Naming and
-  structure carry the "what".
+- WHAT is carried by the name, the structure, and the file location; HOW is carried
+  by the function body. A comment exists only for a WHY that none of those can
+  express — and, in rare extreme cases, a HOW note when the body is unavoidably
+  subtle.
+- No file-header / banner comments. Comment an entity (a class or a function) only
+  when there is a non-obvious reason a reader needs.
+- If a comment restates the name, the structure, or the body, delete it.
 
 ## 2. Domain code takes domain commands — never transport types
 
@@ -51,9 +54,18 @@ that follows. Where a rule supersedes an earlier spec/plan, that is noted.
   its schemas, the enums it owns, and its constants. There is no separate
   `enums/` or `constants/` bucket.
 - Every enum and constant is owned by exactly one entity (e.g. `Role` → auth,
-  `PaymentMethod` / `Currency` → subscription, `RETRY_SCHEDULE_DAYS` →
-  subscription, `SINK_DELIVERY_SLA_SECONDS` → event).
+  `PaymentMethod` / `Currency` → payment, `RETRY_SCHEDULE_DAYS` →
+  payment, `SINK_DELIVERY_SLA_SECONDS` → event).
 - Types are always **derived** from schemas; never hand-written.
+- A **public** shape — anything that crosses a boundary (an API request/response, a
+  domain event, a persisted entity) — lives in its shared entity slice, never in a
+  module. A module's `contracts.ts` is only for shapes that must NOT be public, e.g.
+  auth's secret-carrying request bodies (`Redacted` passwords/tokens), which stay
+  backend-only (docs/13).
+- Cross-module vocabularies that aren't a single entity also live in `shared`, not
+  per module: the domain event names (`event.ts`) and the queue message types
+  (`message.ts`). A module references the one shared definition (re-exporting it is
+  fine) rather than hardcoding the string.
 
 ## 7. Errors own their HTTP mapping
 
@@ -76,3 +88,49 @@ that follows. Where a rule supersedes an earlier spec/plan, that is noted.
   public shape plus its secret (`OperatorRow = Operator & { passwordHash }`); a
   request is the public create shape plus its secret
   (`CreateOperatorRequest = Schema.extend(CreateOperator, { password })`).
+- Never hand-write an interface that mirrors a shape that already has a schema;
+  derive it (`NewCheckoutSession = CheckoutSession.omit(...)`).
+- A SQL column list is derived from the schema's keys (`columnList(Schema.fields)`),
+  not hand-typed — one source of truth for a table's columns, so the SQL cannot drift
+  from the schema.
+
+## 10. Shapes that vary by a discriminant are a discriminated union
+
+- When a value's fields are determined by a kind/name/tag, model it as a
+  discriminated union (a `Schema.Union` of per-variant structs, or a TS union) — not
+  a wide base with optional fields or a `payload: Record<string, unknown>`. The type
+  system then enforces each variant and consumers narrow on the discriminant. So it
+  is with `DomainEvent` (on `name`, docs/07), `MatchResult` (on `matched` / `kind`),
+  and the typed errors (on `_tag`, via `Data.TaggedError`).
+- Carve-out: a deliberately OPAQUE payload stays `Record<string, unknown>` — raw
+  provider data kept verbatim (`Charge.payload`, the WayForPay callback
+  body and the purchase form) and an event read back from storage for delivery
+  (`StoredEvent`: after a jsonb round-trip the sink only forwards the stored payload,
+  so it is not re-narrowed). These are boundary bags, not domain shapes to
+  discriminate.
+
+## 11. Domain steps are functions, not injected services
+
+- A domain step (a matcher, an applier, …) is a plain function the domain calls; its
+  type lives in the module, its implementations are composed as plain values and
+  passed in as parameters. Reach for a `Context.Tag` + `Layer` only for a real
+  runtime resource (Sql, the queue, the outbox) or a genuine swap boundary —
+  pluggability alone (AC8) is satisfied by passing a function.
+
+## 12. Provider-specific code lives in the provider module
+
+- A payment provider's details — request signing, callback parsing, the hosted
+  Purchase form, the API client — live in that provider's module (`wayforpay`; a
+  future `whitepay`). The `checkout` module and the FR-007 pipeline stay
+  **processor-agnostic**: they orchestrate and import the provider surface, never
+  embed it. A new provider is a new module exposing the same shape (AC8), not edits
+  scattered across `checkout` / `payments`.
+
+## 13. Extract shared logic; keep domain functions in `domain.ts`
+
+- Logic used by more than one module is extracted to a common home under `infra/`,
+  never copy-pasted per module (e.g. `requireRow` and the Postgres error mapping in
+  `infra/db`).
+- A module's domain functions — matchers, appliers, event builders — live in its
+  `domain.ts`. Add a separate file only for a genuinely distinct concern, not for a
+  single function.

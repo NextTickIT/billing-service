@@ -1,0 +1,42 @@
+import type { RouteRecordRaw } from 'vue-router';
+import { isAuthed } from './store.js';
+
+const guard = (): string | true => {
+  if (isAuthed()) return true;
+  return '/operator/login';
+};
+
+export const operatorRoutes: RouteRecordRaw[] = [
+  {
+    path: '/operator/login',
+    component: () => import('./LoginPage.vue'),
+  },
+  {
+    path: '/operator',
+    component: () => import('./OperatorLayout.vue'),
+    redirect: '/operator/payments',
+    beforeEnter: guard,
+    children: [
+      {
+        path: 'payments',
+        component: () => import('@/modules/payments/PaymentsPage.vue'),
+        beforeEnter: guard,
+      },
+      {
+        path: 'payments/:id',
+        component: () => import('@/modules/payments/PaymentDetailPage.vue'),
+        beforeEnter: guard,
+      },
+      {
+        path: 'quarantine',
+        component: () => import('@/modules/quarantine/QuarantinePage.vue'),
+        beforeEnter: guard,
+      },
+      {
+        path: 'sinks',
+        component: () => import('@/modules/sinks/SinksPage.vue'),
+        beforeEnter: guard,
+      },
+    ],
+  },
+];
