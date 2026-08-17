@@ -1,5 +1,9 @@
 import { it } from '@effect/vitest';
-import { type Payment, PaymentStatus } from '@billing-service/shared';
+import {
+  type Payment,
+  PaymentOrigin,
+  PaymentStatus,
+} from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
@@ -30,6 +34,7 @@ const activePayment: Payment = {
   method: 0,
   period: 'P1M',
   status: PaymentStatus.Active,
+  origin: PaymentOrigin.Managed,
   currentPeriodStart: new Date('2025-12-15T00:00:00Z'),
   currentPeriodEnd: new Date('2026-01-15T00:00:00Z'),
   nextPaymentDate: new Date('2026-01-15T00:00:00Z'),
@@ -52,6 +57,7 @@ const makeFakeRepo = (existing: Payment | null) => {
         inserted = input;
         return {
           ...input,
+          origin: PaymentOrigin.Managed,
           id: 'sub_new',
           cancelRequestedAt: null,
           createdAt: new Date(0),

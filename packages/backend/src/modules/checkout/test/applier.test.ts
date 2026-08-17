@@ -1,5 +1,9 @@
 import { it } from '@effect/vitest';
-import { type Payment, PaymentStatus } from '@billing-service/shared';
+import {
+  type Payment,
+  PaymentOrigin,
+  PaymentStatus,
+} from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
@@ -59,6 +63,7 @@ it.effect(
             insertedToken = input.recurringTokenRef;
             return {
               ...input,
+              origin: PaymentOrigin.Managed,
               id: 'sub_1',
               cancelRequestedAt: null,
               createdAt: new Date(0),
@@ -116,6 +121,7 @@ const owingPayment: Payment = {
   method: 0,
   period: 'P1M',
   status: PaymentStatus.PastDue,
+  origin: PaymentOrigin.Managed,
   currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
   currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
   nextPaymentDate: new Date('2026-01-01T00:00:00Z'),

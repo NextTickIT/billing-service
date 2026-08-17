@@ -7,6 +7,7 @@ import {
   Currency,
   Payment,
   PaymentMethod,
+  PaymentOrigin,
   PaymentStatus,
 } from '@/schemas/payment.js';
 
@@ -18,6 +19,7 @@ const validPayment = {
   method: PaymentMethod.Card,
   period: 'P1M',
   status: PaymentStatus.Active,
+  origin: PaymentOrigin.Managed,
   currentPeriodStart: '2025-12-15T00:00:00.000Z',
   currentPeriodEnd: '2026-01-15T00:00:00.000Z',
   nextPaymentDate: '2026-01-15T00:00:00.000Z',

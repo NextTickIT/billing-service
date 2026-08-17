@@ -2,6 +2,7 @@ import { it } from '@effect/vitest';
 import {
   type DomainEvent,
   type Payment,
+  PaymentOrigin,
   PaymentStatus,
 } from '@billing-service/shared';
 import { Effect } from 'effect';
@@ -33,6 +34,7 @@ const baseSub: Payment = {
   method: 0,
   period: 'P1M',
   status: PaymentStatus.Active,
+  origin: PaymentOrigin.Managed,
   currentPeriodStart: new Date('2026-01-01T00:00:00Z'),
   currentPeriodEnd: new Date('2026-02-01T00:00:00Z'),
   nextPaymentDate: new Date('2026-02-01T00:00:00Z'),

@@ -1,5 +1,5 @@
 import { it } from '@effect/vitest';
-import type { Payment } from '@billing-service/shared';
+import { type Payment, PaymentOrigin } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
@@ -15,6 +15,7 @@ const sub: Payment = {
   method: 0,
   period: 'P1M',
   status: 0,
+  origin: PaymentOrigin.Managed,
   currentPeriodStart: new Date(0),
   currentPeriodEnd: new Date(0),
   nextPaymentDate: new Date(0),

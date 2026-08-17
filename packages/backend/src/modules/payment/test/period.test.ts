@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import type { Payment } from '@billing-service/shared';
-import { PaymentStatus } from '@billing-service/shared';
+import { PaymentOrigin, PaymentStatus } from '@billing-service/shared';
 
 import { addPeriod } from '@/modules/payment/period.js';
 import { computeDeferral } from '@/modules/payment/domain.js';
@@ -59,6 +59,7 @@ const basePayment: Payment = {
   method: 0,
   period: 'P1M',
   status: PaymentStatus.Active,
+  origin: PaymentOrigin.Managed,
   currentPeriodStart: new Date('2026-01-01T00:00:00Z'),
   currentPeriodEnd: new Date('2026-01-20T00:00:00Z'),
   nextPaymentDate: new Date('2026-01-20T00:00:00Z'),

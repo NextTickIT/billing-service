@@ -55,6 +55,20 @@ export enum PaymentStatus {
 export const PaymentStatusSchema = Schema.Enums(PaymentStatus);
 
 /**
+ * Where a Payment's billing lives (docs/25). `Managed` — our WayForPay checkout;
+ * the gateway owns the token and the billing cycle. `External` — an imported legacy
+ * payer charged on SendPulse's own merchant: read-only, never billed here (it holds
+ * no token), migratable to `Managed` only through a fresh checkout. Stored as a
+ * number; the column defaults to `Managed`, so only the legacy import sets `External`.
+ */
+export enum PaymentOrigin {
+  Managed = 0,
+  External = 1,
+}
+
+export const PaymentOriginSchema = Schema.Enums(PaymentOrigin);
+
+/**
  * Single source of truth for the Payment contract. The static type is
  * DERIVED from this schema; the same shape is used at db, backend, and frontend
  * with no transformation. `period` is an ISO-8601 duration (e.g. `P1M`);
@@ -69,6 +83,7 @@ export const Payment = Schema.Struct({
   method: PaymentMethodSchema,
   period: Schema.String,
   status: PaymentStatusSchema,
+  origin: PaymentOriginSchema,
   currentPeriodStart: Schema.Date,
   currentPeriodEnd: Schema.Date,
   nextPaymentDate: Schema.Date,
@@ -85,9 +100,13 @@ export const Payment = Schema.Struct({
 
 export type Payment = Schema.Schema.Type<typeof Payment>;
 
-/** Create params: the server owns `id`, the timestamps, and the cancel flag. */
+/**
+ * Create params: the server owns `id`, the timestamps, the cancel flag, and
+ * `origin` (defaults to `Managed` at the DB; only the legacy import sets `External`,
+ * through its own repo method).
+ */
 export const CreatePayment = Payment.pipe(
-  Schema.omit('id', 'createdAt', 'updatedAt', 'cancelRequestedAt'),
+  Schema.omit('id', 'createdAt', 'updatedAt', 'cancelRequestedAt', 'origin'),
 );
 
 export type CreatePayment = Schema.Schema.Type<typeof CreatePayment>;
