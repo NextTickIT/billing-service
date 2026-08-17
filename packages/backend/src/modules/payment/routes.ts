@@ -37,6 +37,7 @@ import {
 import {
   makePaymentRepo,
   type PaymentListFilter,
+  type PaymentRepo,
 } from '@/modules/payment/data-access.js';
 import { computeDeferral } from '@/modules/payment/domain.js';
 import { addPeriod, isValidPeriod } from '@/modules/payment/period.js';
@@ -157,11 +158,7 @@ const cancelPayment = (
     const id = readId(request);
     const sql = yield* SqlClient.SqlClient;
     const repo = makePaymentRepo(sql);
-    const found = yield* repo.findById(id);
-    if (Option.isNone(found)) {
-      return yield* Effect.fail(new NotFound({ resource: 'payment' }));
-    }
-    yield* assertManaged(found.value, 'cancel');
+    const found = yield* loadManagedPayment(repo, id, 'cancel');
     const requested = yield* repo.requestCancel(id);
     if (!requested) {
       return yield* Effect.fail(
@@ -183,7 +180,7 @@ const cancelPayment = (
       idemKey: `cancel:${id}`,
       payload: {
         subscriptionId: id,
-        externalUserId: found.value.externalUserId,
+        externalUserId: found.externalUserId,
         reason,
       },
     });
@@ -197,11 +194,7 @@ const reactivatePayment = (_input: unknown, request: FastifyRequest) =>
     const id = readId(request);
     const sql = yield* SqlClient.SqlClient;
     const repo = makePaymentRepo(sql);
-    const found = yield* repo.findById(id);
-    if (Option.isNone(found)) {
-      return yield* Effect.fail(new NotFound({ resource: 'payment' }));
-    }
-    yield* assertManaged(found.value, 'reactivate');
+    const found = yield* loadManagedPayment(repo, id, 'reactivate');
     const ok = yield* repo.clearCancelRequest(id);
     if (!ok) {
       return yield* Effect.fail(
@@ -223,7 +216,7 @@ const reactivatePayment = (_input: unknown, request: FastifyRequest) =>
       idemKey: `reactivate:${id}:${at.toString()}`,
       payload: {
         paymentId: id,
-        externalUserId: found.value.externalUserId,
+        externalUserId: found.externalUserId,
         at,
       },
     });
@@ -239,6 +232,20 @@ const assertManaged = (payment: Payment, action: string) =>
   payment.origin === PaymentOrigin.External
     ? Effect.fail(new ExternalPaymentReadOnly({ action }))
     : Effect.void;
+
+/**
+ * Load a payment for an operator action: 404 if it does not exist, 409 if it is an
+ * external (legacy) payment (read-only here). Returns the payment on success.
+ */
+const loadManagedPayment = (repo: PaymentRepo, id: string, action: string) =>
+  Effect.gen(function* () {
+    const found = yield* repo.findById(id);
+    if (Option.isNone(found)) {
+      return yield* Effect.fail(new NotFound({ resource: 'payment' }));
+    }
+    yield* assertManaged(found.value, action);
+    return found.value;
+  });
 
 /** Deferral preconditions (docs/23): only an active payment, 1..30 days. */
 const assertDeferrable = (payment: Payment, days: number) => {
@@ -267,14 +274,10 @@ const deferPayment = (
     const id = readId(request);
     const sql = yield* SqlClient.SqlClient;
     const repo = makePaymentRepo(sql);
-    const found = yield* repo.findById(id);
-    if (Option.isNone(found)) {
-      return yield* Effect.fail(new NotFound({ resource: 'payment' }));
-    }
-    yield* assertManaged(found.value, 'defer');
-    yield* assertDeferrable(found.value, body.days);
+    const found = yield* loadManagedPayment(repo, id, 'defer');
+    yield* assertDeferrable(found, body.days);
     const { newPeriodEnd, newNextPaymentDate } = computeDeferral(
-      found.value,
+      found,
       body.days,
     );
     yield* repo.defer(id, newPeriodEnd, newNextPaymentDate);
@@ -291,7 +294,7 @@ const deferPayment = (
       idemKey: `defer:${id}:${at.toString()}`,
       payload: {
         paymentId: id,
-        externalUserId: found.value.externalUserId,
+        externalUserId: found.externalUserId,
         newPeriodEnd: newPeriodEnd.toISOString(),
         days: body.days,
         at,
