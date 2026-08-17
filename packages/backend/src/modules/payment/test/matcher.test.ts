@@ -43,6 +43,7 @@ const repo = (found: Payment | null): PaymentRepo => ({
   requestCancel: die,
   clearCancelRequest: die,
   markCancelledLapsed: die,
+  supersede: die,
   defer: die,
   updateToken: die,
 });

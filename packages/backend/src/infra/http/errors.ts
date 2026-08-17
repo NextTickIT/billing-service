@@ -69,3 +69,23 @@ export class CardChangeUnavailable extends Data.TaggedError(
     return { status: 409, body: { error: this.reason } };
   }
 }
+
+/**
+ * An operator action (cancel / reactivate / defer) was requested on an `external`
+ * (legacy-imported) payment. Its billing lives on SendPulse's own merchant, so the
+ * gateway cannot act on it (docs/25 §4.2). 409 → read-only here.
+ */
+export class ExternalPaymentReadOnly extends Data.TaggedError(
+  'ExternalPaymentReadOnly',
+)<{
+  readonly action: string;
+}> {
+  toHttp(): HttpReply {
+    return {
+      status: 409,
+      body: {
+        error: `payment is external (billed outside the gateway); ${this.action} is unavailable`,
+      },
+    };
+  }
+}

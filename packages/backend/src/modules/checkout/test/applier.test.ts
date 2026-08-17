@@ -39,6 +39,7 @@ const unusedSubs: PaymentRepo = {
   requestCancel: () => Effect.die('unused'),
   clearCancelRequest: () => Effect.die('unused'),
   markCancelledLapsed: () => Effect.die('unused'),
+  supersede: () => Effect.die('unused'),
   defer: () => Effect.die('unused'),
   updateToken: () => Effect.die('unused'),
 };

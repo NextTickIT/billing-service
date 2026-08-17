@@ -49,6 +49,7 @@ const activePayment: Payment = {
 const makeFakeRepo = (existing: Payment | null) => {
   let inserted: unknown = null;
   let extended: { id: string; input: ExtendPayment } | null = null;
+  let superseded: string | null = null;
   const repo: PaymentRepo = {
     findActiveByExternalUser: () =>
       Effect.succeed(existing === null ? Option.none() : Option.some(existing)),
@@ -78,10 +79,19 @@ const makeFakeRepo = (existing: Payment | null) => {
     requestCancel: () => Effect.die('unused'),
     clearCancelRequest: () => Effect.die('unused'),
     markCancelledLapsed: () => Effect.die('unused'),
+    supersede: (id) =>
+      Effect.sync(() => {
+        superseded = id;
+      }),
     defer: () => Effect.die('unused'),
     updateToken: () => Effect.die('unused'),
   };
-  return { repo, getInserted: () => inserted, getExtended: () => extended };
+  return {
+    repo,
+    getInserted: () => inserted,
+    getExtended: () => extended,
+    getSuperseded: () => superseded,
+  };
 };
 
 it.effect('creates a payment when the user has none active', () =>
@@ -108,6 +118,24 @@ it.effect('creates a payment when the user has none active', () =>
     expect(inserted.nextPaymentDate.toISOString().slice(0, 10)).toBe(
       '2026-02-15',
     );
+  }),
+);
+
+it.effect('supersedes an external payment and creates a managed one', () =>
+  Effect.gen(function* () {
+    const fake = makeFakeRepo({
+      ...activePayment,
+      origin: PaymentOrigin.External,
+    });
+
+    const result = yield* createOrExtend(fake.repo)(params);
+
+    // The legacy external payment is superseded (migration/takeover) and a fresh
+    // managed payment is created — not extended (docs/25 §4.4).
+    expect(result.created).toBe(true);
+    expect(result.subscriptionId).toBe('sub_new');
+    expect(fake.getSuperseded()).toBe('sub_1');
+    expect(fake.getExtended()).toBeNull();
   }),
 );
 

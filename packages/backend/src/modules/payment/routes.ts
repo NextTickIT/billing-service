@@ -9,6 +9,7 @@ import {
   Payment,
   PaymentDetail,
   PaymentMethod,
+  PaymentOrigin,
   PaymentStatus,
   ReactivateAccepted,
   Role,
@@ -19,6 +20,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
 import {
+  ExternalPaymentReadOnly,
   NotFound,
   Unauthorized,
   UnprocessableEntity,
@@ -159,6 +161,7 @@ const cancelPayment = (
     if (Option.isNone(found)) {
       return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
+    yield* assertManaged(found.value, 'cancel');
     const requested = yield* repo.requestCancel(id);
     if (!requested) {
       return yield* Effect.fail(
@@ -198,6 +201,7 @@ const reactivatePayment = (_input: unknown, request: FastifyRequest) =>
     if (Option.isNone(found)) {
       return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
+    yield* assertManaged(found.value, 'reactivate');
     const ok = yield* repo.clearCancelRequest(id);
     if (!ok) {
       return yield* Effect.fail(
@@ -225,6 +229,16 @@ const reactivatePayment = (_input: unknown, request: FastifyRequest) =>
     });
     return { status: 'active' as const };
   });
+
+/**
+ * External (legacy-imported) payments are read-only here: their billing lives on
+ * SendPulse's own merchant, so cancel / reactivate / defer are unavailable (docs/25
+ * §4.2). Migration to gateway billing is a fresh checkout, not an operator action.
+ */
+const assertManaged = (payment: Payment, action: string) =>
+  payment.origin === PaymentOrigin.External
+    ? Effect.fail(new ExternalPaymentReadOnly({ action }))
+    : Effect.void;
 
 /** Deferral preconditions (docs/23): only an active payment, 1..30 days. */
 const assertDeferrable = (payment: Payment, days: number) => {
@@ -257,6 +271,7 @@ const deferPayment = (
     if (Option.isNone(found)) {
       return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
+    yield* assertManaged(found.value, 'defer');
     yield* assertDeferrable(found.value, body.days);
     const { newPeriodEnd, newNextPaymentDate } = computeDeferral(
       found.value,

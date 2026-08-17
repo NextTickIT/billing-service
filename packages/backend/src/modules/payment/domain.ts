@@ -1,5 +1,9 @@
 import type { SqlError } from '@effect/sql';
-import { type Payment, PaymentStatus } from '@billing-service/shared';
+import {
+  type Payment,
+  PaymentOrigin,
+  PaymentStatus,
+} from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
@@ -40,17 +44,24 @@ export const createOrExtend =
         params.externalUserId,
       );
       if (Option.isSome(existing)) {
-        yield* repo.extend(existing.value.id, {
-          amount: params.amount,
-          currency: params.currency,
-          method: params.method,
-          period: params.period,
-          currentPeriodStart,
-          currentPeriodEnd,
-          nextPaymentDate,
-          recurringTokenRef: params.recurringTokenRef,
-        });
-        return { subscriptionId: existing.value.id, created: false };
+        // A managed payment is extended in place. An EXTERNAL (legacy) payment is
+        // superseded instead: the user is migrating to gateway billing (docs/25
+        // §4.4) by paying through our checkout, so we free the single-active slot
+        // and fall through to create a fresh managed payment below.
+        if (existing.value.origin !== PaymentOrigin.External) {
+          yield* repo.extend(existing.value.id, {
+            amount: params.amount,
+            currency: params.currency,
+            method: params.method,
+            period: params.period,
+            currentPeriodStart,
+            currentPeriodEnd,
+            nextPaymentDate,
+            recurringTokenRef: params.recurringTokenRef,
+          });
+          return { subscriptionId: existing.value.id, created: false };
+        }
+        yield* repo.supersede(existing.value.id);
       }
       const created = yield* repo.insert({
         externalUserId: params.externalUserId,

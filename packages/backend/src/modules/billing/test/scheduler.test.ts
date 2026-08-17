@@ -80,6 +80,7 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
     requestCancel: die,
     clearCancelRequest: die,
     markCancelledLapsed: die,
+    supersede: die,
     defer: die,
     updateToken: die,
   };

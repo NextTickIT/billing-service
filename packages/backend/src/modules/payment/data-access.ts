@@ -98,6 +98,12 @@ export interface PaymentRepo {
   readonly markCancelledLapsed: (
     id: string,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /**
+   * Supersede a payment unconditionally (→ `cancelled`): used when a legacy
+   * `external` payment is replaced by a new managed one at checkout (docs/25 §4.4),
+   * freeing the one-active-per-user slot for the takeover.
+   */
+  readonly supersede: (id: string) => Effect.Effect<void, SqlError.SqlError>;
   /** Deferral: push the anchor + re-derived next date on an active payment. */
   readonly defer: (
     id: string,
@@ -273,6 +279,12 @@ const markCancelledLapsed = (sql: SqlClient.SqlClient) => (id: string) =>
     WHERE id = ${id} AND "cancelRequestedAt" IS NOT NULL
   `.pipe(Effect.asVoid);
 
+const supersede = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql`
+    UPDATE payments SET status = ${PaymentStatus.Cancelled}, "updatedAt" = now()
+    WHERE id = ${id}
+  `.pipe(Effect.asVoid);
+
 const defer =
   (sql: SqlClient.SqlClient) =>
   (id: string, newPeriodEnd: Date, newNextPaymentDate: Date) =>
@@ -305,6 +317,7 @@ export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   requestCancel: requestCancel(sql),
   clearCancelRequest: clearCancelRequest(sql),
   markCancelledLapsed: markCancelledLapsed(sql),
+  supersede: supersede(sql),
   defer: defer(sql),
   updateToken: updateToken(sql),
 });
