@@ -10,8 +10,10 @@ real schema/modules, not the pre-WFP stubs.
 ## 1. Requirements summary
 
 Import SendPulse-charged users as read-only `external` **Payments** + **Charge**
-history, never billable here, never echoed to the SendPulse sink, migratable to
-`managed` only through checkout. Grounded facts that shape the plan:
+history, never billable here, migratable to `managed` only through checkout. Import
+is **event-silent** (emits nothing to any sink) and runs as a full backfill then
+incremental syncs, reusing the analytics source and mapping (standalone — rules
+reused, not code/DB). Grounded facts that shape the plan:
 
 - Single billable merchant; no merchant field on payments/charges
   (`packages/backend/src/config.ts`) → the `managed`/`external` split is by data
@@ -20,8 +22,8 @@ history, never billable here, never echoed to the SendPulse sink, migratable to
   (`payments_one_active_per_user`, migration `0009`/`0006`).
 - Token-less Payments are already scheduler-excluded (`payment/data-access.ts`
   `findDue` → `recurringTokenRef IS NOT NULL`).
-- Sink filtering is by event **name** only, plus a null-`externalUserId` skip
-  (`modules/sinks/sendpulse.ts`); there is no origin/source suppression yet.
+- Import emits no events, so no sink suppression is needed; managed events
+  (including the migration event) deliver to the SendPulse sink normally.
 - Nouns are `Payment` / `Charge` / `ChargeFixation` / `externalUserId`
   (`packages/shared/src/schemas/{payment,charge}.ts`).
 
@@ -68,19 +70,21 @@ history, never billable here, never echoed to the SendPulse sink, migratable to
 - Option 2B — a separate `external_payments` table. Rejected: duplicates the read
   API, the one-active constraint, and the migration/supersede path.
 
-### Decision 3 — SendPulse-sink suppression
+### Decision 3 — Events to the SendPulse sink
 
-- **Option 3A (CHOSEN)** — extend the SendPulse connector guard to no-op on
-  `external`-origin events (belt-and-braces; import itself is event-silent for
-  history). Same shape as the existing null-`externalUserId` skip.
-- Option 3B — a per-sink event-routing (allowlist) table. Rejected as
-  over-engineering for one rule (see OQ-6 — we may emit nothing sink-facing at all).
+- **Option 3A (CHOSEN)** — **import emits no events**; external Payments are never
+  billed/cancelled, so they generate none. Managed events (including the migration in
+  Decision 4) deliver to SendPulse normally. No suppression mechanism is built.
+- Option 3B — publish external events to the outbox and add an origin-suppression
+  guard in the connector. Rejected: unnecessary once import is event-silent.
 
 ### Decision 4 — Migration / overlap
 
 - **Option 4A (CHOSEN)** — on a successful checkout for a user holding an active
   external Payment, supersede it (`Cancelled`, reason `migrated`) and create the
-  managed Payment in one transaction; raise an operator-only overlap notification.
+  managed Payment in one transaction; the ordinary managed event (`payment_created` /
+  `initial_payment_succeeded`) delivered to the SendPulse sink is the only overlap
+  signal.
 - Option 4B — block the checkout and force operator action first. Rejected: worse UX;
   the user paying us is the signal to take over.
 
@@ -94,10 +98,11 @@ history, never billable here, never echoed to the SendPulse sink, migratable to
   is `NULL` by construction (already filtered by `findDue`) **and** an explicit
   scheduler assertion test (AC-4).
 - **Scenario 3** — supersede races the SendPulse-side charge → brief double bill.
-  *Mitigation:* operator overlap notification + audit; documented as inherent to
-  external cancel being impossible.
-- **Scenario 4** — a legacy event leaks to SendPulse. *Mitigation:* origin guard in
-  the connector + a delivery test asserting zero SendPulse calls for external events.
+  *Mitigation:* the migration event tells SendPulse to reconcile; the residual window
+  is inherent (we cannot cancel SendPulse's merchant) and accepted.
+- **Scenario 4** — import accidentally emits history events. *Mitigation:* the import
+  path never calls `publish`; an e2e asserts zero domain events / sink deliveries from
+  an import run.
 
 ---
 
@@ -110,7 +115,9 @@ history, never billable here, never echoed to the SendPulse sink, migratable to
 - `packages/shared/src/schemas/charge.ts` — add `sendpulse_legacy` to the source
   vocabulary.
 - New migration `0014_payment_origin.ts` — `ALTER TABLE payments ADD COLUMN origin
-  smallint NOT NULL DEFAULT 0`. No backfill needed (existing rows are `Managed`).
+  smallint NOT NULL DEFAULT 0` (no backfill; existing rows are `Managed`), plus a
+  `legacy_sync_state` table (`source text PK, watermark timestamptz`) for
+  backfill-then-incremental.
 
 ### Phase 1 — SendPulse CRM read module
 
@@ -118,14 +125,18 @@ history, never billable here, never echoed to the SendPulse sink, migratable to
   read-only SendPulse CRM client (`client.ts`, OAuth/Bearer, `/crm/v1/payments/all`),
   a `mapping.ts` (SendPulse payment → normalized `Charge` with
   `source=sendpulse_legacy`, `externalUserId=sendpulse:{contactId}`,
-  `idemKey=sp:{paymentId}`), `config.ts` (`SENDPULSE_API_TOKEN`, rate limit),
+  `idemKey=sp:{paymentId}`), a `derive.ts` (infer external Payment `status`/`period`
+  from the payment stream — SendPulse status codes + recency + cadence, default
+  `P1M` — reusing analytics' rules), `config.ts` (`SENDPULSE_API_TOKEN`, rate limit),
   `contracts.ts`. Parse via `Schema`, not casts.
 
 ### Phase 2 — Import command + applier
 
 - `modules/legacy/import.ts` — per `contactId`: upsert `external` Payment
-  (`origin=External`, token `null`) via a new `PaymentRepo.upsertExternal`, then
-  fix each mapped `Charge` as a `ChargeFixation`. Idempotent.
+  (`origin=External`, token `null`, `status`/`period` from `derive.ts`) via a new
+  `PaymentRepo.upsertExternal`, then fix each mapped `Charge` as a `ChargeFixation`.
+  Idempotent; **emits no domain events**.
+- Full backfill on first run, then incremental by the `legacy_sync_state` watermark.
 - Register a worker command in the worker boot (`packages/backend/src/worker-boot.ts`)
   and task registry (`infra/task-registry.ts`); gated by an env flag, default off.
 
@@ -136,22 +147,16 @@ history, never billable here, never echoed to the SendPulse sink, migratable to
 - Add an explicit test that `findDue` excludes `origin=External` (already true via
   the null-token filter).
 
-### Phase 4 — Migration / supersede + overlap
+### Phase 4 — Migration / supersede
 
 - `modules/payment/domain.ts` `createOrExtend` — when the current active Payment is
   `origin=External`, supersede it (`markCancelledLapsed`-style with reason
   `migrated`) and insert the managed Payment in the same transaction.
-- Emit the operator overlap notification (OQ-4: audit row and/or a new operator-only
-  event); never routed to SendPulse.
+- The migration flows through the existing checkout applier, so the ordinary managed
+  event (`payment_created` / `initial_payment_succeeded`) is emitted to the SendPulse
+  sink as usual — no extra overlap channel.
 
-### Phase 5 — SendPulse-sink suppression
-
-- Carry origin on the stored event (payload `source`/`origin`) for any external event
-  the system emits; `modules/sinks/sendpulse.ts` `deliver()` — add
-  `if (isExternalOrigin(event)) return;` beside the existing null-`externalUserId`
-  guard.
-
-### Phase 6 — Read API
+### Phase 5 — Read API
 
 - `modules/payment/routes.ts` — include `origin` in payment views; ensure
   `GET /operator/payment` and `GET /api/payment` surface it.
@@ -169,7 +174,7 @@ history, never billable here, never echoed to the SendPulse sink, migratable to
 | AC-5 | 3        |
 | AC-6 | 0, 4     |
 | AC-7 | 4        |
-| AC-8 | 5        |
+| AC-8 | 2        |
 | AC-9 | 1, 2     |
 
 ---
@@ -177,21 +182,22 @@ history, never billable here, never echoed to the SendPulse sink, migratable to
 ## 8. Test plan
 
 - **Unit** (`*.test.ts`, hermetic): mapping (SendPulse payment → Charge, minor
-  units, idemKey), `PaymentOrigin` guardrail predicates, supersede decision in
-  `createOrExtend`, connector origin-skip.
-- **Integration/e2e** (`*.e2e.ts`, real Postgres): import creates external
-  Payment+fixations and is idempotent on re-run; one-active constraint across
-  managed+external; scheduler skips external; `cancel` on external → 409; checkout
-  supersedes an active external and creates managed atomically; zero SendPulse
-  deliveries for an external-origin event.
+  units, idemKey), status/period derivation, `PaymentOrigin` guardrail predicates,
+  supersede decision in `createOrExtend`.
+- **Integration/e2e** (`*.e2e.ts`, real Postgres): backfill then incremental import
+  creates external Payment+fixations and is idempotent on re-run; an import run emits
+  zero domain events; one-active constraint across managed+external; scheduler skips
+  external; `cancel` on external → 409; checkout supersedes an active external and
+  creates managed atomically, emitting the managed event.
 
 ---
 
 ## 9. Risks
 
-- SendPulse CRM export authorization/fields unresolved (OQ-2, [04](04-open-questions.md)).
-- External Payment status/period semantics (OQ-1, OQ-3) affect import mapping.
-- Overlap-notification transport (OQ-4) touches the event/audit surface.
+- SendPulse CRM export authorization/fields want a live pass ([04](04-open-questions.md)).
+- The SendPulse-status → `PaymentStatus` collapse and fallback `period` need tuning on
+  real data.
+- Backfill volume: the first full import may be large; chunk and rate-limit.
 
 ---
 
@@ -206,22 +212,25 @@ history, never billable here, never echoed to the SendPulse sink, migratable to
 ## 11. ADR
 
 - **Decision.** Model legacy payers as read-only `external` Payments sourced from
-  SendPulse CRM, non-billable and sink-suppressed, migratable only via checkout.
+  SendPulse CRM, non-billable and **event-silent on import**, migratable only via
+  checkout.
 - **Drivers.** D1 no double billing; D2 minimal churn; D3 idempotency; D4 no echoes.
 - **Alternatives considered.** Second WFP merchant journal (1B); separate table (2B);
-  per-sink event-routing table (3B); block-and-operator migration (4B).
+  an origin-suppression connector guard (3B); block-and-operator migration (4B).
 - **Why chosen.** SendPulse CRM is the only source with the `contact_id` linkage; the
   origin marker reuses the existing constraint, scheduler filter, and checkout applier;
-  suppression mirrors an existing connector skip.
-- **Consequences.** One new column, one new source value, one new read module, one
-  connector guard. A brief external↔managed overlap is inherent (we cannot cancel
-  SendPulse's merchant) and is handled by operator notification.
-- **Follow-ups.** OQ-1..OQ-6 in [25](25-legacy-payer-import-spec.md).
+  import is event-silent, so no suppression is needed.
+- **Consequences.** One new column, one new source value, a small `legacy_sync_state`
+  table, one new read module; no sink/connector changes. A brief external↔managed
+  overlap is inherent (we cannot cancel SendPulse's merchant); the migration event
+  tells SendPulse to reconcile.
+- **Follow-ups.** OQ-1..OQ-6 resolved in [25 §7](25-legacy-payer-import-spec.md);
+  residual live-data tuning of status/period.
 
 ---
 
 ## 12. Open questions
 
-Carried from [25 §7](25-legacy-payer-import-spec.md): OQ-1 external status/refresh,
-OQ-2 SendPulse export contract, OQ-3 period inference, OQ-4 overlap transport,
-OQ-5 multiple products per user, OQ-6 whether import emits any sink-facing events.
+~~OQ-1..OQ-6~~ resolved in [25 §7](25-legacy-payer-import-spec.md). Residual: the
+exact SendPulse-status → `PaymentStatus` collapse and fallback `period` want a
+live-data pass ([04](04-open-questions.md) §Data).

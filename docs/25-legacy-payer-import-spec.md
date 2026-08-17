@@ -79,21 +79,36 @@ External Payments never hold a token (`recurringTokenRef IS NULL`) and never car
 `paid_till`. Both are structurally consistent with the current schema: token-less
 Payments are already skipped by the scheduler, and `paid_till` is out of scope.
 
+### 3.4 Status and period, inferred from legacy
+
+An external Payment's `status` and `period` are **derived from its SendPulse payment
+stream, reusing the analytics mapping** (billing-service stays standalone — the
+rules are reused, not the analytics code or DB). The SendPulse payment status codes
+(`200` paid, `300` expired, `301` refunded, `303` voided, `500` declined,
+`600` manual) plus payment recency collapse onto our `PaymentStatus` (`Active` while
+paying / last payment current, otherwise a lapsed terminal state); `period` is
+inferred from the cadence of successive payments, defaulting to `P1M` when it cannot
+be inferred.
+
 ## 4. Behaviour
 
 ### 4.1 Import
 
-A worker command ingests SendPulse CRM payments and, per `contactId`:
+A worker command ingests SendPulse CRM payments (the same source and payment shape
+the analytics project reads) and, per `contactId`:
 
-- upserts one `external` **Payment** (`origin=External`, `recurringTokenRef=null`,
-  with `amount` / `currency` / `method` / `period` from the SendPulse data),
-  respecting the existing one-active-per-user constraint;
+- upserts one `external` **Payment** (`origin=External`, `recurringTokenRef=null`),
+  respecting the existing one-active-per-user constraint; its `status`, `period`,
+  and money fields are inferred from the legacy payment stream (§3.4);
 - records each SendPulse payment as a `Charge` (`source=sendpulse_legacy`) fixed to
   that Payment (a `ChargeFixation`);
 - is idempotent and re-runnable (dedup by `idemKey` = SendPulse payment id;
   re-import updates, never duplicates).
 
-Money is stored in integer minor units; timestamps are UTC.
+It runs as an **initial full backfill of all history, then incremental syncs** that
+add only the history since the last run — tracked by a per-source watermark,
+mirroring the WayForPay poller's `w4p_poller_state`. Money is stored in integer
+minor units; timestamps are UTC.
 
 ### 4.2 Non-billable guarantees (external)
 
@@ -126,25 +141,18 @@ for a user who has an active `external` Payment:
   `migrated`, freeing the active slot — and the new `managed` Payment is created by
   the existing `createOrExtend` applier, in the same transaction (so the unique
   constraint is never violated);
-- because SendPulse's merchant may still charge the user for a short window (their
-  recurring lives outside us and we cannot cancel it), the supersession raises a
-  **support notification** (operator console / audit — **not** a SendPulse event)
-  so a human confirms the SendPulse-side charge is stopped;
-- if the two ever appear concurrently through import lag, the same overlap signal is
-  raised for operator reconciliation, reusing the quarantine/operator surface
-  ([06](06-api.md)).
+- the migration emits the **standard managed event to the SendPulse sink** (a normal
+  `payment_created` / `initial_payment_succeeded`). That is the only overlap signal —
+  SendPulse, now told the user pays through us, reconciles its own side. We build no
+  separate operator overlap channel.
 
-### 4.5 Events and the SendPulse sink
+### 4.5 Events
 
-Legacy import writes Payment and Charge **history**; it does not replay the
-historical domain-event stream. Any event that a future external-Payment action
-does produce is recorded in the outbox for audit, but its delivery to the
-**SendPulse sink is suppressed** — SendPulse is the source of these records and must
-not receive echoes. The sink filters only by event name today
-([21](21-sinks-module-plan.md)), so this adds an origin guard to the SendPulse
-connector: an event whose origin is `external` is a no-op delivery (marked
-delivered, no HTTP call), exactly like the existing `externalUserId === null` skip.
-Other and future sinks are unaffected.
+Import emits **no** domain events — it writes Payment and Charge **history** only, so
+nothing is replayed to any sink. External Payments are never billed or cancelled by
+us, so they generate no events either. The only sink-facing events are the ordinary
+**managed** ones, including the migration event in §4.4, which deliver to the
+SendPulse sink normally. No origin-based suppression guard is required.
 
 ## 5. API surface (deltas)
 
@@ -171,28 +179,26 @@ Other and future sinks are unaffected.
       (constraint holds).
 - [ ] AC-7 A successful checkout for a user with an active external Payment
       supersedes it (`Cancelled`, reason `migrated`), creates the managed Payment in
-      the same transaction, and raises the operator overlap notification.
-- [ ] AC-8 No event tied to an external Payment is delivered to the SendPulse sink;
-      the outbox still records it.
+      the same transaction, and emits the standard managed event to the SendPulse sink.
+- [ ] AC-8 Import emits no domain events; external Payments generate none.
 - [ ] AC-9 `externalUserId` is carried verbatim (`sendpulse:{contactId}`) end to end.
 
-## 7. Open questions
+## 7. Resolved decisions
 
-- (OQ-1) External Payment **status**: does an imported external Payment sit at
-  `Active` (occupying the single-active slot) until superseded, or a value derived
-  from SendPulse payment recency? What re-import cadence keeps it fresh?
-- (OQ-2) SendPulse CRM export: which exact endpoint/fields are authorized
-  ([04](04-open-questions.md) "what fields can be exported from SendPulse" is open)?
-  Is `/crm/v1/payments/all` the agreed source?
-- (OQ-3) `period` for an external Payment — inferred from SendPulse cadence or a
-  fixed default?
-- (OQ-4) Overlap-notification transport — a new operator-only event name, an audit
-  row, or the existing quarantine surface?
-- (OQ-5) Multiple products per user ([04](04-open-questions.md) §11.5, open) — does
-  one active external Payment per user hold when a user has several SendPulse
-  products?
-- (OQ-6) Does legacy import emit any sink-facing events at all, or only
-  Payment/Charge history with zero outgoing events?
+- OQ-1 — Status and cadence: an external Payment's status and period are inferred
+  from the legacy payment stream using analytics' mapping (§3.4). Import is an
+  initial full backfill, then incremental syncs of the history since the last run.
+- OQ-2 — Source: SendPulse CRM, the same feed and fields analytics reads.
+- OQ-3 — Period: inferred from payment cadence, default `P1M` (§3.4).
+- OQ-4 — Migration/overlap: emit the standard managed event to the SendPulse sink;
+  no separate operator overlap channel (§4.4).
+- OQ-5 — One active Payment (one product) per `externalUserId`; multiple products
+  per user is out of scope for now.
+- OQ-6 — Import emits no sink-facing events (§4.5).
+
+Residual: the exact SendPulse-status → `PaymentStatus` collapse and the fallback
+`period` want a live-data pass against real SendPulse records
+([04](04-open-questions.md) §Data).
 
 ## 8. Out of scope
 
