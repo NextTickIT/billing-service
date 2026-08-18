@@ -69,6 +69,7 @@ const makeFakeRepo = (existing: Payment | null) => {
       Effect.sync(() => {
         extended = { id, input };
       }),
+    upsertExternal: () => Effect.die('unused'),
     findById: () => Effect.die('unused'),
     findDue: () => Effect.die('unused'),
     advanceAfterSuccess: () => Effect.die('unused'),

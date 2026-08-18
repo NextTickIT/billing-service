@@ -74,6 +74,7 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
     findActiveByExternalUser: die,
     findById: die,
     insert: die,
+    upsertExternal: die,
     extend: die,
     findByExternalUser: die,
     listAll: die,

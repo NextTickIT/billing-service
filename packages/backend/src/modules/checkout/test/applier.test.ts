@@ -30,6 +30,7 @@ const unusedSubs: PaymentRepo = {
   findById: () => Effect.die('unused'),
   findDue: () => Effect.die('unused'),
   insert: () => Effect.die('unused'),
+  upsertExternal: () => Effect.die('unused'),
   extend: () => Effect.die('unused'),
   advanceAfterSuccess: () => Effect.die('unused'),
   recordRetry: () => Effect.die('unused'),

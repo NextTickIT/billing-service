@@ -3,6 +3,7 @@ import type { SqlError, Statement } from '@effect/sql';
 import {
   type CreatePayment,
   Payment,
+  PaymentOrigin,
   PaymentStatus,
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
@@ -20,6 +21,24 @@ export interface ExtendPayment {
   readonly currentPeriodEnd: Date;
   readonly nextPaymentDate: Date;
   readonly recurringTokenRef: string | null;
+}
+
+/**
+ * A legacy-imported external Payment (docs/25 §4.1). Holds no token and is never
+ * billed; `status`/`period`/money are inferred from the SendPulse stream. `origin`
+ * is forced to `External` by the repo, so it is not part of the input. `status` is
+ * already resolved by the caller against the one-active-per-user constraint.
+ */
+export interface ExternalPayment {
+  readonly externalUserId: string;
+  readonly amount: number;
+  readonly currency: number;
+  readonly method: number;
+  readonly period: string;
+  readonly status: number;
+  readonly currentPeriodStart: Date;
+  readonly currentPeriodEnd: Date;
+  readonly nextPaymentDate: Date;
 }
 
 /** Retry state after a failed recurring charge (FR-005). */
@@ -55,6 +74,14 @@ export interface PaymentRepo {
   ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
   readonly insert: (
     input: CreatePayment,
+  ) => Effect.Effect<Payment, SqlError.SqlError>;
+  /**
+   * Idempotently upsert the one `external` Payment for a user (legacy import,
+   * docs/25 §4.1): insert it, or update the existing external row in place
+   * (dedup on `payments_one_external_per_user`). Token-less by construction.
+   */
+  readonly upsertExternal: (
+    input: ExternalPayment,
   ) => Effect.Effect<Payment, SqlError.SqlError>;
   readonly extend: (
     id: string,
@@ -163,6 +190,33 @@ const insert = (sql: SqlClient.SqlClient) => (input: CreatePayment) =>
        ${input.period}, ${input.status}, ${input.currentPeriodStart},
        ${input.currentPeriodEnd}, ${input.nextPaymentDate},
        ${input.recurringTokenRef}, ${input.firstFailureAt}, ${input.retryAttempt})
+    RETURNING ${sql.unsafe(COLUMNS)}
+  `.pipe(Effect.flatMap(requireRow));
+
+/**
+ * Insert-or-update the user's external Payment. The `ON CONFLICT` predicate
+ * (`origin = 1`) must match `payments_one_external_per_user` literally for index
+ * inference; `1` is `PaymentOrigin.External`. Token/retry columns are constant NULL/0
+ * — an external Payment never bills.
+ */
+const upsertExternal = (sql: SqlClient.SqlClient) => (input: ExternalPayment) =>
+  sql<Payment>`
+    INSERT INTO payments
+      ("externalUserId", amount, currency, method, period, status, origin,
+       "currentPeriodStart", "currentPeriodEnd", "nextPaymentDate",
+       "recurringTokenRef", "firstFailureAt", "retryAttempt")
+    VALUES
+      (${input.externalUserId}, ${input.amount}, ${input.currency}, ${input.method},
+       ${input.period}, ${input.status}, ${PaymentOrigin.External},
+       ${input.currentPeriodStart}, ${input.currentPeriodEnd}, ${input.nextPaymentDate},
+       NULL, NULL, 0)
+    ON CONFLICT ("externalUserId") WHERE origin = 1
+    DO UPDATE SET
+      amount = EXCLUDED.amount, currency = EXCLUDED.currency, method = EXCLUDED.method,
+      period = EXCLUDED.period, status = EXCLUDED.status,
+      "currentPeriodStart" = EXCLUDED."currentPeriodStart",
+      "currentPeriodEnd" = EXCLUDED."currentPeriodEnd",
+      "nextPaymentDate" = EXCLUDED."nextPaymentDate", "updatedAt" = now()
     RETURNING ${sql.unsafe(COLUMNS)}
   `.pipe(Effect.flatMap(requireRow));
 
@@ -308,6 +362,7 @@ export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   findById: findById(sql),
   findDue: findDue(sql),
   insert: insert(sql),
+  upsertExternal: upsertExternal(sql),
   extend: extend(sql),
   advanceAfterSuccess: advanceAfterSuccess(sql),
   recordRetry: recordRetry(sql),

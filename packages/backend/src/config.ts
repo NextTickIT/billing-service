@@ -108,6 +108,20 @@ export interface SinksConfig {
   };
 }
 
+/**
+ * Legacy payer import (docs/25): the SendPulse CRM read credentials + import
+ * cadence. `importEnabled` gates the worker's import daemon off by default — it only
+ * runs where SendPulse access is provisioned. The API token is the same SendPulse
+ * account credential the sink uses (`SENDPULSE_API_TOKEN`).
+ */
+export interface LegacyConfig {
+  readonly importEnabled: boolean;
+  readonly apiToken: Redacted.Redacted;
+  readonly apiUrl: string;
+  readonly rateLimitRps: number;
+  readonly pollIntervalSeconds: number;
+}
+
 export interface AppConfig {
   readonly host: string;
   readonly port: number;
@@ -121,6 +135,7 @@ export interface AppConfig {
   readonly scheduler: SchedulerConfig;
   readonly worker: WorkerConfig;
   readonly sinks: SinksConfig;
+  readonly legacy: LegacyConfig;
   /**
    * Shared secret the BFF sends on every proxied request (`BFF_SECRET` env).
    * Empty string disables the gate (development / test). When set, the gate
@@ -162,6 +177,16 @@ const loadW4pCheckoutConfig = () => ({
     process.env['W4P_RETURN_URL'] ??
     'https://bill.nexttick.it/checkout/{orderReference}/return',
   sessionTtlSeconds: Number(process.env['W4P_SESSION_TTL_SECONDS'] ?? '3600'),
+});
+
+const loadLegacyConfig = (): LegacyConfig => ({
+  importEnabled: process.env['LEGACY_IMPORT_ENABLED'] === 'true',
+  apiToken: Redacted.make(process.env['SENDPULSE_API_TOKEN'] ?? ''),
+  apiUrl: process.env['SENDPULSE_CRM_API_URL'] ?? 'https://api.sendpulse.com',
+  rateLimitRps: Number(process.env['LEGACY_IMPORT_RATE_LIMIT_RPS'] ?? '5'),
+  pollIntervalSeconds: Number(
+    process.env['LEGACY_IMPORT_INTERVAL_SECONDS'] ?? '3600',
+  ),
 });
 
 const loadSchedulerConfig = (): SchedulerConfig => ({
@@ -231,5 +256,6 @@ export const loadConfig = (): AppConfig => ({
       rateLimitRps: Number(process.env['SENDPULSE_RATE_LIMIT_RPS'] ?? '5'),
     },
   },
+  legacy: loadLegacyConfig(),
   bffSecret: Redacted.make(process.env['BFF_SECRET'] ?? ''),
 });

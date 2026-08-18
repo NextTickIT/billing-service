@@ -34,7 +34,11 @@ import {
   PAYMENT_REACTIVATE,
 } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
+import { makeChargeRepo } from '@/modules/charge/data-access.js';
 import { enqueue } from '@/infra/queue/store.js';
+import { SendPulse } from '@/modules/legacy/client.js';
+import { runLegacyImport } from '@/modules/legacy/import.js';
+import { makeLegacySyncStateRepo } from '@/modules/legacy/sync-state.js';
 import { WayForPay } from '@/modules/wayforpay/client.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
 import { runPoller } from '@/modules/wayforpay/poller.js';
@@ -138,6 +142,28 @@ const startScheduler = (
     yield* Effect.logInfo('recurring scheduler started');
   });
 
+/** Fork the legacy SendPulse import daemon (docs/25) if enabled. */
+const startLegacyImport = (config: AppConfig) =>
+  Effect.gen(function* () {
+    if (!config.legacy.importEnabled) {
+      return;
+    }
+    const client = yield* SendPulse;
+    const sql = yield* SqlClient.SqlClient;
+    yield* Effect.forkDaemon(
+      runLegacyImport(
+        {
+          client,
+          payments: makePaymentRepo(sql),
+          charges: makeChargeRepo(sql),
+          state: makeLegacySyncStateRepo(sql),
+        },
+        { pollIntervalSeconds: config.legacy.pollIntervalSeconds },
+      ),
+    );
+    yield* Effect.logInfo('legacy import started');
+  });
+
 /**
  * Register handlers, start the gated sources, then run the queue dispatch loop.
  * The returned effect never completes (the loop runs forever): the standalone
@@ -156,6 +182,7 @@ export const bootWorker = (config: AppConfig) =>
     yield* registerHandlers(registry, outbox, pipeline, sql);
     yield* startPoller(config, pipeline.ingest);
     yield* startScheduler(config, pipeline.ingest, outbox.publish);
+    yield* startLegacyImport(config);
     const queue = yield* Queue;
     return yield* queue.run({
       workerId,

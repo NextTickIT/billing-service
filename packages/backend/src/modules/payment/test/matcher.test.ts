@@ -34,6 +34,7 @@ const repo = (found: Payment | null): PaymentRepo => ({
   findActiveByExternalUser: die,
   findDue: die,
   insert: die,
+  upsertExternal: die,
   extend: die,
   advanceAfterSuccess: die,
   recordRetry: die,

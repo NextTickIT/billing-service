@@ -20,6 +20,8 @@ import {
 } from '@/modules/checkout/domain.js';
 import { makeRecurringMatcher } from '@/modules/payment/matcher.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
+import { SendPulseLive } from '@/modules/legacy/client.js';
+import { makeSpConfig } from '@/modules/legacy/config.js';
 import { WayForPayLive } from '@/modules/wayforpay/client.js';
 import { makeW4pConfig } from '@/modules/wayforpay/config.js';
 
@@ -68,6 +70,18 @@ const wayForPayLayer = (config: AppConfig) =>
     Layer.provide(rateLimiterLayer(config.wayforpay.rateLimitRps)),
   );
 
+/** The SendPulse CRM read client for the legacy import, with its config satisfied. */
+const sendPulseLayer = (config: AppConfig) =>
+  SendPulseLive.pipe(
+    Layer.provide(
+      makeSpConfig({
+        apiToken: config.legacy.apiToken,
+        apiUrl: config.legacy.apiUrl,
+        rateLimitRps: config.legacy.rateLimitRps,
+      }),
+    ),
+  );
+
 /**
  * Worker runtime — the background process (src/worker.ts), a separate OS process
  * with its own runtime. DB-backed: the `Queue` dispatcher and `Outbox` need
@@ -81,6 +95,7 @@ export const makeWorkerLayer = (config: AppConfig) => {
     TaskRegistryLive,
     SqlLive(config.database),
     wayForPayLayer(config),
+    sendPulseLayer(config),
   );
   // The real sinks service reads its config from the DB (hot-reload, docs/21), so it
   // layers on top of `base` to get `SqlClient`; its output `Sinks` flows to the outbox.
