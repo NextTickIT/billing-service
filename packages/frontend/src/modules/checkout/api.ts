@@ -1,7 +1,10 @@
-import { PaymentMethod } from '@billing-service/shared';
-import type { CheckoutSessionPublic, PurchaseForm } from '@billing-service/shared';
+import type { PaymentMethod } from '@billing-service/shared';
+import type {
+  CheckoutSessionPublic,
+  PayInstruction,
+} from '@billing-service/shared';
 
-export type { CheckoutSessionPublic, PurchaseForm };
+export type { CheckoutSessionPublic, PayInstruction };
 
 export async function getCheckoutSession(
   id: string,
@@ -11,12 +14,20 @@ export async function getCheckoutSession(
   return res.json() as Promise<CheckoutSessionPublic>;
 }
 
-export async function payByCard(id: string): Promise<PurchaseForm> {
+/**
+ * Select a method and get the handoff: a card method returns a `form` to POST to
+ * WayForPay; a crypto method returns a `redirect` to the WhitePay hosted page (the
+ * page branches on `kind`).
+ */
+export async function pay(
+  id: string,
+  method: PaymentMethod,
+): Promise<PayInstruction> {
   const res = await fetch(`/api/checkout-sessions/${id}/pay`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ method: PaymentMethod.Card }),
+    body: JSON.stringify({ method }),
   });
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
-  return res.json() as Promise<PurchaseForm>;
+  return res.json() as Promise<PayInstruction>;
 }

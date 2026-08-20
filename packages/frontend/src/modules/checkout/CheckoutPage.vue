@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n';
 import {
   CheckoutSessionKind,
   CheckoutSessionStatus,
+  PaymentMethod,
 } from '@billing-service/shared';
 import { useCheckoutStore } from './store.js';
 import { formatDate } from '@/app/datetime.js';
@@ -39,6 +40,12 @@ const isPayable = computed(
     store.session?.status !== CheckoutSessionStatus.Expired,
 );
 
+// Crypto (WhitePay) is surfaced only when the build flag is on — kept dark until the
+// slug + API token + webhook token are provisioned (docs/25).
+const cryptoEnabled = computed(
+  () => import.meta.env.VITE_WHITEPAY_ENABLED === 'true',
+);
+
 onMounted(() => {
   void store.load(id);
 });
@@ -47,8 +54,8 @@ watch(
   () => store.session,
   () => {
     if (isVerify.value && isPayable.value) {
-      // Fetch the verify form via POST /pay; the `watch(() => store.form)` below
-      // submits it to WayForPay, exactly like a user-clicked Purchase.
+      // Fetch the verify form via POST /pay; the `watch(() => store.instruction)`
+      // below submits it to WayForPay, exactly like a user-clicked Purchase.
       void store.pay(id);
     }
   },
@@ -69,15 +76,24 @@ function submitW4PForm(action: string, fields: Record<string, unknown>): void {
   form.submit();
 }
 
+// A card method hands back a form to POST to WayForPay; a crypto method hands back a
+// redirect to the WhitePay hosted page. Both navigate away, so the button stays busy.
 watch(
-  () => store.form,
-  (form) => {
-    if (form) submitW4PForm(form.action, form.fields);
+  () => store.instruction,
+  (instruction) => {
+    if (!instruction) return;
+    if (instruction.kind === 'form') {
+      submitW4PForm(instruction.action, instruction.fields);
+    } else {
+      window.location.assign(instruction.url);
+    }
   },
 );
 
-async function onPay(): Promise<void> {
-  await store.pay(id);
+async function onPay(
+  method: PaymentMethod = PaymentMethod.Card,
+): Promise<void> {
+  await store.pay(id, method);
 }
 </script>
 
@@ -132,7 +148,13 @@ async function onPay(): Promise<void> {
             <BaseButton
               :label="t('checkout.payByCard')"
               :loading="store.submitting"
-              @click="onPay"
+              @click="onPay(PaymentMethod.Card)"
+            />
+            <BaseButton
+              v-if="cryptoEnabled"
+              :label="t('checkout.payByCrypto')"
+              :loading="store.submitting"
+              @click="onPay(PaymentMethod.Crypto)"
             />
           </div>
         </div>

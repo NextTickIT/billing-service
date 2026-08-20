@@ -35,6 +35,7 @@ export default {
   checkout: {
     title: 'Оплата',
     payByCard: 'Оплатить картой',
+    payByCrypto: 'Оплатить криптой',
     expired: 'Ссылка на оплату истекла.',
     completed: 'Оплата выполнена.',
     processing: 'Обрабатываем ваш платёж…',
