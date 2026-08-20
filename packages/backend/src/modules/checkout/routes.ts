@@ -3,16 +3,18 @@ import { randomUUID } from 'node:crypto';
 import { SqlClient } from '@effect/sql';
 import {
   CardChangeRequest,
+  type CheckoutSession,
   CheckoutSessionKind,
   CheckoutSessionPublic,
   CheckoutSessionStatus,
   CreateCheckoutSession,
+  PayInstruction,
+  PaymentMethod,
   PaymentStatus,
-  PurchaseForm,
   SelectMethod,
   SessionCreated,
 } from '@billing-service/shared';
-import { Clock, Effect, Schema } from 'effect';
+import { Clock, Effect, Redacted, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
@@ -36,13 +38,15 @@ import {
   verifyCallback,
 } from '@/modules/wayforpay/callback.js';
 import { buildPurchase, buildVerify } from '@/modules/wayforpay/purchase.js';
-
-const CallbackAckSchema = Schema.Struct({
-  orderReference: Schema.String,
-  status: Schema.Literal('accept'),
-  time: Schema.Int,
-  signature: Schema.String,
-});
+import {
+  normalizeWebhook,
+  verifyWebhook,
+} from '@/modules/whitepay/callback.js';
+import { WhitePay } from '@/modules/whitepay/client.js';
+import {
+  CryptoPaymentUnavailable,
+  type WhitePayError,
+} from '@/modules/whitepay/errors.js';
 
 const route = makeRoute((app: FastifyInstance) => app.runtime);
 
@@ -92,25 +96,14 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
     return { amount, currency, period, status, kind, expiresAt };
   });
 
-const pay = (input: SelectMethod, request: FastifyRequest) =>
+/** Card (WayForPay): a 0-amount card change verifies the card (buildVerify) when verify
+ * is enabled; otherwise a signed Purchase form the browser POSTs to the provider. */
+const payCard = (
+  session: CheckoutSession,
+  request: FastifyRequest,
+): Effect.Effect<PayInstruction> =>
   Effect.gen(function* () {
-    assertBffSecret(request);
-    const sql = yield* SqlClient.SqlClient;
-    const repo = makeCheckoutRepo(sql);
-    const id = readId(request);
-    const found = yield* repo.findById(id);
-    if (found._tag === 'None') {
-      return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
-    }
-    yield* repo.setPending(id, input.method);
-    const session = {
-      ...found.value,
-      method: input.method,
-      status: CheckoutSessionStatus.Pending,
-    };
     const config = request.server.appConfig.wayforpay;
-    // A 0-amount card change verifies the card (see buildVerify) when verify is enabled;
-    // otherwise it falls through to a minimal tokenizing Purchase (see cardChange).
     if (
       session.kind === CheckoutSessionKind.CardChange &&
       session.amount === 0 &&
@@ -122,7 +115,64 @@ const pay = (input: SelectMethod, request: FastifyRequest) =>
     return buildPurchase(config, session, orderDate);
   });
 
-const callback = (body: unknown, request: FastifyRequest) =>
+/** Crypto (WhitePay): mint a FRESH order on-click and hand back its hosted redirect —
+ * minting here (not at session creation) keeps WhitePay's ~2-min rate lock fresh (docs/23).
+ * Guarded by `enabled` so a dark deploy refuses crypto (503) instead of calling with an
+ * empty slug/token (docs/25). `external_order_id` = the session id, the callback match key. */
+const payCrypto = (
+  session: CheckoutSession,
+  request: FastifyRequest,
+): Effect.Effect<
+  PayInstruction,
+  CryptoPaymentUnavailable | WhitePayError,
+  WhitePay
+> =>
+  Effect.gen(function* () {
+    if (!request.server.appConfig.whitepay.enabled) {
+      return yield* Effect.fail(
+        new CryptoPaymentUnavailable({ reason: 'whitepay disabled' }),
+      );
+    }
+    const client = yield* WhitePay;
+    const order = yield* client.createOrder({
+      amount: session.amount,
+      currency: session.currency,
+      externalOrderId: session.id,
+    });
+    return { kind: 'redirect', url: order.acquiringUrl };
+  });
+
+const pay = (input: SelectMethod, request: FastifyRequest) =>
+  Effect.gen(function* () {
+    assertBffSecret(request);
+    const sql = yield* SqlClient.SqlClient;
+    const repo = makeCheckoutRepo(sql);
+    const id = readId(request);
+    const found = yield* repo.findById(id);
+    if (found._tag === 'None') {
+      return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
+    }
+    yield* repo.setPending(id, input.method);
+    const session: CheckoutSession = {
+      ...found.value,
+      method: input.method,
+      status: CheckoutSessionStatus.Pending,
+    };
+    return input.method === PaymentMethod.Crypto
+      ? yield* payCrypto(session, request)
+      : yield* payCard(session, request);
+  });
+
+const providerOf = (request: FastifyRequest): string =>
+  (request.params as { readonly provider: string }).provider;
+
+const header = (request: FastifyRequest, key: string): string | undefined => {
+  const value = request.headers[key];
+  return typeof value === 'string' ? value : undefined;
+};
+
+/** WayForPay serviceUrl callback: 8-field HMAC-MD5, normalize, enqueue, signed accept. */
+const wayForPayCallback = (body: unknown, request: FastifyRequest) =>
   Effect.gen(function* () {
     const config = request.server.appConfig.wayforpay;
     const payload = (body ?? {}) as CallbackPayload;
@@ -139,6 +189,45 @@ const callback = (body: unknown, request: FastifyRequest) =>
     const time = Math.floor((yield* Clock.currentTimeMillis) / 1000);
     return ackResponse(config, event.externalRef, time);
   });
+
+/** WhitePay webhook: HMAC-SHA256 the RAW body against the webhook token (docs/17/22),
+ * normalize into the same pipeline, ack HTTP 200. State is reconciled from the webhook,
+ * never the browser redirect. */
+const whitePayCallback = (body: unknown, request: FastifyRequest) =>
+  Effect.gen(function* () {
+    const config = request.server.appConfig.whitepay;
+    const verified = verifyWebhook(
+      Redacted.value(config.webhookToken),
+      request.rawBody ?? '',
+      header(request, 'signature'),
+      header(request, 'x-secret-key'),
+    );
+    if (!verified) {
+      return yield* Effect.fail(new Unauthorized({ reason: 'bad signature' }));
+    }
+    const event = normalizeWebhook(body);
+    const sql = yield* SqlClient.SqlClient;
+    yield* enqueue(sql)({
+      messageType: PAYMENT_EVENT_RECEIVED,
+      idemKey: event.idemKey,
+      payload: event,
+    });
+    return { status: 'accepted' };
+  });
+
+/** Provider callbacks share one path (`:provider`); dispatch to the provider's verify +
+ * normalize. The two providers ack differently (a signed W4P accept vs a bare 200), so
+ * the route output is `Unknown` — an unknown provider is a 404 (AC8: adding one is local). */
+const callback = (body: unknown, request: FastifyRequest) => {
+  const provider = providerOf(request);
+  if (provider === 'whitepay') {
+    return whitePayCallback(body, request);
+  }
+  if (provider === 'wayforpay') {
+    return wayForPayCallback(body, request);
+  }
+  return Effect.fail(new NotFound({ resource: 'provider' }));
+};
 
 /**
  * SendPulse-initiated card change (docs/23). Resolve the user's payment: a cancelled
@@ -224,7 +313,7 @@ export default function checkout(fastify: FastifyInstance): void {
     method: 'POST',
     path: '/api/checkout-sessions/:id/pay',
     input: SelectMethod,
-    output: PurchaseForm,
+    output: PayInstruction,
     handler: pay,
   });
 
@@ -232,7 +321,7 @@ export default function checkout(fastify: FastifyInstance): void {
     method: 'POST',
     path: '/api/providers/:provider/callback',
     input: Schema.Unknown,
-    output: CallbackAckSchema,
+    output: Schema.Unknown,
     handler: callback,
   });
 }

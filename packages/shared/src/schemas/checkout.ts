@@ -106,12 +106,37 @@ export type CheckoutSessionPublic = Schema.Schema.Type<
 >;
 
 /**
- * POST /api/checkout-sessions/:id/pay response: WayForPay hosted-purchase form
- * fields that the frontend posts to the provider directly.
+ * A WayForPay hosted-purchase form the frontend POSTs to the provider directly
+ * (`kind: 'form'` so a provider whose handoff is a redirect, not a form POST, is a
+ * distinct union member rather than an overloaded shape).
  */
 export const PurchaseForm = Schema.Struct({
+  kind: Schema.Literal('form'),
   action: Schema.String,
   fields: Schema.Record({ key: Schema.String, value: Schema.Unknown }),
 });
 
 export type PurchaseForm = Schema.Schema.Type<typeof PurchaseForm>;
+
+/**
+ * A hosted-checkout redirect the frontend navigates to (WhitePay: we mint a crypto
+ * order server-side and hand back its `acquiring_url`). The browser GETs `url` — no
+ * form fields, no client-side signing.
+ */
+export const RedirectInstruction = Schema.Struct({
+  kind: Schema.Literal('redirect'),
+  url: Schema.String,
+});
+
+export type RedirectInstruction = Schema.Schema.Type<
+  typeof RedirectInstruction
+>;
+
+/**
+ * POST /api/checkout-sessions/:id/pay response, discriminated on `kind`: a card
+ * method hands back a `form` to POST to WayForPay; a crypto method hands back a
+ * `redirect` to the WhitePay hosted page. A new provider adds a member, not a field.
+ */
+export const PayInstruction = Schema.Union(PurchaseForm, RedirectInstruction);
+
+export type PayInstruction = Schema.Schema.Type<typeof PayInstruction>;

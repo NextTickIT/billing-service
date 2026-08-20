@@ -22,6 +22,8 @@ import { makeRecurringMatcher } from '@/modules/payment/matcher.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import { WayForPayLive } from '@/modules/wayforpay/client.js';
 import { makeW4pConfig } from '@/modules/wayforpay/config.js';
+import { WhitePayLive } from '@/modules/whitepay/client.js';
+import { makeWhitePayConfig } from '@/modules/whitepay/config.js';
 
 /**
  * The single application runtime (HTTP server): one `Layer` — Hasher + auth config
@@ -31,6 +33,26 @@ import { makeW4pConfig } from '@/modules/wayforpay/config.js';
  * `/health` probe), so `buildApp()` and connection-free unit tests stay hermetic
  * even though `PgClient` connects eagerly once the layer is built.
  */
+/**
+ * The WhitePay client with its config + rate limiter satisfied. Lives on the HTTP
+ * runtime (not the worker): a crypto order is minted on-click inside the `pay` route,
+ * so the request-serving process makes the call. Constructing it opens no connection.
+ */
+const whitePayLayer = (config: AppConfig) =>
+  WhitePayLive.pipe(
+    Layer.provide(
+      makeWhitePayConfig({
+        slug: config.whitepay.slug,
+        apiToken: config.whitepay.apiToken,
+        webhookToken: config.whitepay.webhookToken,
+        apiUrl: config.whitepay.apiUrl,
+        successfulLink: config.whitepay.successfulLink,
+        failureLink: config.whitepay.failureLink,
+      }),
+    ),
+    Layer.provide(rateLimiterLayer(config.whitepay.rateLimitRps)),
+  );
+
 export const makeAppLayer = (config: AppConfig) =>
   Layer.mergeAll(
     HasherLive,
@@ -38,6 +60,7 @@ export const makeAppLayer = (config: AppConfig) =>
       adminToken: config.adminToken,
       sessionTtlSeconds: config.sessionTtlSeconds,
     }),
+    whitePayLayer(config),
     // `provideMerge` keeps `SqlClient` in the runtime's context, so route handlers
     // and the `/health` readiness probe run queries on it directly.
     AuthRepoLive.pipe(Layer.provideMerge(SqlLive(config.database))),

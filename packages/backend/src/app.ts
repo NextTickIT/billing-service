@@ -22,11 +22,26 @@ export const buildApp = async (): Promise<FastifyInstance> => {
     logger: { redact: ['req.headers.authorization'] },
   });
 
-  // application/json keeps Fastify's built-in parser; any other content-type
-  // (provider callbacks) is parsed as a raw string into JSON (see parseRawBody).
-  app.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => {
-    done(null, parseRawBody(typeof body === 'string' ? body : ''));
-  });
+  // Every body is read as a raw string first: `parseRawBody` turns it into JSON (or
+  // the form-encoded shape WayForPay sends), and the raw bytes are stashed on
+  // `request.rawBody` so a webhook that signs the RAW payload (WhitePay HMAC-SHA256)
+  // can verify it — re-serializing the parsed JSON would break the signature. Applied
+  // to `application/json` too, so provider webhooks posting JSON keep their raw body.
+  const parseWithRaw = (
+    req: { rawBody?: string },
+    body: string | Buffer,
+    done: (err: Error | null, value?: unknown) => void,
+  ): void => {
+    const raw = typeof body === 'string' ? body : '';
+    req.rawBody = raw;
+    done(null, parseRawBody(raw));
+  };
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string' },
+    parseWithRaw,
+  );
+  app.addContentTypeParser('*', { parseAs: 'string' }, parseWithRaw);
 
   // Pass 1: system plugins — loaded before modules, decorators visible to them.
   await app.register(autoload, {

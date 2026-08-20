@@ -9,4 +9,10 @@ declare module 'fastify' {
      * first `run*`). */
     readonly runtime: AppRuntime;
   }
+
+  interface FastifyRequest {
+    /** The raw request body captured by the content-type parser (app.ts), so a
+     * webhook that HMACs its raw payload (WhitePay) can verify the exact bytes. */
+    rawBody?: string;
+  }
 }

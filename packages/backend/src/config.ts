@@ -77,6 +77,28 @@ export interface WayForPayConfig {
   readonly sessionTtlSeconds: number;
 }
 
+/**
+ * WhitePay (crypto acquiring, docs/17/22/23/25). A push-based acquirer: no reusable
+ * token, so it is a one-time crypto checkout method only (recurring stays on the W4P
+ * card rail). Three credentials — `slug` (payment-page id in the create-order path),
+ * `apiToken` (Bearer), `webhookToken` (HMAC-SHA256 of the inbound webhook raw body).
+ * Ships `enabled: false` until all three are provisioned (docs/25).
+ */
+export interface WhitePayConfig {
+  readonly enabled: boolean;
+  readonly slug: string;
+  readonly apiToken: Redacted.Redacted;
+  readonly webhookToken: Redacted.Redacted;
+  /** API base; create-order posts to `${apiUrl}/private-api/crypto-orders/{slug}`. */
+  readonly apiUrl: string;
+  /** Browser redirect targets sent as successful_link/failure_link (templated on
+   * `{sessionId}`). WhitePay treats the webhook, not the redirect, as truth. */
+  readonly successfulLink: string;
+  readonly failureLink: string;
+  /** Client-side request rate (req/s); WhitePay documents no server limit. */
+  readonly rateLimitRps: number;
+}
+
 /** Recurring-charge scheduler (FR-004). Off until production credentials exist. */
 export interface SchedulerConfig {
   readonly enabled: boolean;
@@ -118,6 +140,7 @@ export interface AppConfig {
   readonly sessionTtlSeconds: number;
   readonly queue: QueueConfig;
   readonly wayforpay: WayForPayConfig;
+  readonly whitepay: WhitePayConfig;
   readonly scheduler: SchedulerConfig;
   readonly worker: WorkerConfig;
   readonly sinks: SinksConfig;
@@ -162,6 +185,23 @@ const loadW4pCheckoutConfig = () => ({
     process.env['W4P_RETURN_URL'] ??
     'https://bill.nexttick.it/checkout/{orderReference}/return',
   sessionTtlSeconds: Number(process.env['W4P_SESSION_TTL_SECONDS'] ?? '3600'),
+});
+
+/** WhitePay credentials (docs/25). `enabled` gates the crypto method + callback so
+ * the adapter ships dark until slug + API token + webhook token are all provisioned. */
+const loadWhitePayConfig = (): WhitePayConfig => ({
+  enabled: process.env['WHITEPAY_ENABLED'] === 'true',
+  slug: process.env['WHITEPAY_SLUG'] ?? '',
+  apiToken: Redacted.make(process.env['WHITEPAY_API_TOKEN'] ?? ''),
+  webhookToken: Redacted.make(process.env['WHITEPAY_WEBHOOK_TOKEN'] ?? ''),
+  apiUrl: process.env['WHITEPAY_API_URL'] ?? 'https://api.whitepay.com',
+  successfulLink:
+    process.env['WHITEPAY_SUCCESSFUL_LINK'] ??
+    'https://bill.nexttick.it/checkout/{sessionId}/return',
+  failureLink:
+    process.env['WHITEPAY_FAILURE_LINK'] ??
+    'https://bill.nexttick.it/checkout/{sessionId}',
+  rateLimitRps: Number(process.env['WHITEPAY_RATE_LIMIT_RPS'] ?? '2'),
 });
 
 const loadSchedulerConfig = (): SchedulerConfig => ({
@@ -220,6 +260,7 @@ export const loadConfig = (): AppConfig => ({
   sessionTtlSeconds: Number(process.env['SESSION_TTL_SECONDS'] ?? '86400'),
   queue: loadQueueConfig(),
   wayforpay: loadWayForPayConfig(),
+  whitepay: loadWhitePayConfig(),
   scheduler: loadSchedulerConfig(),
   worker: { enabled: process.env['WORKER_ENABLED'] === 'true' },
   sinks: {

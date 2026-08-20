@@ -4,8 +4,10 @@ import { Redacted } from 'effect';
 import type { W4pConfigService } from '@/modules/wayforpay/config.js';
 import { signPurchase, signVerify } from '@/modules/wayforpay/signature.js';
 
-/** A ready-to-submit WayForPay Purchase form: POST `fields` to `action`. */
+/** A ready-to-submit WayForPay Purchase form: POST `fields` to `action`. `kind`
+ * discriminates it from a crypto redirect in the shared `PayInstruction` union. */
 export interface PurchaseForm {
+  readonly kind: 'form';
   readonly action: string;
   readonly fields: Record<string, unknown>;
 }
@@ -37,6 +39,7 @@ export const buildPurchase = (
     Redacted.value(config.merchantSecretKey),
   );
   return {
+    kind: 'form',
     action: config.checkoutUrl,
     fields: {
       merchantAccount: config.merchantAccount,
@@ -69,6 +72,7 @@ export const buildVerify = (
   config: W4pConfigService,
   session: CheckoutSession,
 ): PurchaseForm => ({
+  kind: 'form',
   action: config.verifyUrl,
   fields: {
     merchantAccount: config.merchantAccount,
