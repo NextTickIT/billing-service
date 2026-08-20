@@ -65,8 +65,9 @@ onUnmounted(stopPolling);
         <BaseSpinner />
         <p class="return__msg return__msg--dim">{{ t('checkout.processing') }}</p>
       </div>
-      <div v-else-if="state === 'confirmed'" class="return__msg return__msg--ok">
-        {{ t('checkout.confirmed') }}
+      <div v-else-if="state === 'confirmed'" class="return__center">
+        <p class="return__msg return__msg--ok">{{ t('checkout.confirmed') }}</p>
+        <p class="return__msg return__msg--dim">{{ t('checkout.returnHint') }}</p>
       </div>
       <div v-else-if="state === 'timeout'" class="return__msg return__msg--warn">
         {{ t('checkout.confirmLater') }}

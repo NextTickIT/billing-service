@@ -39,6 +39,7 @@ export default {
     completed: 'Payment completed.',
     processing: 'Processing your payment…',
     confirmed: 'Payment confirmed.',
+    returnHint: 'You can now return to the payment page or bot.',
     confirmLater: 'We will confirm shortly.',
     declined: 'Payment declined. Please try again.',
     periodLabel: 'Billing period',
