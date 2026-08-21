@@ -78,7 +78,7 @@ export interface WayForPayConfig {
 }
 
 /**
- * WhitePay (crypto acquiring, docs/17/22/23/25). A push-based acquirer: no reusable
+ * WhitePay (crypto acquiring, docs/25/26). A push-based acquirer: no reusable
  * token, so it is a one-time crypto checkout method only (recurring stays on the W4P
  * card rail). Three credentials — `slug` (payment-page id in the create-order path),
  * `apiToken` (Bearer), `webhookToken` (HMAC-SHA256 of the inbound webhook raw body).

@@ -9,12 +9,18 @@ import {
 } from '@/modules/whitepay/mapping.js';
 
 /**
- * WhitePay webhook processing (docs/17/22). The webhook is verified against an
+ * WhitePay webhook processing (docs/26). The webhook is verified against an
  * HMAC-SHA256 of the RAW body keyed with the per-page Webhook Token (re-serializing
  * the JSON is a real signature-mismatch trap — always the raw bytes), normalized into
  * the standard incoming `Charge` so it flows through the same pipeline as every other
- * source (FR-007), and acknowledged with HTTP 200. The `X-Secret-Key` shared-secret
- * header is accepted defensively (some integrations send it instead of `Signature`).
+ * source (FR-007), and acknowledged with HTTP 200.
+ *
+ * We require the HMAC `Signature` — the shared-secret `X-Secret-Key` mode some plugins
+ * accept is deliberately NOT honored: it transmits the secret verbatim in a header (a
+ * leaked request log becomes a full forgery credential) and, offered alongside HMAC, is
+ * an attacker-preferred downgrade that unbinds the signature from the body. If WhitePay
+ * is ever confirmed to only send `X-Secret-Key`, gate it behind an explicit off-by-
+ * default flag rather than accepting both silently.
  */
 
 /** Constant-time equality that never throws on unequal lengths or non-hex input. */
@@ -28,27 +34,23 @@ export const hmacSha256Hex = (raw: string, key: string): string =>
   createHmac('sha256', key).update(raw, 'utf8').digest('hex');
 
 /**
- * Verify a webhook. Valid when the `Signature` header equals HMAC-SHA256(rawBody,
- * webhookToken), OR the `X-Secret-Key` header equals the webhook token (shared-secret
- * mode). An empty token (unconfigured) never verifies — a dark deploy rejects callbacks.
+ * Verify a webhook: the `Signature` header must equal HMAC-SHA256(rawBody, webhookToken)
+ * (constant-time). An empty token (unconfigured) or a missing signature never verifies —
+ * a dark deploy rejects callbacks.
  */
 export const verifyWebhook = (
   webhookToken: string,
   rawBody: string,
   signature: string | undefined,
-  secretKey: string | undefined,
 ): boolean => {
-  const token = webhookToken;
-  if (token.length === 0) {
+  if (
+    webhookToken.length === 0 ||
+    signature === undefined ||
+    signature.length === 0
+  ) {
     return false;
   }
-  if (signature !== undefined && signature.length > 0) {
-    return safeEqual(hmacSha256Hex(rawBody, token), signature);
-  }
-  if (secretKey !== undefined && secretKey.length > 0) {
-    return safeEqual(secretKey, token);
-  }
-  return false;
+  return safeEqual(hmacSha256Hex(rawBody, webhookToken), signature);
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -85,7 +87,7 @@ const numOrStr = (
 /**
  * Normalize a webhook into an incoming `Charge`. The idempotency key is the order id
  * plus the status, so an at-least-once redelivery of the same transition dedupes while
- * a later status change is its own event (mirrors the WayForPay callback, docs/22).
+ * a later status change is its own event (mirrors the WayForPay callback, docs/26).
  * `externalRef` is our checkout session id (`external_order_id`), the match key.
  */
 export const normalizeWebhook = (payload: unknown): Charge => {

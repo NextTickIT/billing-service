@@ -1,6 +1,7 @@
 import type { SqlError } from '@effect/sql';
 import {
   CheckoutSessionKind,
+  CheckoutSessionStatus,
   PaymentMethod,
   PaymentStatus,
 } from '@billing-service/shared';
@@ -44,6 +45,13 @@ export const makeCheckoutMatcher =
       // A card-change session is handled by its own matcher/applier — never as a
       // first checkout (which would create-or-extend a second payment).
       if (session.kind !== CheckoutSessionKind.Checkout) {
+        return { matched: false };
+      }
+      // A session is completed on the FIRST successful charge. A second success (crypto
+      // double-pay: two paid orders for one session) or a late decline arriving after
+      // completion must NOT re-credit or emit a spurious failure — fall through to
+      // quarantine so the operator sees it (a refund candidate), never book it (docs/26).
+      if (session.status === CheckoutSessionStatus.Completed) {
         return { matched: false };
       }
       return {

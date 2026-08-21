@@ -24,30 +24,26 @@ const rawBody = JSON.stringify({ order });
 describe('verifyWebhook', () => {
   test('accepts a correct HMAC-SHA256 Signature over the raw body', () => {
     const signature = hmacSha256Hex(rawBody, token);
-    expect(verifyWebhook(token, rawBody, signature, undefined)).toBe(true);
+    expect(verifyWebhook(token, rawBody, signature)).toBe(true);
   });
 
   test('rejects a tampered Signature', () => {
-    expect(verifyWebhook(token, rawBody, 'deadbeef', undefined)).toBe(false);
+    expect(verifyWebhook(token, rawBody, 'deadbeef')).toBe(false);
   });
 
   test('rejects when the raw body differs (re-serialization trap)', () => {
     const signature = hmacSha256Hex(rawBody, token);
     const reserialized = JSON.stringify({ order: { ...order } }) + ' ';
-    expect(verifyWebhook(token, reserialized, signature, undefined)).toBe(
-      false,
-    );
+    expect(verifyWebhook(token, reserialized, signature)).toBe(false);
   });
 
-  test('accepts the X-Secret-Key shared-secret mode', () => {
-    expect(verifyWebhook(token, rawBody, undefined, token)).toBe(true);
-    expect(verifyWebhook(token, rawBody, undefined, 'wrong')).toBe(false);
+  test('rejects a missing signature — there is NO X-Secret-Key shared-secret fallback', () => {
+    expect(verifyWebhook(token, rawBody, undefined)).toBe(false);
+    expect(verifyWebhook(token, rawBody, '')).toBe(false);
   });
 
   test('an empty webhook token never verifies (dark deploy rejects callbacks)', () => {
-    expect(verifyWebhook('', rawBody, hmacSha256Hex(rawBody, ''), '')).toBe(
-      false,
-    );
+    expect(verifyWebhook('', rawBody, hmacSha256Hex(rawBody, ''))).toBe(false);
   });
 });
 

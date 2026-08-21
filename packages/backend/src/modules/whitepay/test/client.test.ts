@@ -129,14 +129,14 @@ it.effect(
 );
 
 it.effect(
-  'createOrder fails WhitePayTransportError on a non-transient 4xx',
+  'createOrder fails WhitePayTransportError on a non-transient non-4xx-reject status',
   () => {
-    // 400 is not transient, so it fails immediately without the retry backoff that
-    // would otherwise suspend on the test clock.
+    // 404 is neither a 400/422 request-reject nor transient (429/5xx), so it fails fast
+    // as a transport error without the retry backoff that would suspend on the test clock.
     const calls: Call[] = [];
     return clientWith(calls, {
       ok: false,
-      status: 400,
+      status: 404,
       body: { error: 'boom' },
     })
       .createOrder(params)
@@ -144,6 +144,29 @@ it.effect(
         Effect.flip,
         Effect.map((error) => {
           expect(error._tag).toBe('WhitePayTransportError');
+        }),
+      );
+  },
+  30_000,
+);
+
+it.effect(
+  'createOrder fails CryptoOrderRejected (422) carrying the provider message',
+  () => {
+    // Below the WhitePay minimum order value → HTTP 422 {message, errors}. A permanent
+    // client-reject, surfaced as 422 with the provider message, not a retryable 502.
+    const calls: Call[] = [];
+    return clientWith(calls, {
+      ok: false,
+      status: 422,
+      body: { message: 'Мін: 216.80 UAH', errors: { amount: ['too small'] } },
+    })
+      .createOrder(params)
+      .pipe(
+        Effect.flip,
+        Effect.map((error) => {
+          expect(error._tag).toBe('CryptoOrderRejected');
+          expect((error as { reason: string }).reason).toContain('216.80');
         }),
       );
   },

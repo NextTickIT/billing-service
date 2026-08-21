@@ -1,7 +1,7 @@
 import { Schema } from 'effect';
 
 /**
- * WhitePay response shapes (docs/17/23). Validation is permissive: only the fields our
+ * WhitePay response shapes (docs/26). Validation is permissive: only the fields our
  * logic reads are bounded and, with `onExcessProperty: preserve`, unknown keys survive,
  * so an extra provider field never drops an order. Money/date fields arrive as string OR
  * number and are NOT coerced here (see mapping.ts). Types are DERIVED from the schemas.
@@ -15,7 +15,7 @@ const OptionalStringOrNumber = Schema.optional(StringOrNumber);
  * A crypto order. `external_order_id` is our checkout session id (the match key);
  * `acquiring_url` is the hosted checkout link; `value` is the fiat-denominated invoice
  * amount; `received_total` is what actually arrived (matters for PARTIALLY_FULFILLED).
- * No token/mandate/recToken field exists anywhere — the make-or-break finding (docs/17).
+ * No token/mandate/recToken field exists anywhere — the make-or-break finding (docs/26).
  */
 export const WhitePayOrderSchema = Schema.Struct({
   id: Schema.optional(Schema.String),
@@ -43,7 +43,7 @@ export const OrderEnvelopeSchema = Schema.Struct({
   order: Schema.optional(WhitePayOrderSchema),
 });
 
-/** Order lifecycle statuses (docs/17). `PARTIALLY_FULFILLED` = crypto underpayment. */
+/** Order lifecycle statuses (docs/26). `PARTIALLY_FULFILLED` = crypto underpayment. */
 export const WHITEPAY_STATUS = {
   INIT: 'INIT',
   OPEN: 'OPEN',

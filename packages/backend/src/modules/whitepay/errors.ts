@@ -85,4 +85,21 @@ export class CryptoPaymentUnavailable extends Data.TaggedError(
   }
 }
 
-export type WhitePayError = WhitePayTransportError | WhitePayResponseError;
+/**
+ * WhitePay rejected the create-order request itself (HTTP 400/422) — e.g. an amount
+ * below the provider's minimum order value. This is a permanent CLIENT condition, not a
+ * provider outage, so it maps to 422 (not the 502 a transport failure gets) and carries
+ * the provider's own message so the checkout page can explain it (docs/26).
+ */
+export class CryptoOrderRejected extends Data.TaggedError(
+  'CryptoOrderRejected',
+)<{
+  readonly reason: string;
+}> {
+  toHttp(): HttpReply {
+    return { status: 422, body: { error: this.reason } };
+  }
+}
+
+export type WhitePayError =
+  WhitePayTransportError | WhitePayResponseError | CryptoOrderRejected;

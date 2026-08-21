@@ -21,6 +21,7 @@ import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
 import {
   CardChangeUnavailable,
+  Conflict,
   NotFound,
   Unauthorized,
 } from '@/infra/http/errors.js';
@@ -116,7 +117,7 @@ const payCard = (
   });
 
 /** Crypto (WhitePay): mint a FRESH order on-click and hand back its hosted redirect —
- * minting here (not at session creation) keeps WhitePay's ~2-min rate lock fresh (docs/23).
+ * minting here (not at session creation) keeps WhitePay's ~2-min rate lock fresh (docs/26).
  * Guarded by `enabled` so a dark deploy refuses crypto (503) instead of calling with an
  * empty slug/token (docs/25). `external_order_id` = the session id, the callback match key. */
 const payCrypto = (
@@ -151,6 +152,17 @@ const pay = (input: SelectMethod, request: FastifyRequest) =>
     const found = yield* repo.findById(id);
     if (found._tag === 'None') {
       return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
+    }
+    // A completed session must not mint a second provider order — that is the crypto
+    // double-pay vector (two paid orders → a second create-or-extend). Expired is
+    // non-payable. Both are terminal; refuse (409) rather than re-issue (docs/26).
+    if (
+      found.value.status === CheckoutSessionStatus.Completed ||
+      found.value.status === CheckoutSessionStatus.Expired
+    ) {
+      return yield* Effect.fail(
+        new Conflict({ field: 'checkout session (completed or expired)' }),
+      );
     }
     yield* repo.setPending(id, input.method);
     const session: CheckoutSession = {
@@ -190,7 +202,7 @@ const wayForPayCallback = (body: unknown, request: FastifyRequest) =>
     return ackResponse(config, event.externalRef, time);
   });
 
-/** WhitePay webhook: HMAC-SHA256 the RAW body against the webhook token (docs/17/22),
+/** WhitePay webhook: HMAC-SHA256 the RAW body against the webhook token (docs/26),
  * normalize into the same pipeline, ack HTTP 200. State is reconciled from the webhook,
  * never the browser redirect. */
 const whitePayCallback = (body: unknown, request: FastifyRequest) =>
@@ -200,7 +212,6 @@ const whitePayCallback = (body: unknown, request: FastifyRequest) =>
       Redacted.value(config.webhookToken),
       request.rawBody ?? '',
       header(request, 'signature'),
-      header(request, 'x-secret-key'),
     );
     if (!verified) {
       return yield* Effect.fail(new Unauthorized({ reason: 'bad signature' }));

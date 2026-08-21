@@ -2,6 +2,7 @@ import { it } from '@effect/vitest';
 import {
   type CheckoutSession,
   CheckoutSessionKind,
+  CheckoutSessionStatus,
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
@@ -85,4 +86,18 @@ it.effect('does not match an unknown order reference', () =>
       expect(result.matched).toBe(false);
     }),
   ),
+);
+
+it.effect(
+  'does not re-credit an already-completed session (crypto double-pay → quarantine)',
+  () =>
+    makeCheckoutMatcher(
+      repoWith({ ...session, status: CheckoutSessionStatus.Completed }),
+    )(event({})).pipe(
+      Effect.map((result) => {
+        // A second success (or a late decline) for a completed session falls through to
+        // quarantine — never a second create-or-extend or a spurious failure event.
+        expect(result.matched).toBe(false);
+      }),
+    ),
 );

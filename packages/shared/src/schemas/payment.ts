@@ -36,9 +36,11 @@ const CurrencyByCode: Readonly<Record<string, Currency>> = {
   EUR: Currency.EUR,
 };
 
-/** Parse an ISO 4217 code back to the enum; undefined for an unknown currency. */
+/** Parse an ISO 4217 code back to the enum; undefined for an unknown currency. Case-
+ * and whitespace-insensitive so a provider echoing `usd`/` USD ` isn't misread (which,
+ * via the `toCurrency` default, would otherwise silently book the charge as UAH). */
 export const currencyFromCode = (code: string): Currency | undefined =>
-  CurrencyByCode[code];
+  CurrencyByCode[code.trim().toUpperCase()];
 
 /**
  * Payment lifecycle (docs/05). `active` when paid; `past_due` inside the

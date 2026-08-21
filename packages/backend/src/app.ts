@@ -20,28 +20,51 @@ export const buildApp = async (): Promise<FastifyInstance> => {
   // in request bodies decode straight into `Redacted`).
   const app = Fastify({
     logger: { redact: ['req.headers.authorization'] },
+    // Bound the request body well below Fastify's 1 MiB default: every route here is
+    // small JSON and the public provider-callback surface is a few KB, so this caps the
+    // amplification a raw-string-buffering parser would otherwise expose on an
+    // unauthenticated endpoint.
+    bodyLimit: 262_144,
   });
 
-  // Every body is read as a raw string first: `parseRawBody` turns it into JSON (or
-  // the form-encoded shape WayForPay sends), and the raw bytes are stashed on
-  // `request.rawBody` so a webhook that signs the RAW payload (WhitePay HMAC-SHA256)
-  // can verify it — re-serializing the parsed JSON would break the signature. Applied
-  // to `application/json` too, so provider webhooks posting JSON keep their raw body.
-  const parseWithRaw = (
+  // The raw body is stashed on `request.rawBody` so a webhook that signs the RAW payload
+  // (WhitePay HMAC-SHA256) verifies the exact bytes — re-serializing the parsed JSON
+  // would break the signature.
+  const captureRaw = (
     req: { rawBody?: string },
     body: string | Buffer,
-    done: (err: Error | null, value?: unknown) => void,
-  ): void => {
+  ): string => {
     const raw = typeof body === 'string' ? body : '';
     req.rawBody = raw;
-    done(null, parseRawBody(raw));
+    return raw;
   };
+  // `application/json` keeps STRICT parsing: malformed JSON is a 400, never a silently
+  // empty object (which would let a bad body reach a route as `{}`).
   app.addContentTypeParser(
     'application/json',
     { parseAs: 'string' },
-    parseWithRaw,
+    (req, body, done) => {
+      const raw = captureRaw(req, body);
+      if (raw.length === 0) {
+        done(null, {});
+        return;
+      }
+      try {
+        done(null, JSON.parse(raw));
+      } catch {
+        const err = new Error('Invalid JSON') as Error & {
+          statusCode?: number;
+        };
+        err.statusCode = 400;
+        done(err);
+      }
+    },
   );
-  app.addContentTypeParser('*', { parseAs: 'string' }, parseWithRaw);
+  // Any other content-type (WayForPay's form-encoded callback) is tolerant: parsed into
+  // JSON or the form-encoded shape, falling back to `{}` so it fails validation, not 415.
+  app.addContentTypeParser('*', { parseAs: 'string' }, (req, body, done) => {
+    done(null, parseRawBody(captureRaw(req, body)));
+  });
 
   // Pass 1: system plugins — loaded before modules, decorators visible to them.
   await app.register(autoload, {

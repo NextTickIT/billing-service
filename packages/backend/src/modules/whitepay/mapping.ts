@@ -4,7 +4,7 @@ import type { ChargeStatus } from '@/modules/charge/contracts.js';
 import { WHITEPAY_STATUS } from '@/modules/whitepay/contracts.js';
 
 /**
- * Map WhitePay order data to the normalized incoming-charge shape (docs/22). Pure, and
+ * Map WhitePay order data to the normalized incoming-charge shape (docs/26). Pure, and
  * the field decisions (currency/status/amount) are shared by the create-order response
  * and the webhook so both normalize identically.
  */
@@ -39,7 +39,7 @@ export const toCurrency = (code: string | undefined): Currency =>
  * Normalize a WhitePay order status. `COMPLETE` succeeds; `DECLINED`/`CANCELED` fail;
  * everything else (`INIT`/`OPEN`, and `PARTIALLY_FULFILLED` — a crypto underpayment)
  * is `pending`, so it neither completes nor fails the checkout — it falls through to
- * quarantine (an operator alert), never to /dev/null (docs/22).
+ * quarantine (an operator alert), never to /dev/null (docs/26).
  */
 export const whitePayStatus = (status: string | undefined): ChargeStatus => {
   switch (status) {

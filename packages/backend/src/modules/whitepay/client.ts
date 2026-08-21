@@ -9,16 +9,17 @@ import {
   WhitePayOrderSchema,
 } from '@/modules/whitepay/contracts.js';
 import {
+  CryptoOrderRejected,
   WhitePayResponseError,
   WhitePayTransportError,
   type WhitePayError,
 } from '@/modules/whitepay/errors.js';
 
 /**
- * WhitePay client (docs/17/22). One outbound call: create a fiat-denominated crypto
+ * WhitePay client (docs/26). One outbound call: create a fiat-denominated crypto
  * order and hand back its hosted `acquiring_url`. Bearer-authenticated (a static API
  * token, NOT per-request HMAC like WayForPay). The payer picks coin+network on the
- * hosted page — we send neither (docs/23). There is no charge-with-token endpoint to
+ * hosted page — we send neither (docs/26). There is no charge-with-token endpoint to
  * mirror the W4P scheduler: WhitePay cannot bill unattended (the make-or-break finding).
  */
 export interface WhitePayClient {
@@ -66,11 +67,23 @@ export interface WhitePayClientOptions {
   readonly rateLimiter: RateLimiter;
 }
 
-const isTransientWhitePay = (
-  error: WhitePayTransportError | WhitePayResponseError,
-): boolean =>
+const isTransientWhitePay = (error: WhitePayError): boolean =>
   error._tag === 'WhitePayTransportError' &&
   (error.status === undefined || isTransientStatus(error.status));
+
+/** Pull a human-readable reason out of a WhitePay 4xx body (`{message, errors}`); the
+ * provider's own message (e.g. the min-amount rule) is safe to surface on checkout. */
+const rejectReason = (raw: string): string => {
+  try {
+    const body = JSON.parse(raw) as { message?: unknown };
+    if (typeof body.message === 'string' && body.message.length > 0) {
+      return body.message.slice(0, 200);
+    }
+  } catch {
+    // non-JSON body → fall through to the generic reason
+  }
+  return 'order rejected by payment provider';
+};
 
 /**
  * POST JSON with the Bearer header and parse the body as JSON; transport + parse
@@ -82,7 +95,7 @@ const postJson = (
   url: string,
   endpoint: string,
   payload: unknown,
-): Effect.Effect<unknown, WhitePayTransportError | WhitePayResponseError> =>
+): Effect.Effect<unknown, WhitePayError> =>
   Effect.gen(function* () {
     const response = yield* Effect.tryPromise({
       try: async (signal) => {
@@ -100,6 +113,14 @@ const postJson = (
       catch: (cause) => new WhitePayTransportError({ endpoint, cause }),
     });
     if (!response.ok) {
+      // 400/422 = WhitePay rejected our request (e.g. amount below the minimum); a
+      // permanent client error, surfaced as 422 with the provider message. Everything
+      // else (5xx/429/network) is a transport failure → 502, retryable.
+      if (response.status === 400 || response.status === 422) {
+        return yield* Effect.fail(
+          new CryptoOrderRejected({ reason: rejectReason(response.raw) }),
+        );
+      }
       return yield* Effect.fail(
         new WhitePayTransportError({
           endpoint,
@@ -121,7 +142,7 @@ const postJson = (
     ctx.rateLimiter.limit(retryTransient(effect, isTransientWhitePay)),
   );
 
-/** The create-order body is fiat-only (docs/23): amount in MAJOR units, currency an
+/** The create-order body is fiat-only (docs/26): amount in MAJOR units, currency an
  * ISO ticker, our session id as `external_order_id`. No coin/network — the payer picks. */
 const orderRequestBody = (
   ctx: WhitePayClientOptions,
@@ -138,7 +159,7 @@ const orderRequestBody = (
 });
 
 /** Both create-order and webhook bodies may wrap the order under `order` or send it
- * flat; tolerate both, then decode the order boundary permissively (docs/17). */
+ * flat; tolerate both, then decode the order boundary permissively (docs/26). */
 export const extractOrder = (
   raw: unknown,
 ): Effect.Effect<
