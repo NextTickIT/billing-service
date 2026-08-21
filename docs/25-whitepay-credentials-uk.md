@@ -1,8 +1,8 @@
 # WhitePay: які потрібні ключі та де їх узяти (укр.)
 
 > Довідник для налаштування інтеграції WhitePay (крипто-еквайринг WhiteBIT).
-> Ґрунтується на [17-whitepay-research.md](17-whitepay-research.md) та
-> [23-whitepay-checkout-selection-research.md](23-whitepay-checkout-selection-research.md),
+> Ґрунтується на [27-whitepay-research.md](27-whitepay-research.md) та
+> [29-whitepay-checkout-selection-research.md](29-whitepay-checkout-selection-research.md),
 > звірено з довідками SendPulse / Zenedu (серпень 2026). Офіційна документація
 > `docs.whitepay.com` віддає **HTTP 401** анонімним запитам — точні назви полів у
 > CRM підтверджуємо вже під робочим акаунтом.
@@ -95,7 +95,7 @@ WHITEPAY_WEBHOOK_TOKEN=<webhook token — той, що зараз у WHITEPAY_TO
 1. Точний формат тіла `POST /private-api/crypto-orders/{slug}`: очікуємо
    fiat-only `{amount, currency, external_order_id}` (+ optional
    `successful_link`/`failure_link`); монету/мережу обирає **платник** на хостованій
-   сторінці — ми їх не передаємо (доки не підтверджено — див. doc 23).
+   сторінці — ми їх не передаємо (доки не підтверджено — див. doc 29).
 2. Реальний **TTL замовлення / `acquiring_url`** (відомі ~2 хв — це лише вікно
    фіксації курсу, не строк життя замовлення).
 3. Семантика ретраїв вебхука (at-least-once?) і точний регістр заголовків
@@ -112,5 +112,5 @@ WHITEPAY_WEBHOOK_TOKEN=<webhook token — той, що зараз у WHITEPAY_TO
   `https://help.zenedu.io/en/articles/9273269-how-to-connect-whitepay`
 - Офіційні (401-gated, звірка під акаунтом): `docs.whitepay.com/docs/http-api/auth`,
   `docs.whitepay.com/docs/http-api/acquiring/crypto`; CRM: `crm.whitepay.com`.
-- Внутрішні: [17-whitepay-research.md](17-whitepay-research.md),
-  [23-whitepay-checkout-selection-research.md](23-whitepay-checkout-selection-research.md).
+- Внутрішні: [27-whitepay-research.md](27-whitepay-research.md),
+  [29-whitepay-checkout-selection-research.md](29-whitepay-checkout-selection-research.md).
