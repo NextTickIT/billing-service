@@ -40,10 +40,14 @@ const isPayable = computed(
     store.session?.status !== CheckoutSessionStatus.Expired,
 );
 
-// Crypto (WhitePay) is surfaced only when the build flag is on — kept dark until the
-// slug + API token + webhook token are provisioned (docs/25).
-const cryptoEnabled = computed(
-  () => import.meta.env.VITE_WHITEPAY_ENABLED === 'true',
+// Crypto (WhitePay) is offered ONLY when the build flag is on AND this checkout was
+// explicitly created with Crypto as its method (`method: 1`). Default/card checkouts
+// hide the crypto button entirely; a crypto invoice opts in at creation. (Kept dark
+// otherwise while webhook delivery is still being finalized — docs/25.)
+const cryptoOffered = computed(
+  () =>
+    import.meta.env.VITE_WHITEPAY_ENABLED === 'true' &&
+    store.session?.method === PaymentMethod.Crypto,
 );
 
 onMounted(() => {
@@ -90,9 +94,9 @@ watch(
   },
 );
 
-// The methods the picker offers: Card always; Crypto only when the build flag is on.
+// The methods the picker offers: Card always; Crypto only when this checkout opted in.
 const methods = computed<PaymentMethod[]>(() =>
-  cryptoEnabled.value
+  cryptoOffered.value
     ? [PaymentMethod.Card, PaymentMethod.Crypto]
     : [PaymentMethod.Card],
 );
@@ -174,6 +178,7 @@ async function onPay(): Promise<void> {
           </div>
           <div class="checkout__pay">
             <div
+              v-if="methods.length > 1"
               class="checkout__methods"
               role="group"
               :aria-label="t('checkout.method')"
@@ -188,6 +193,7 @@ async function onPay(): Promise<void> {
               />
             </div>
             <BaseButton
+              class="checkout__paybtn"
               :label="t('checkout.pay')"
               :loading="store.submitting"
               @click="onPay()"
@@ -256,7 +262,6 @@ async function onPay(): Promise<void> {
 .checkout__pay {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   margin-top: 16px;
 }
@@ -264,5 +269,10 @@ async function onPay(): Promise<void> {
 .checkout__methods {
   display: flex;
   gap: 8px;
+}
+
+/* Keep Pay right-aligned whether or not the method picker is shown. */
+.checkout__paybtn {
+  margin-left: auto;
 }
 </style>
