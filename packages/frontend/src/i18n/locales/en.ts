@@ -34,8 +34,10 @@ export default {
   },
   checkout: {
     title: 'Payment',
-    payByCard: 'Pay by card',
-    payByCrypto: 'Pay with crypto',
+    method: 'Payment method',
+    methodCard: 'Card',
+    methodCrypto: 'Crypto',
+    pay: 'Pay',
     expired: 'Payment link has expired.',
     completed: 'Payment completed.',
     processing: 'Processing your payment…',

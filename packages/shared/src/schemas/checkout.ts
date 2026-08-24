@@ -1,6 +1,10 @@
 import { Schema } from 'effect';
 
-import { CurrencySchema, PaymentMethodSchema } from '@/schemas/payment.js';
+import {
+  CurrencySchema,
+  PaymentMethod,
+  PaymentMethodSchema,
+} from '@/schemas/payment.js';
 
 /**
  * Checkout session (docs/05/06). The session id doubles as the WayForPay
@@ -48,16 +52,28 @@ export const CheckoutSession = Schema.Struct({
 
 export type CheckoutSession = Schema.Schema.Type<typeof CheckoutSession>;
 
-/** Insert params: the server owns status/createdAt; the method is chosen later. */
+/** Insert params: the server owns status/createdAt. `method` is the default preselected
+ * at creation (Card unless the create request said otherwise); optional so a session may
+ * still be inserted without a preselected method (it is then chosen on the page). */
 export const NewCheckoutSession = CheckoutSession.pipe(
   Schema.omit('method', 'status', 'createdAt'),
+  Schema.extend(Schema.Struct({ method: Schema.optional(PaymentMethodSchema) })),
 );
 
 export type NewCheckoutSession = Schema.Schema.Type<typeof NewCheckoutSession>;
 
-/** POST /api/checkout-sessions body (docs/06): the external system's intent. */
+/** POST /api/checkout-sessions body (docs/06): the external system's intent. `method`
+ * is the default payment method preselected on the checkout page; optional on the wire
+ * and defaulted to Card (PaymentMethod.Card) when the caller omits it. */
 export const CreateCheckoutSession = CheckoutSession.pipe(
   Schema.pick('externalUserId', 'amount', 'currency', 'period'),
+  Schema.extend(
+    Schema.Struct({
+      method: Schema.optionalWith(PaymentMethodSchema, {
+        default: () => PaymentMethod.Card,
+      }),
+    }),
+  ),
 );
 
 export type CreateCheckoutSession = Schema.Schema.Type<
@@ -93,12 +109,21 @@ export type CardChangeRequest = Schema.Schema.Type<typeof CardChangeRequest>;
 
 /**
  * GET /api/checkout-sessions/:id response (public, BFF-proxied, AC-9):
- * amount/currency/period/status/kind/expiresAt only — no externalUserId so subscriber
- * data does not appear on the public checkout page. `kind` lets the checkout page tell
- * a 0-amount card-change (verify widget) from a priced Purchase.
+ * amount/currency/period/status/kind/method/expiresAt only — no externalUserId so
+ * subscriber data does not appear on the public checkout page. `kind` lets the checkout
+ * page tell a 0-amount card-change (verify widget) from a priced Purchase; `method` is
+ * the default the page preselects in its method picker.
  */
 export const CheckoutSessionPublic = CheckoutSession.pipe(
-  Schema.pick('amount', 'currency', 'period', 'status', 'kind', 'expiresAt'),
+  Schema.pick(
+    'amount',
+    'currency',
+    'period',
+    'status',
+    'kind',
+    'method',
+    'expiresAt',
+  ),
 );
 
 export type CheckoutSessionPublic = Schema.Schema.Type<

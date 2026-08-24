@@ -77,6 +77,9 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
       amount: input.amount,
       currency: input.currency,
       period: input.period,
+      // Default preselected method (Card unless the caller passed one; the schema
+      // defaults it to Card). The page can still switch it before Pay.
+      method: input.method,
       kind: CheckoutSessionKind.Checkout,
       paymentId: null,
       expiresAt,
@@ -93,8 +96,9 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
     if (found._tag === 'None') {
       return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
     }
-    const { amount, currency, period, status, kind, expiresAt } = found.value;
-    return { amount, currency, period, status, kind, expiresAt };
+    const { amount, currency, period, status, kind, method, expiresAt } =
+      found.value;
+    return { amount, currency, period, status, kind, method, expiresAt };
   });
 
 /** Card (WayForPay): a 0-amount card change verifies the card (buildVerify) when verify
@@ -285,6 +289,8 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
       amount,
       currency: payment.currency,
       period: payment.period,
+      // A card change is always a WayForPay re-tokenization, so it preselects Card.
+      method: PaymentMethod.Card,
       kind: CheckoutSessionKind.CardChange,
       paymentId: payment.id,
       expiresAt,

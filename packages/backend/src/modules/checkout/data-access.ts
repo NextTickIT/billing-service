@@ -31,10 +31,11 @@ const COLUMNS = columnList(CheckoutSession.fields);
 const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) =>
   sql`
     INSERT INTO checkout_sessions
-      (id, "externalUserId", amount, currency, period, kind, "paymentId", "expiresAt")
+      (id, "externalUserId", amount, currency, period, method, kind, "paymentId", "expiresAt")
     VALUES
       (${input.id}, ${input.externalUserId}, ${input.amount}, ${input.currency},
-       ${input.period}, ${input.kind}, ${input.paymentId}, ${input.expiresAt})
+       ${input.period}, ${input.method ?? null}, ${input.kind}, ${input.paymentId},
+       ${input.expiresAt})
   `.pipe(Effect.asVoid);
 
 const findById = (sql: SqlClient.SqlClient) => (id: string) =>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import {
@@ -90,10 +90,38 @@ watch(
   },
 );
 
-async function onPay(
-  method: PaymentMethod = PaymentMethod.Card,
-): Promise<void> {
-  await store.pay(id, method);
+// The methods the picker offers: Card always; Crypto only when the build flag is on.
+const methods = computed<PaymentMethod[]>(() =>
+  cryptoEnabled.value
+    ? [PaymentMethod.Card, PaymentMethod.Crypto]
+    : [PaymentMethod.Card],
+);
+
+function methodLabel(method: PaymentMethod): string {
+  return method === PaymentMethod.Crypto
+    ? t('checkout.methodCrypto')
+    : t('checkout.methodCard');
+}
+
+// The user's current pick. Seeded from the session's default method once it loads,
+// falling back to Card if that default isn't offered (e.g. a Crypto default while
+// crypto is build-disabled).
+const selectedMethod = ref<PaymentMethod>(PaymentMethod.Card);
+
+watch(
+  () => store.session,
+  (session) => {
+    if (!session) return;
+    const preferred = session.method ?? PaymentMethod.Card;
+    selectedMethod.value = methods.value.includes(preferred)
+      ? preferred
+      : PaymentMethod.Card;
+  },
+  { immediate: true },
+);
+
+async function onPay(): Promise<void> {
+  await store.pay(id, selectedMethod.value);
 }
 </script>
 
@@ -144,17 +172,25 @@ async function onPay(
               {{ formatDate(store.session.expiresAt, locale) }}
             </span>
           </div>
-          <div class="checkout__action">
+          <div class="checkout__pay">
+            <div
+              class="checkout__methods"
+              role="group"
+              :aria-label="t('checkout.method')"
+            >
+              <BaseButton
+                v-for="m in methods"
+                :key="m"
+                :label="methodLabel(m)"
+                :variant="selectedMethod === m ? 'primary' : 'ghost'"
+                :disabled="store.submitting"
+                @click="selectedMethod = m"
+              />
+            </div>
             <BaseButton
-              :label="t('checkout.payByCard')"
+              :label="t('checkout.pay')"
               :loading="store.submitting"
-              @click="onPay(PaymentMethod.Card)"
-            />
-            <BaseButton
-              v-if="cryptoEnabled"
-              :label="t('checkout.payByCrypto')"
-              :loading="store.submitting"
-              @click="onPay(PaymentMethod.Crypto)"
+              @click="onPay()"
             />
           </div>
         </div>
@@ -217,7 +253,16 @@ async function onPay(
   color: var(--txt);
 }
 
-.checkout__action {
+.checkout__pay {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-top: 16px;
+}
+
+.checkout__methods {
+  display: flex;
+  gap: 8px;
 }
 </style>

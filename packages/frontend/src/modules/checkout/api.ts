@@ -28,6 +28,13 @@ export async function pay(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ method }),
   });
-  if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
+  if (!res.ok) {
+    // Surface the provider/server message (e.g. WhitePay's below-minimum 422) instead
+    // of a bare status, so the checkout page can show why the payment was rejected.
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(
+      typeof body?.error === 'string' ? body.error : `HTTP ${String(res.status)}`,
+    );
+  }
   return res.json() as Promise<PayInstruction>;
 }
