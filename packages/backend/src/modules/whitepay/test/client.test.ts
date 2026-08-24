@@ -85,6 +85,48 @@ it.effect(
 );
 
 it.effect(
+  'createOrder tolerates present-null fields in the order (live response shape)',
+  () => {
+    // The live create-order response returns `null` for not-yet-known fields
+    // (expected_amount, deposited_currency, completed_at, …). `Schema.optional` alone
+    // rejects a PRESENT null, which 502'd every real order; the schema must tolerate it.
+    const calls: Call[] = [];
+    return clientWith(calls, {
+      ok: true,
+      status: 200,
+      body: {
+        order: {
+          id: 'ord_null',
+          status: 'INIT',
+          external_order_id: 'chk_1',
+          acquiring_url: 'https://pay/ord_null',
+          currency: 'USD',
+          value: '6',
+          expected_amount: null,
+          received_total: '0',
+          deposited_currency: null,
+          received_currency: 'USDT',
+          order_number: '178757822476698',
+          created_at: '2026-08-24 13:30:24',
+          completed_at: null,
+          exchange_rate: null,
+          travel_rule: {},
+        },
+      },
+    })
+      .createOrder(params)
+      .pipe(
+        Effect.map((created) => {
+          expect(created.id).toBe('ord_null');
+          expect(created.acquiringUrl).toBe('https://pay/ord_null');
+          expect(created.status).toBe('INIT');
+        }),
+      );
+  },
+  30_000,
+);
+
+it.effect(
   'createOrder tolerates a flat order (no envelope)',
   () => {
     const calls: Call[] = [];

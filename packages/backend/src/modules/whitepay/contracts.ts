@@ -9,7 +9,17 @@ import { Schema } from 'effect';
 
 /** String or number — WhitePay money/rate fields occur as both in plugin evidence. */
 const StringOrNumber = Schema.Union(Schema.String, Schema.Number);
-const OptionalStringOrNumber = Schema.optional(StringOrNumber);
+/**
+ * `Schema.optional` alone rejects a field that is PRESENT with value `null`, but the
+ * live create-order response returns `null` for not-yet-known fields (e.g.
+ * `expected_amount`, `deposited_currency` before the payer deposits). `nullable: true`
+ * tolerates absent AND present-null, decoding both to `undefined`, so the mapping layer
+ * keeps seeing `string | number | undefined` with no null widening downstream (docs/26).
+ */
+const OptionalStringOrNumber = Schema.optionalWith(StringOrNumber, {
+  nullable: true,
+});
+const OptionalString = Schema.optionalWith(Schema.String, { nullable: true });
 
 /**
  * A crypto order. `external_order_id` is our checkout session id (the match key);
@@ -18,19 +28,19 @@ const OptionalStringOrNumber = Schema.optional(StringOrNumber);
  * No token/mandate/recToken field exists anywhere — the make-or-break finding (docs/26).
  */
 export const WhitePayOrderSchema = Schema.Struct({
-  id: Schema.optional(Schema.String),
-  status: Schema.optional(Schema.String),
-  external_order_id: Schema.optional(Schema.String),
-  acquiring_url: Schema.optional(Schema.String),
-  currency: Schema.optional(Schema.String),
+  id: OptionalString,
+  status: OptionalString,
+  external_order_id: OptionalString,
+  acquiring_url: OptionalString,
+  currency: OptionalString,
   value: OptionalStringOrNumber,
   expected_amount: OptionalStringOrNumber,
   received_total: OptionalStringOrNumber,
-  deposited_currency: Schema.optional(Schema.String),
-  received_currency: Schema.optional(Schema.String),
+  deposited_currency: OptionalString,
+  received_currency: OptionalString,
   order_number: OptionalStringOrNumber,
   created_at: OptionalStringOrNumber,
-  completed_at: Schema.optional(Schema.NullOr(StringOrNumber)),
+  completed_at: OptionalStringOrNumber,
 });
 
 export type WhitePayOrder = Schema.Schema.Type<typeof WhitePayOrderSchema>;
@@ -40,7 +50,7 @@ export type WhitePayOrder = Schema.Schema.Type<typeof WhitePayOrderSchema>;
  * evidence returns the order flat. `extractOrder` (client/callback) tolerates both.
  */
 export const OrderEnvelopeSchema = Schema.Struct({
-  order: Schema.optional(WhitePayOrderSchema),
+  order: Schema.optionalWith(WhitePayOrderSchema, { nullable: true }),
 });
 
 /** Order lifecycle statuses (docs/26). `PARTIALLY_FULFILLED` = crypto underpayment. */
