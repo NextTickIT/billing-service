@@ -40,6 +40,7 @@ import {
 } from '@/modules/wayforpay/callback.js';
 import { buildPurchase, buildVerify } from '@/modules/wayforpay/purchase.js';
 import {
+  hmacSha256Hex,
   normalizeWebhook,
   verifyWebhook,
 } from '@/modules/whitepay/callback.js';
@@ -209,14 +210,62 @@ const wayForPayCallback = (body: unknown, request: FastifyRequest) =>
 /** WhitePay webhook: HMAC-SHA256 the RAW body against the webhook token (docs/26),
  * normalize into the same pipeline, ack HTTP 200. State is reconciled from the webhook,
  * never the browser redirect. */
+/**
+ * TEMP webhook-token diagnostic (env `WHITEPAY_WEBHOOK_DIAG=true`): the exact token +
+ * header WhitePay signs webhooks with is unconfirmed. HMAC-SHA256 the raw body with each
+ * candidate token (env `WHITEPAY_WEBHOOK_TOKEN_CANDIDATES`, comma-separated) against
+ * EVERY inbound header, log the received signature/body/headers and which token+header
+ * matched, and return whether any matched (so the delivery can still be accepted).
+ * Remove this and its callers once the real token is confirmed.
+ */
+const whitePayTokenDiag = (
+  request: FastifyRequest,
+  raw: string,
+  presented: string | undefined,
+): boolean => {
+  const headerPairs: [string, string][] = [];
+  for (const [k, v] of Object.entries(request.headers)) {
+    if (typeof v === 'string') headerPairs.push([k, v]);
+  }
+  const candidates = (process.env['WHITEPAY_WEBHOOK_TOKEN_CANDIDATES'] ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const matches = candidates.flatMap((token) => {
+    const hex = hmacSha256Hex(raw, token).toLowerCase();
+    return headerPairs
+      .filter(([, hv]) => hv.toLowerCase() === hex)
+      .map(([hn]) => ({ tokenTail: token.slice(-8), header: hn }));
+  });
+  request.log.warn(
+    {
+      rawBodyLen: raw.length,
+      rawBodyHead: raw.slice(0, 600),
+      headerNames: Object.keys(request.headers),
+      presentedSignature: presented ?? null,
+      candidateMatches: matches,
+    },
+    'WHITEPAY_WEBHOOK_DIAG',
+  );
+  return matches.length > 0;
+};
+
 const whitePayCallback = (body: unknown, request: FastifyRequest) =>
   Effect.gen(function* () {
     const config = request.server.appConfig.whitepay;
-    const verified = verifyWebhook(
+    const raw = request.rawBody ?? '';
+    const presented = header(request, 'signature');
+    let verified = verifyWebhook(
       Redacted.value(config.webhookToken),
-      request.rawBody ?? '',
-      header(request, 'signature'),
+      raw,
+      presented,
     );
+    if (
+      process.env['WHITEPAY_WEBHOOK_DIAG'] === 'true' &&
+      whitePayTokenDiag(request, raw, presented)
+    ) {
+      verified = true;
+    }
     if (!verified) {
       return yield* Effect.fail(new Unauthorized({ reason: 'bad signature' }));
     }
