@@ -11,6 +11,7 @@ export default tseslint.config(
       '**/*.config.ts',
       '**/.turbo/**',
       '**/.omc/**',
+      '**/.claude/**',
       'coverage/**',
     ],
   },
