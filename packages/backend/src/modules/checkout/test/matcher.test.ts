@@ -34,6 +34,7 @@ const repoWith = (found: CheckoutSession | null): CheckoutRepo => ({
   insert: () => Effect.void,
   setPending: () => Effect.void,
   markCompleted: () => Effect.void,
+  renameOpenSessionsExternalUser: () => Effect.succeed(0),
 });
 
 const event = (over: Partial<Charge>): Charge => ({

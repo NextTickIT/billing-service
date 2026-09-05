@@ -37,12 +37,14 @@ const unusedSubs: PaymentRepo = {
   markCancelledLapsed: () => Effect.die('unused'),
   defer: () => Effect.die('unused'),
   updateToken: () => Effect.die('unused'),
+  renameExternalUser: () => Effect.die('unused'),
 };
 const unusedCheckout: CheckoutRepo = {
   findById: () => Effect.die('unused'),
   insert: () => Effect.die('unused'),
   setPending: () => Effect.die('unused'),
   markCompleted: () => Effect.die('unused'),
+  renameOpenSessionsExternalUser: () => Effect.die('unused'),
 };
 
 it.effect(

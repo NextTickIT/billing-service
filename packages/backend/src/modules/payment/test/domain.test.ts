@@ -76,6 +76,7 @@ const makeFakeRepo = (existing: Payment | null) => {
     markCancelledLapsed: () => Effect.die('unused'),
     defer: () => Effect.die('unused'),
     updateToken: () => Effect.die('unused'),
+    renameExternalUser: () => Effect.die('unused'),
   };
   return { repo, getInserted: () => inserted, getExtended: () => extended };
 };

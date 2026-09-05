@@ -81,6 +81,7 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
     markCancelledLapsed: die,
     defer: die,
     updateToken: die,
+    renameExternalUser: die,
   };
   const deps: SchedulerDeps = {
     subs,

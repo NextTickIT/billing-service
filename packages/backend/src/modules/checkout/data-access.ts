@@ -24,6 +24,16 @@ export interface CheckoutRepo {
   readonly markCompleted: (
     id: string,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /**
+   * Remap OPEN (created/pending) sessions of one external user to another (docs/31),
+   * returning how many moved. Only in-flight sessions move so a pending payment
+   * completes under the new id; completed/expired sessions are historical facts and
+   * keep their original id. `externalUserId` is carried verbatim (AC9).
+   */
+  readonly renameOpenSessionsExternalUser: (
+    from: string,
+    to: string,
+  ) => Effect.Effect<number, SqlError.SqlError>;
 }
 
 const COLUMNS = columnList(CheckoutSession.fields);
@@ -58,9 +68,19 @@ const markCompleted = (sql: SqlClient.SqlClient) => (id: string) =>
     WHERE id = ${id}
   `.pipe(Effect.asVoid);
 
+const renameOpenSessionsExternalUser =
+  (sql: SqlClient.SqlClient) => (from: string, to: string) =>
+    sql<{ readonly id: string }>`
+      UPDATE checkout_sessions SET "externalUserId" = ${to}
+      WHERE "externalUserId" = ${from}
+        AND status IN (${CheckoutSessionStatus.Created}, ${CheckoutSessionStatus.Pending})
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length));
+
 export const makeCheckoutRepo = (sql: SqlClient.SqlClient): CheckoutRepo => ({
   insert: insert(sql),
   findById: findById(sql),
   setPending: setPending(sql),
   markCompleted: markCompleted(sql),
+  renameOpenSessionsExternalUser: renameOpenSessionsExternalUser(sql),
 });

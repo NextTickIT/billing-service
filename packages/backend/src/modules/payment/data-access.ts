@@ -113,6 +113,16 @@ export interface PaymentRepo {
     id: string,
     recToken: string,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /**
+   * Remap every payment of one opaque external user to another (docs/31), returning
+   * how many rows moved. Fails with a unique-violation SqlError when both ids hold an
+   * active recurring payment (the one-active-per-user index) — the caller maps it to a
+   * Conflict. `externalUserId` is carried verbatim (AC9); only the owning id changes.
+   */
+  readonly renameExternalUser: (
+    from: string,
+    to: string,
+  ) => Effect.Effect<number, SqlError.SqlError>;
 }
 
 /**
@@ -297,6 +307,14 @@ const updateToken =
       WHERE id = ${id}
     `.pipe(Effect.asVoid);
 
+const renameExternalUser =
+  (sql: SqlClient.SqlClient) => (from: string, to: string) =>
+    sql<{ readonly id: string }>`
+      UPDATE payments SET "externalUserId" = ${to}, "updatedAt" = now()
+      WHERE "externalUserId" = ${from}
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length));
+
 export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   findActiveRecurringByExternalUser: findActiveRecurringByExternalUser(sql),
   findById: findById(sql),
@@ -313,4 +331,5 @@ export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   markCancelledLapsed: markCancelledLapsed(sql),
   defer: defer(sql),
   updateToken: updateToken(sql),
+  renameExternalUser: renameExternalUser(sql),
 });
