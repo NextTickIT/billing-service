@@ -81,7 +81,11 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
       // defaults it to Card). The page can still switch it before Pay.
       method: input.method,
       kind: CheckoutSessionKind.Checkout,
+      // Schema-defaulted to true; false opts this checkout into a one-time payment.
+      recurring: input.recurring,
       paymentId: null,
+      successUrl: input.successUrl ?? null,
+      failureUrl: input.failureUrl ?? null,
       expiresAt,
     });
     return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };
@@ -96,9 +100,28 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
     if (found._tag === 'None') {
       return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
     }
-    const { amount, currency, period, status, kind, method, expiresAt } =
-      found.value;
-    return { amount, currency, period, status, kind, method, expiresAt };
+    const {
+      amount,
+      currency,
+      period,
+      status,
+      kind,
+      method,
+      successUrl,
+      failureUrl,
+      expiresAt,
+    } = found.value;
+    return {
+      amount,
+      currency,
+      period,
+      status,
+      kind,
+      method,
+      successUrl,
+      failureUrl,
+      expiresAt,
+    };
   });
 
 /** Card (WayForPay): a 0-amount card change verifies the card (buildVerify) when verify
@@ -260,7 +283,9 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
     const found = yield* makePaymentRepo(sql).findByExternalUser(
       input.externalUserId,
     );
-    const payment = found[0];
+    // A card change re-tokenizes the recurring payment; one-time payments (which hold
+    // no reusable token) are never its target, so skip past them to the newest recurring.
+    const payment = found.find((p) => p.recurring);
     if (payment === undefined || payment.status === PaymentStatus.Cancelled) {
       return yield* Effect.fail(
         new CardChangeUnavailable({
@@ -292,7 +317,11 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
       // A card change is always a WayForPay re-tokenization, so it preselects Card.
       method: PaymentMethod.Card,
       kind: CheckoutSessionKind.CardChange,
+      // A card change re-tokenizes the recurring payment; never a one-time session.
+      recurring: true,
       paymentId: payment.id,
+      successUrl: null,
+      failureUrl: null,
       expiresAt,
     });
     return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };

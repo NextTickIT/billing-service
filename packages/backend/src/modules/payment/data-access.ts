@@ -42,7 +42,11 @@ export interface AdvanceAnchor {
  * Success` reset the retry state (a good payment restores standing).
  */
 export interface PaymentRepo {
-  readonly findActiveByExternalUser: (
+  /**
+   * The user's active RECURRING payment (create-or-extend keys on it). One-time
+   * payments are excluded so they never get extended and never block a new one.
+   */
+  readonly findActiveRecurringByExternalUser: (
     externalUserId: string,
   ) => Effect.Effect<Option.Option<Payment>, SqlError.SqlError>;
   readonly findById: (
@@ -123,11 +127,12 @@ export interface PaymentListFilter {
 
 const COLUMNS = columnList(Payment.fields);
 
-const findActiveByExternalUser =
+const findActiveRecurringByExternalUser =
   (sql: SqlClient.SqlClient) => (externalUserId: string) =>
     sql<Payment>`
       SELECT ${sql.unsafe(COLUMNS)} FROM payments
-      WHERE "externalUserId" = ${externalUserId} AND status = ${PaymentStatus.Active}
+      WHERE "externalUserId" = ${externalUserId}
+        AND status = ${PaymentStatus.Active} AND recurring = true
     `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
 const findById = (sql: SqlClient.SqlClient) => (id: string) =>
@@ -139,6 +144,7 @@ const findDue = (sql: SqlClient.SqlClient) => (now: Date, limit: number) =>
   sql<Payment>`
     SELECT ${sql.unsafe(COLUMNS)} FROM payments
     WHERE status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+      AND recurring = true
       AND "nextPaymentDate" <= ${now}
       AND "recurringTokenRef" IS NOT NULL
     ORDER BY "nextPaymentDate"
@@ -149,12 +155,12 @@ const findDue = (sql: SqlClient.SqlClient) => (now: Date, limit: number) =>
 const insert = (sql: SqlClient.SqlClient) => (input: CreatePayment) =>
   sql<Payment>`
     INSERT INTO payments
-      ("externalUserId", amount, currency, method, period, status,
+      ("externalUserId", amount, currency, method, period, status, recurring,
        "currentPeriodStart", "currentPeriodEnd", "nextPaymentDate",
        "recurringTokenRef", "firstFailureAt", "retryAttempt")
     VALUES
       (${input.externalUserId}, ${input.amount}, ${input.currency}, ${input.method},
-       ${input.period}, ${input.status}, ${input.currentPeriodStart},
+       ${input.period}, ${input.status}, ${input.recurring}, ${input.currentPeriodStart},
        ${input.currentPeriodEnd}, ${input.nextPaymentDate},
        ${input.recurringTokenRef}, ${input.firstFailureAt}, ${input.retryAttempt})
     RETURNING ${sql.unsafe(COLUMNS)}
@@ -292,7 +298,7 @@ const updateToken =
     `.pipe(Effect.asVoid);
 
 export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
-  findActiveByExternalUser: findActiveByExternalUser(sql),
+  findActiveRecurringByExternalUser: findActiveRecurringByExternalUser(sql),
   findById: findById(sql),
   findDue: findDue(sql),
   insert: insert(sql),

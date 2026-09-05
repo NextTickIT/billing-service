@@ -20,16 +20,36 @@ const id = route.params['id'] as string;
 const state = ref<ReturnState>('polling');
 let timer: ReturnType<typeof setInterval> | null = null;
 let elapsed = 0;
+// Where the caller wants the browser to land, learned from the session on each poll:
+// `successUrl` on confirmation, `failureUrl` on decline/timeout. Null → show the
+// built-in message instead.
+let successUrl: string | null = null;
+let failureUrl: string | null = null;
+
+/** Settle into a terminal state and, when the caller supplied a matching redirect,
+ * navigate there. The browser only reaches here after the webhook resolved the
+ * session, so a redirect always reflects confirmed state — never an optimistic
+ * provider bounce (state is reconciled from the webhook, not the return redirect). */
+function finish(next: ReturnState, target: string | null): void {
+  state.value = next;
+  stopPolling();
+  if (target !== null && target.length > 0) {
+    window.location.assign(target);
+  }
+}
 
 async function poll(): Promise<void> {
   try {
     const session = await getCheckoutSession(id);
+    successUrl = session.successUrl;
+    failureUrl = session.failureUrl;
     if (session.status === CheckoutSessionStatus.Completed) {
-      state.value = 'confirmed';
-      stopPolling();
-    } else if (session.status === CheckoutSessionStatus.Expired) {
-      state.value = 'declined';
-      stopPolling();
+      finish('confirmed', successUrl);
+      return;
+    }
+    if (session.status === CheckoutSessionStatus.Expired) {
+      finish('declined', failureUrl);
+      return;
     }
   } catch (err) {
     // A transient network blip is expected while polling — keep going. Any
@@ -38,8 +58,7 @@ async function poll(): Promise<void> {
   }
   elapsed += POLL_INTERVAL_MS;
   if (elapsed >= POLL_TIMEOUT_MS && state.value === 'polling') {
-    state.value = 'timeout';
-    stopPolling();
+    finish('timeout', failureUrl);
   }
 }
 
@@ -52,7 +71,9 @@ function stopPolling(): void {
 
 onMounted(() => {
   void poll();
-  timer = setInterval(() => { void poll(); }, POLL_INTERVAL_MS);
+  timer = setInterval(() => {
+    void poll();
+  }, POLL_INTERVAL_MS);
 });
 
 onUnmounted(stopPolling);
@@ -63,16 +84,26 @@ onUnmounted(stopPolling);
     <BasePanel :title="t('checkout.title')">
       <div v-if="state === 'polling'" class="return__center">
         <BaseSpinner />
-        <p class="return__msg return__msg--dim">{{ t('checkout.processing') }}</p>
+        <p class="return__msg return__msg--dim">
+          {{ t('checkout.processing') }}
+        </p>
       </div>
       <div v-else-if="state === 'confirmed'" class="return__center">
         <p class="return__msg return__msg--ok">{{ t('checkout.confirmed') }}</p>
-        <p class="return__msg return__msg--dim">{{ t('checkout.returnHint') }}</p>
+        <p class="return__msg return__msg--dim">
+          {{ t('checkout.returnHint') }}
+        </p>
       </div>
-      <div v-else-if="state === 'timeout'" class="return__msg return__msg--warn">
+      <div
+        v-else-if="state === 'timeout'"
+        class="return__msg return__msg--warn"
+      >
         {{ t('checkout.confirmLater') }}
       </div>
-      <div v-else-if="state === 'declined'" class="return__msg return__msg--error">
+      <div
+        v-else-if="state === 'declined'"
+        class="return__msg return__msg--error"
+      >
         {{ t('checkout.declined') }}
       </div>
     </BasePanel>
@@ -106,8 +137,16 @@ onUnmounted(stopPolling);
   font-size: 14px;
 }
 
-.return__msg--dim { color: var(--dim); }
-.return__msg--ok { color: var(--green); }
-.return__msg--warn { color: var(--amber); }
-.return__msg--error { color: var(--red); }
+.return__msg--dim {
+  color: var(--dim);
+}
+.return__msg--ok {
+  color: var(--green);
+}
+.return__msg--warn {
+  color: var(--amber);
+}
+.return__msg--error {
+  color: var(--red);
+}
 </style>

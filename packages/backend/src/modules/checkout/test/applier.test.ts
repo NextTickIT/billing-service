@@ -22,7 +22,7 @@ const event: Charge = {
 
 /** A repo whose every method fails the test if called (the recurring path). */
 const unusedSubs: PaymentRepo = {
-  findActiveByExternalUser: () => Effect.die('unused'),
+  findActiveRecurringByExternalUser: () => Effect.die('unused'),
   findById: () => Effect.die('unused'),
   findDue: () => Effect.die('unused'),
   insert: () => Effect.die('unused'),
@@ -53,7 +53,7 @@ it.effect(
       let completed = false;
       const subs: PaymentRepo = {
         ...unusedSubs,
-        findActiveByExternalUser: () => Effect.succeed(Option.none()),
+        findActiveRecurringByExternalUser: () => Effect.succeed(Option.none()),
         insert: (input) =>
           Effect.sync(() => {
             insertedToken = input.recurringTokenRef;
@@ -91,6 +91,52 @@ it.effect(
 );
 
 it.effect(
+  'a one-time checkout inserts a fresh payment, never extending, storing no token',
+  () =>
+    Effect.gen(function* () {
+      let insertedRecurring: boolean | null = null;
+      let insertedToken: string | null = 'unset';
+      // findActiveRecurringByExternalUser stays `Effect.die('unused')` (via unusedSubs):
+      // a one-time payment must be inserted outright, never looked up to extend.
+      const subs: PaymentRepo = {
+        ...unusedSubs,
+        insert: (input) =>
+          Effect.sync(() => {
+            insertedRecurring = input.recurring;
+            insertedToken = input.recurringTokenRef;
+            return {
+              ...input,
+              id: 'pay_ot',
+              cancelRequestedAt: null,
+              createdAt: new Date(0),
+              updatedAt: new Date(0),
+            };
+          }),
+      };
+      const checkout: CheckoutRepo = {
+        ...unusedCheckout,
+        markCompleted: () => Effect.void,
+      };
+      const match: Match = {
+        matched: true,
+        kind: 'checkout',
+        subscriptionId: null,
+        externalUserId: 'sp:1',
+        period: 'P1M',
+        method: 0,
+        recurring: false,
+      };
+
+      const result = yield* makeCheckoutApplier(subs, checkout)(event, match);
+
+      expect(result).toEqual({ subscriptionId: 'pay_ot', created: true });
+      expect(insertedRecurring).toBe(false);
+      // The provider returned a recToken; a one-time payment must not store it.
+      expect(insertedToken).toBe(null);
+    }),
+);
+
+it.effect(
   'a recurring match reports the existing subscription, touching nothing',
   () =>
     makeCheckoutApplier(unusedSubs, unusedCheckout)(event, {
@@ -116,6 +162,7 @@ const owingPayment: Payment = {
   method: 0,
   period: 'P1M',
   status: PaymentStatus.PastDue,
+  recurring: true,
   currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
   currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
   nextPaymentDate: new Date('2026-01-01T00:00:00Z'),

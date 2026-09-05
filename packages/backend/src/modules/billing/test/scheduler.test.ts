@@ -33,6 +33,7 @@ const baseSub: Payment = {
   method: 0,
   period: 'P1M',
   status: PaymentStatus.Active,
+  recurring: true,
   currentPeriodStart: new Date('2026-01-01T00:00:00Z'),
   currentPeriodEnd: new Date('2026-02-01T00:00:00Z'),
   nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
@@ -69,7 +70,7 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
       Effect.sync(() => {
         calls.renewalFailed = true;
       }),
-    findActiveByExternalUser: die,
+    findActiveRecurringByExternalUser: die,
     findById: die,
     insert: die,
     extend: die,

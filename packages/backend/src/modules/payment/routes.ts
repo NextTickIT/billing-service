@@ -135,6 +135,7 @@ const createPayment = (
       method: body.method ?? PaymentMethod.Card,
       period: body.period,
       status: PaymentStatus.Active,
+      recurring: body.recurring ?? true,
       currentPeriodStart: paidAt,
       currentPeriodEnd,
       nextPaymentDate: currentPeriodEnd,

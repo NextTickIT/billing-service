@@ -69,7 +69,10 @@ export type MatchKind = 'checkout' | 'recurring' | 'card_change';
  * method). `subscriptionId` is null for a checkout first payment — the payment is
  * created while applying it; for `card_change` it is the target payment id. `owed`
  * is only meaningful for `card_change`: true when the session collected an owed
- * amount (past_due/renewal_failed) vs a 0-amount verify. No match → quarantine.
+ * amount (past_due/renewal_failed) vs a 0-amount verify. `recurring` is only consumed
+ * on the `checkout` create path (false → a one-time payment); it defaults to true when
+ * absent, since a `recurring`/`card_change` match acts on an already-recurring payment.
+ * No match → quarantine.
  */
 export type MatchResult =
   | {
@@ -80,6 +83,7 @@ export type MatchResult =
       readonly period: string;
       readonly method: number;
       readonly owed?: boolean;
+      readonly recurring?: boolean;
     }
   | { readonly matched: false };
 

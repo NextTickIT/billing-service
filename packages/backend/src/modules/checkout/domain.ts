@@ -61,6 +61,7 @@ export const makeCheckoutMatcher =
         externalUserId: session.externalUserId,
         period: session.period,
         method: session.method ?? PaymentMethod.Card,
+        recurring: session.recurring,
       };
     });
 
@@ -178,6 +179,9 @@ export const makeCheckoutApplier =
       currency: event.currency,
       method: match.method,
       period: match.period,
+      // Absent on a recurring/card_change match — those act on an existing recurring
+      // payment; only a checkout match can carry a one-time (false) intent.
+      recurring: match.recurring ?? true,
       recurringTokenRef: recToken(event.payload),
       paidAt: event.occurredAt,
     }).pipe(Effect.tap(() => checkout.markCompleted(event.externalRef)));
