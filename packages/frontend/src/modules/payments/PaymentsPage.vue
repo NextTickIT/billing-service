@@ -37,6 +37,11 @@ const createMethod = ref<number>(PaymentMethod.Card);
 // Status filter state — null means "show all"
 const activeChip = ref<'cancelling' | PaymentStatus | null>(null);
 
+// Server-side contact lookup: fetch EVERY payment of one externalUserId (all statuses
+// and both recurring + one-time), independent of the client-side quick filter and the
+// default 500-row window — so "all purchases of a contact" is complete.
+const contactQuery = ref('');
+
 function chipClass(chip: 'cancelling' | PaymentStatus): string {
   return activeChip.value === chip ? 'chip chip--active' : 'chip';
 }
@@ -57,6 +62,19 @@ function applyFilter(): void {
   } else {
     void store.loadList({ ...base, statuses: [chip] });
   }
+}
+
+// Load a single contact's full payment history server-side (empty input resets to all).
+function searchContact(): void {
+  activeChip.value = null;
+  const uid = contactQuery.value.trim();
+  void store.loadList(uid.length > 0 ? { externalUserId: uid } : {});
+}
+
+function clearContact(): void {
+  contactQuery.value = '';
+  activeChip.value = null;
+  void store.loadList({});
 }
 
 onMounted(() => {
@@ -136,7 +154,25 @@ async function onCreate(): Promise<void> {
         </button>
       </template>
 
-      <div class="filter-bar">
+      <div class="contact-bar">
+        <BaseInput
+          v-model="contactQuery"
+          :placeholder="t('payments.contactSearchPlaceholder')"
+          @keyup.enter="searchContact"
+        />
+        <BaseButton
+          :label="t('payments.contactSearchButton')"
+          @click="searchContact"
+        />
+        <BaseButton
+          v-if="store.filter.externalUserId"
+          variant="ghost"
+          :label="t('common.clear')"
+          @click="clearContact"
+        />
+      </div>
+
+      <div v-if="!store.filter.externalUserId" class="filter-bar">
         <button
           v-for="chip in [
             PaymentStatus.Active,
@@ -273,6 +309,17 @@ async function onCreate(): Promise<void> {
 .add-btn:hover {
   color: var(--green);
   border-color: var(--green);
+}
+
+.contact-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 4px;
+}
+.contact-bar > :first-child {
+  flex: 1;
+  max-width: 360px;
 }
 
 .filter-bar {
