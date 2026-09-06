@@ -1,6 +1,6 @@
 import { SqlError } from '@effect/sql';
 import { it } from '@effect/vitest';
-import type { NewExternalUserIdChange } from '@billing-service/shared';
+import type { NewExternalUserIdChange, Payment } from '@billing-service/shared';
 import { Effect } from 'effect';
 import { expect } from 'vitest';
 
@@ -38,10 +38,36 @@ const unusedCheckout: CheckoutRepo = {
   renameOpenSessionsExternalUser: die,
 };
 
+/** A recurring payment already owned by the target id (blocks a rename onto it). */
+const existingPayment: Payment = {
+  id: 'pay_existing',
+  externalUserId: 'sp:new',
+  amount: 1000,
+  currency: 0,
+  method: 0,
+  period: 'P1M',
+  status: 0,
+  recurring: true,
+  currentPeriodStart: new Date(0),
+  currentPeriodEnd: new Date(0),
+  nextPaymentDate: new Date(0),
+  recurringTokenRef: null,
+  firstFailureAt: null,
+  retryAttempt: 0,
+  cancelRequestedAt: null,
+  createdAt: new Date(0),
+  updatedAt: new Date(0),
+};
+
 /** A payments repo whose remap moves `moved` rows, or fails with the one-active-per-user
- * unique violation (SQLSTATE 23505) when `moved` is 'conflict'. */
-const payments = (moved: number | 'conflict'): PaymentRepo => ({
+ * unique violation (SQLSTATE 23505) when `moved` is 'conflict'. `existingAtTarget` is
+ * what `findByExternalUser(to)` returns — non-empty means the target id is occupied. */
+const payments = (
+  moved: number | 'conflict',
+  existingAtTarget: readonly Payment[] = [],
+): PaymentRepo => ({
   ...unusedPayments,
+  findByExternalUser: () => Effect.succeed(existingAtTarget),
   renameExternalUser: () =>
     moved === 'conflict'
       ? Effect.fail(new SqlError.SqlError({ cause: { code: '23505' } }))
@@ -143,6 +169,23 @@ it.effect('maps the one-active-per-user unique violation to a Conflict', () =>
     const deps = {
       payments: payments('conflict'),
       checkout: checkout(0),
+      ledger: log.repo,
+    };
+
+    const error = yield* Effect.flip(renameExternalUser(deps)(cmd, 'service'));
+
+    expect(error._tag).toBe('Conflict');
+    expect(log.appends).toHaveLength(0);
+  }),
+);
+
+it.effect('refuses a rename onto an id that already has billing records', () =>
+  Effect.gen(function* () {
+    const log = ledger();
+    // The target id is occupied; the remap must not stack a second payment there.
+    const deps = {
+      payments: payments(2, [existingPayment]),
+      checkout: checkout(1),
       ledger: log.repo,
     };
 

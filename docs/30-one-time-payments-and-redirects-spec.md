@@ -92,6 +92,9 @@ follow-up, not required by this change.
 
 - AC-4 (retry ladder) — untouched; one-time payments never enter it (no token, excluded
   from the scheduler).
+- Operator **soft-cancel is recurring-only**: the due-date lapse runs through the
+  scheduler, which never processes a non-recurring payment, so cancelling a one-time
+  payment could never complete. The cancel route refuses it with a 422.
 - AC-5 (checkout → Payment + token) — a recurring checkout still creates a Payment and
   stores the token; a one-time checkout creates a Payment with **no** token by design.
 - AC-8 (new provider/sink without core change) — provider modules untouched.

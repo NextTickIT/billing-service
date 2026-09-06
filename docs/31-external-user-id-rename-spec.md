@@ -46,9 +46,12 @@ Response: { "from", "to", "movedPayments": <n>, "movedSessions": <n> }   (200)
 Errors (typed, each with `toHttp`):
 
 - `422 UnprocessableEntity` — `from`/`to` empty, or `from === to` (a no-op).
-- `409 Conflict` — both ids already hold an **active recurring payment**; the remap would
-  collide on the one-active-recurring-per-user index. Surfaced from the SQLSTATE 23505
-  via the generic `onUniqueViolation` mapper (`infra/db/pg-errors`).
+- `409 Conflict` — the **target id is already in use** (`to` already owns any payment). A
+  rename targets an UNUSED id, so an occupied target is refused rather than merged — this
+  prevents silently stacking two recurring payments under one user (the unique index only
+  catches the active+active case, not active+past_due, so it can't be the sole guard). A
+  concurrent active-recurring collision is still caught as a backstop by the SQLSTATE
+  23505 → `onUniqueViolation` mapper (`infra/db/pg-errors`).
 - `404 NotFound` — no live record matched `from` (nothing to remap).
 
 ## 4. Semantics (docs, `modules/identity`)
@@ -57,13 +60,15 @@ The whole operation runs in **one transaction** (`sql.withTransaction`), so a co
 an empty match rolls back cleanly with nothing moved and no ledger row:
 
 1. Validate `from`/`to` (non-empty, distinct) — carried **verbatim**, never trimmed.
-2. `payments.renameExternalUser(from, to)` → moved count; a 23505 unique violation maps
-   to `Conflict`.
-3. `checkout.renameOpenSessionsExternalUser(from, to)` → moved count (created/pending).
-4. If nothing moved → `NotFound` (transaction rolls back).
-5. Append one `external_user_id_changes` row with the from/to, source (`service`),
+2. Refuse if `to` already owns any payment (`findByExternalUser(to)` non-empty) →
+   `Conflict`. A rename targets an unused id; an occupied target is a merge, not a rename.
+3. `payments.renameExternalUser(from, to)` → moved count; a 23505 unique violation maps
+   to `Conflict` (backstop for the concurrent case).
+4. `checkout.renameOpenSessionsExternalUser(from, to)` → moved count (created/pending).
+5. If nothing moved → `NotFound` (transaction rolls back).
+6. Append one `external_user_id_changes` row with the from/to, source (`service`),
    reason, and the two counts.
-6. Return the counts.
+7. Return the counts.
 
 Module layout mirrors `auth` (a new module = a new capability, AC8 spirit):
 
@@ -99,4 +104,5 @@ Module layout mirrors `auth` (a new module = a new capability, AC8 spirit):
   it is a follow-up).
 - Emitting an `external_user_id_changed` domain event to sinks — unnecessary while the
   service that owns identity is the initiator.
-- Merging two users that both hold an active recurring payment (currently a 409).
+- Merging two users with billing history: any rename onto an occupied `to` is a 409 (a
+  rename targets an unused id). A real merge is a separate, out-of-scope operation.

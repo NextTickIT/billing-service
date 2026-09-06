@@ -6,8 +6,11 @@ import {
 import { Effect } from 'effect';
 
 import { onUniqueViolation } from '@/infra/db/pg-errors.js';
-import type { Conflict } from '@/infra/http/errors.js';
-import { NotFound, UnprocessableEntity } from '@/infra/http/errors.js';
+import {
+  Conflict,
+  NotFound,
+  UnprocessableEntity,
+} from '@/infra/http/errors.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import type { ExternalUserIdChangeRepo } from '@/modules/identity/data-access.js';
@@ -48,6 +51,16 @@ export const renameExternalUser =
       if (cmd.from === cmd.to) {
         return yield* Effect.fail(
           new UnprocessableEntity({ reason: 'from and to are identical' }),
+        );
+      }
+      // Rename targets an UNUSED id. If `to` already owns billing records this would be
+      // a merge — silently stacking two recurring payments under one user (the unique
+      // index only catches the active+active case, not active+past_due) and risking a
+      // double charge. Refuse it; merging two live users is a separate operation.
+      const existingAtTarget = yield* deps.payments.findByExternalUser(cmd.to);
+      if (existingAtTarget.length > 0) {
+        return yield* Effect.fail(
+          new Conflict({ field: 'target external user' }),
         );
       }
       const movedPayments = yield* deps.payments

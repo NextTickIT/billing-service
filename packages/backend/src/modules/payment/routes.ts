@@ -146,6 +146,33 @@ const createPayment = (
     return { id: payment.id };
   });
 
+/** Audit the operator action and enqueue the cancel notify (docs/23). */
+const enqueueCancel = (
+  sql: SqlClient.SqlClient,
+  actor: { readonly role: Role },
+  payment: Payment,
+  reasonInput?: string,
+) =>
+  Effect.gen(function* () {
+    const reason = reasonInput ?? 'operator';
+    yield* makeChargeRepo(sql).insertAudit({
+      actor: Role[actor.role],
+      action: 'cancel_payment',
+      targetType: 'payment',
+      targetId: payment.id,
+      detail: { reason },
+    });
+    yield* enqueue(sql)({
+      messageType: PAYMENT_CANCEL,
+      idemKey: `cancel:${payment.id}`,
+      payload: {
+        subscriptionId: payment.id,
+        externalUserId: payment.externalUserId,
+        reason,
+      },
+    });
+  });
+
 const cancelPayment = (
   body: Schema.Schema.Type<typeof CancelPaymentRequest>,
   request: FastifyRequest,
@@ -160,6 +187,17 @@ const cancelPayment = (
     if (Option.isNone(found)) {
       return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
+    // Soft-cancel stops a future renewal and lapses at the due date via the scheduler —
+    // which only ever processes recurring payments. A one-time payment never renews and
+    // is never in `findDue`, so a soft-cancel on it could never lapse (it would hang in
+    // "cancelling" forever); refuse it outright.
+    if (!found.value.recurring) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({
+          reason: 'only a recurring payment can be cancelled',
+        }),
+      );
+    }
     const requested = yield* repo.requestCancel(id);
     if (!requested) {
       return yield* Effect.fail(
@@ -168,23 +206,7 @@ const cancelPayment = (
         }),
       );
     }
-    const reason = body.reason ?? 'operator';
-    yield* makeChargeRepo(sql).insertAudit({
-      actor: Role[actor.role],
-      action: 'cancel_payment',
-      targetType: 'payment',
-      targetId: id,
-      detail: { reason },
-    });
-    yield* enqueue(sql)({
-      messageType: PAYMENT_CANCEL,
-      idemKey: `cancel:${id}`,
-      payload: {
-        subscriptionId: id,
-        externalUserId: found.value.externalUserId,
-        reason,
-      },
-    });
+    yield* enqueueCancel(sql, actor, found.value, body.reason);
     return { status: 'cancelled' as const };
   });
 
