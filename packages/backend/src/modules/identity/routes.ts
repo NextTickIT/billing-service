@@ -9,8 +9,10 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { extractBearer } from '@/infra/http/bearer.js';
 import { Unauthorized } from '@/infra/http/errors.js';
 import { makeRoute } from '@/infra/http/route.js';
+import { enqueue } from '@/infra/queue/store.js';
 import { authenticateToken } from '@/modules/auth/domain.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
+import { EXTERNAL_USER_ID_CHANGE } from '@/modules/identity/contracts.js';
 import { makeExternalUserIdChangeRepo } from '@/modules/identity/data-access.js';
 import {
   renameExternalUser,
@@ -28,9 +30,24 @@ const serviceActor = (request: FastifyRequest) => {
     : authenticateToken(presented);
 };
 
+/** Enqueue the opt-in `external_user_id_changed` notify (docs/31). A deterministic
+ * idemKey dedupes a retried rename, so the event fires exactly once. */
+const enqueueChange = (sql: SqlClient.SqlClient, result: RenameAccepted) =>
+  enqueue(sql)({
+    messageType: EXTERNAL_USER_ID_CHANGE,
+    idemKey: `euidchg:${result.from}|${result.to}`,
+    payload: {
+      from: result.from,
+      to: result.to,
+      movedPayments: result.movedPayments,
+      movedSessions: result.movedSessions,
+    },
+  }).pipe(Effect.asVoid);
+
 /**
- * Remap a user's opaque external id (docs/31). The whole remap + ledger append runs in
- * one transaction, so a conflict or an empty match rolls back with nothing moved.
+ * Remap a user's opaque external id (docs/31). The whole remap + ledger append (and the
+ * opt-in notify enqueue) runs in one transaction, so a conflict or empty match rolls back
+ * with nothing moved and no event. Events fire only when the caller sets `refireEvents`.
  */
 const rename = (input: RenameExternalUserRequest, request: FastifyRequest) =>
   Effect.gen(function* () {
@@ -42,7 +59,13 @@ const rename = (input: RenameExternalUserRequest, request: FastifyRequest) =>
       ledger: makeExternalUserIdChangeRepo(sql),
     };
     return yield* sql.withTransaction(
-      renameExternalUser(deps)(input, 'service'),
+      Effect.gen(function* () {
+        const result = yield* renameExternalUser(deps)(input, 'service');
+        if (input.refireEvents === true) {
+          yield* enqueueChange(sql, result);
+        }
+        return result;
+      }),
     );
   });
 

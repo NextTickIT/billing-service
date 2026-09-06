@@ -24,6 +24,7 @@ export const EVENT_NAMES = [
   'payment_cancelled',
   'payment_reactivated',
   'payment_deferred',
+  'external_user_id_changed',
   'card_change_succeeded',
   'card_change_failed',
   'unknown_payment_quarantined',
@@ -264,6 +265,28 @@ export type UnknownPaymentQuarantinedEvent = Schema.Schema.Type<
  * `name`. `externalUserId` is carried verbatim from the calling system (AC9) and is
  * null only for a quarantined unknown payment.
  */
+/**
+ * A service action remapped a user's opaque external id (docs/31). Emitted ONLY when
+ * the rename opts in (`refireEvents`), so a sink can react to the change; the default
+ * rename is silent. `externalUserId` is the NEW id (the go-forward contact); the payload
+ * carries the old id and the moved-record counts. Payment events are NOT re-emitted.
+ */
+export const ExternalUserIdChangedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('external_user_id_changed'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({
+    from: Schema.String,
+    to: Schema.String,
+    movedPayments: Schema.Int,
+    movedSessions: Schema.Int,
+  }),
+});
+
+export type ExternalUserIdChangedEvent = Schema.Schema.Type<
+  typeof ExternalUserIdChangedEvent
+>;
+
 export const DomainEvent = Schema.Union(
   InitialPaymentSucceededEvent,
   RecurringPaymentSucceededEvent,
@@ -275,6 +298,7 @@ export const DomainEvent = Schema.Union(
   PaymentCancelledEvent,
   PaymentReactivatedEvent,
   PaymentDeferredEvent,
+  ExternalUserIdChangedEvent,
   CardChangeSucceededEvent,
   CardChangeFailedEvent,
   UnknownPaymentQuarantinedEvent,

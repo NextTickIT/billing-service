@@ -43,6 +43,10 @@ export const RenameExternalUserRequest = Schema.Struct({
   from: Schema.String,
   to: Schema.String,
   reason: Schema.optional(Schema.String),
+  // Opt-in (default false): emit an `external_user_id_changed` event to the sinks. The
+  // default rename is silent — a pure remap + ledger, no events — so downstream is not
+  // re-notified unless the caller asks. Payment events are never re-emitted either way.
+  refireEvents: Schema.optional(Schema.Boolean),
 });
 
 export type RenameExternalUserRequest = Schema.Schema.Type<

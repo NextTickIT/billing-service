@@ -1,9 +1,11 @@
 import type { SqlError } from '@effect/sql';
 import {
+  type DomainEvent,
+  type ExternalUserIdChangedEvent,
   type RenameAccepted,
   type RenameExternalUserRequest,
 } from '@billing-service/shared';
-import { Effect, Option } from 'effect';
+import { Clock, Effect, Option, Schema } from 'effect';
 
 import { onUniqueViolation } from '@/infra/db/pg-errors.js';
 import {
@@ -12,8 +14,12 @@ import {
   UnprocessableEntity,
 } from '@/infra/http/errors.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
-import type { PaymentRepo } from '@/modules/payment/data-access.js';
+import {
+  EXTERNAL_USER_ID_CHANGE,
+  ExternalUserIdChangeNotify,
+} from '@/modules/identity/contracts.js';
 import type { ExternalUserIdChangeRepo } from '@/modules/identity/data-access.js';
+import type { PaymentRepo } from '@/modules/payment/data-access.js';
 
 export interface RenameDeps {
   readonly payments: PaymentRepo;
@@ -131,3 +137,45 @@ export const renameExternalUser =
       });
       return { from: cmd.from, to: cmd.to, movedPayments, movedSessions };
     });
+
+/**
+ * `external_user_id_changed` envelope (docs/31). `externalUserId` is the NEW id (the
+ * go-forward contact); the id is deterministic on `from` → `to` so a redelivered
+ * message dedupes in the outbox.
+ */
+export const externalUserIdChanged = (
+  notify: ExternalUserIdChangeNotify,
+  now: Date,
+): ExternalUserIdChangedEvent => ({
+  id: `evt_euidchg_${notify.from}_${notify.to}`,
+  name: 'external_user_id_changed',
+  occurredAt: now,
+  correlationId: notify.to,
+  externalUserId: notify.to,
+  aggregateId: notify.to,
+  payload: {
+    from: notify.from,
+    to: notify.to,
+    movedPayments: notify.movedPayments,
+    movedSessions: notify.movedSessions,
+  },
+});
+
+/** The `external_user_id_change` handler: decode the payload, then emit the event. */
+export const externalUserIdChangedNotify =
+  (publish: (event: DomainEvent) => Effect.Effect<void, SqlError.SqlError>) =>
+  (payload: unknown): Effect.Effect<void, SqlError.SqlError> =>
+    Schema.decodeUnknown(ExternalUserIdChangeNotify)(payload).pipe(
+      Effect.flatMap((notify) =>
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((ms) =>
+            publish(externalUserIdChanged(notify, new Date(ms))),
+          ),
+        ),
+      ),
+      Effect.catchTag('ParseError', (error) =>
+        Effect.die(
+          `invalid ${EXTERNAL_USER_ID_CHANGE} payload: ${error.message}`,
+        ),
+      ),
+    );

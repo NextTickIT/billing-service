@@ -39,7 +39,7 @@ sessions move, so a payment mid-checkout completes under the new id.
 secret — the service calls directly).
 
 ```
-Request : { "from": "<oldId>", "to": "<newId>", "reason"?: "<text>" }
+Request : { "from": "<oldId>", "to": "<newId>", "reason"?: "<text>", "refireEvents"?: false }
 Response: { "from", "to", "movedPayments": <n>, "movedSessions": <n> }   (200)
 ```
 
@@ -60,6 +60,16 @@ identical `from` → `to` remap is already recorded in the ledger, the earlier c
 emptied `from`, so the retry replays that recorded result (200, same counts) instead of a
 404. If `from` still owns payments it is a fresh rename (e.g. after a reverse), so the
 move proceeds normally.
+
+**Events are opt-in (`refireEvents`, default `false`).** By default the rename is
+**silent** — a pure remap + ledger, no events — so a sink is not re-notified. Set
+`refireEvents: true` to emit a **single** `external_user_id_changed` event (payload
+`{from, to, movedPayments, movedSessions}`, envelope `externalUserId` = the **new** id).
+Payment success events are **never** re-emitted (no double-grant). The route enqueues an
+`external_user_id_change` queue message inside the rename transaction (so the notify is
+atomic with the remap); the worker's handler publishes the domain event via the outbox,
+exactly like the payment lifecycle notifies (docs/23). A deterministic idemKey +
+event id dedupe a retried rename, so the event fires at most once.
 
 ## 4. Semantics (docs, `modules/identity`)
 

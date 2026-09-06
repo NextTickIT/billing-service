@@ -21,6 +21,8 @@ import {
   type ChargePipelineService,
 } from '@/modules/charge/domain.js';
 import { runScheduler } from '@/modules/billing/scheduler.js';
+import { EXTERNAL_USER_ID_CHANGE } from '@/modules/identity/contracts.js';
+import { externalUserIdChangedNotify } from '@/modules/identity/domain.js';
 import {
   cancelNotify,
   deferNotify,
@@ -75,6 +77,10 @@ const registerHandlers = (
     yield* registry.register(
       PAYMENT_LAPSE,
       lapseNotify(makePaymentRepo(sql), outbox.publish),
+    );
+    yield* registry.register(
+      EXTERNAL_USER_ID_CHANGE,
+      externalUserIdChangedNotify(outbox.publish),
     );
   });
 
