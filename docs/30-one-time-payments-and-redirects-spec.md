@@ -56,8 +56,12 @@ needs them; they are the caller's own destinations, not subscriber data — AC-9
   (`recurringTokenRef = null`) even when the provider returned a `recToken`, so the
   scheduler — whose `findDue` requires a token **and** `recurring = true` — can never
   pick it up. A one-time payment still sets the period anchors and emits
-  `payment_created` + `initial_payment_succeeded` (period carried), so SendPulse grants
-  the paid period exactly as for a recurring first charge; it simply never renews.
+  `payment_created` + **`one_time_purchase_succeeded`** (period carried) — its **own**
+  success event, distinct from a recurring first charge's `initial_payment_succeeded`, so
+  a sink can react differently — so SendPulse grants the paid period; it simply never
+  renews. The pipeline picks the variant from the checkout session's `recurring` flag
+  (`charge/domain.ts` `paymentSucceeded`); the payload is identical across the three
+  success variants.
 
 Provider code is untouched — `checkout`/`payment`/the pipeline stay processor-agnostic
 (AC-8). A card change (`makeCardChangeMatcher`, the `/api/payment/card-change` route)

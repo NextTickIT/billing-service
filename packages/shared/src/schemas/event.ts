@@ -16,6 +16,7 @@ export const SINK_DELIVERY_SLA_SECONDS = 60;
 export const EVENT_NAMES = [
   'initial_payment_succeeded',
   'recurring_payment_succeeded',
+  'one_time_purchase_succeeded',
   'initial_payment_failed',
   'charge_retry_failed',
   'renewal_failed',
@@ -46,10 +47,12 @@ const envelope = {
 };
 
 /**
- * A successful payment, split by scenario so downstream flows can differ: an
- * INITIAL checkout payment vs a RECURRING renewal charge. Both carry the same
- * facts; the pipeline picks the variant from the match kind ('checkout' vs
- * 'recurring'). A matched incoming event or an operator bind produces one of these.
+ * A successful payment, split by scenario so downstream flows can differ: an INITIAL
+ * (recurring) checkout payment, a RECURRING renewal charge, or a ONE-TIME purchase (a
+ * checkout the caller marked non-recurring — a single buy, never renewed). All three
+ * carry the same facts; the pipeline picks the variant from the match kind ('checkout'
+ * vs 'recurring') and, for checkout, the session's `recurring` flag. A matched incoming
+ * event or an operator bind produces one of these.
  */
 const succeededPayload = {
   amount: Schema.Int,
@@ -79,6 +82,17 @@ export const RecurringPaymentSucceededEvent = Schema.Struct({
 
 export type RecurringPaymentSucceededEvent = Schema.Schema.Type<
   typeof RecurringPaymentSucceededEvent
+>;
+
+export const OneTimePurchaseSucceededEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('one_time_purchase_succeeded'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct(succeededPayload),
+});
+
+export type OneTimePurchaseSucceededEvent = Schema.Schema.Type<
+  typeof OneTimePurchaseSucceededEvent
 >;
 
 /**
@@ -253,6 +267,7 @@ export type UnknownPaymentQuarantinedEvent = Schema.Schema.Type<
 export const DomainEvent = Schema.Union(
   InitialPaymentSucceededEvent,
   RecurringPaymentSucceededEvent,
+  OneTimePurchaseSucceededEvent,
   InitialPaymentFailedEvent,
   PaymentCreatedEvent,
   ChargeRetryFailedEvent,

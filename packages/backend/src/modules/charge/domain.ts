@@ -6,6 +6,7 @@ import type {
   DomainEvent,
   InitialPaymentFailedEvent,
   InitialPaymentSucceededEvent,
+  OneTimePurchaseSucceededEvent,
   PaymentCreatedEvent,
   RecurringPaymentSucceededEvent,
   UnknownPaymentQuarantinedEvent,
@@ -80,15 +81,42 @@ export const recurringPaymentSucceeded = (
   payload: succeededPayload(event, match),
 });
 
-/** Pick the success variant from the match kind (checkout = initial, else recurring). */
+/** one_time_purchase_succeeded — a checkout the caller marked non-recurring (a single
+ * buy that is never renewed). Same facts as the other success variants. */
+export const oneTimePurchaseSucceeded = (
+  event: Charge,
+  match: Match,
+  subscriptionId: string,
+): OneTimePurchaseSucceededEvent => ({
+  id: eventId(event.idemKey, 'succeeded'),
+  name: 'one_time_purchase_succeeded',
+  occurredAt: event.occurredAt,
+  correlationId: event.idemKey,
+  externalUserId: match.externalUserId,
+  aggregateId: subscriptionId,
+  payload: succeededPayload(event, match),
+});
+
+/**
+ * Pick the success variant: a recurring renewal (non-checkout match) → recurring; a
+ * checkout the caller opted out of recurrence (`match.recurring === false`) → one-time
+ * purchase; any other checkout → the initial (subscription) success.
+ */
 const paymentSucceeded = (
   event: Charge,
   match: Match,
   subscriptionId: string,
-): InitialPaymentSucceededEvent | RecurringPaymentSucceededEvent =>
-  match.kind === 'checkout'
-    ? initialPaymentSucceeded(event, match, subscriptionId)
-    : recurringPaymentSucceeded(event, match, subscriptionId);
+):
+  | InitialPaymentSucceededEvent
+  | RecurringPaymentSucceededEvent
+  | OneTimePurchaseSucceededEvent => {
+  if (match.kind !== 'checkout') {
+    return recurringPaymentSucceeded(event, match, subscriptionId);
+  }
+  return match.recurring === false
+    ? oneTimePurchaseSucceeded(event, match, subscriptionId)
+    : initialPaymentSucceeded(event, match, subscriptionId);
+};
 
 /** The provider decline reason for a failed charge (raw payload; string or code). */
 const declineReason = (payload: Record<string, unknown>): string => {
