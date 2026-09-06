@@ -8,6 +8,7 @@ import {
   CheckoutSessionPublic,
   CheckoutSessionStatus,
   CreateCheckoutSession,
+  ONE_TIME_PERIOD,
   PayInstruction,
   PaymentMethod,
   PaymentStatus,
@@ -105,7 +106,10 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
       externalUserId: input.externalUserId,
       amount: input.amount,
       currency: input.currency,
-      period: input.period,
+      // A recurring checkout always carries its cadence (enforced by the schema); a
+      // one-time purchase never renews, so it may omit `period` — store the zero-length
+      // sentinel to satisfy the NOT NULL column (it is never read back for a one-time).
+      period: input.period ?? ONE_TIME_PERIOD,
       // Default preselected method (Card unless the caller passed one; the schema
       // defaults it to Card). The page can still switch it before Pay.
       method: input.method,

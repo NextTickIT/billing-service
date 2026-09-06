@@ -27,7 +27,11 @@ A single boolean carries the intent end-to-end — `CreateCheckoutSession → Ch
 - `CheckoutSession.successUrl / failureUrl: string | null` — persisted per session.
 
 `CreateCheckoutSession` (POST body) adds `recurring` (optional, defaults true),
-`successUrl`, `failureUrl` (optional). The two URLs are validated at the API boundary by
+`successUrl`, `failureUrl` (optional). `period` is **required only for a recurring
+checkout** (a subscription's cadence); a one-time purchase (`recurring: false`) may omit
+it — it never renews. When omitted the server stores the zero-length sentinel
+`ONE_TIME_PERIOD` (`P0D`) to satisfy the NOT NULL `period` columns; it is never read back
+for a one-time (only recurring renewals call `addPeriod`). The two URLs are validated at the API boundary by
 the shared `RedirectUrl` schema — an **http(s)** URL only, so a stored target can never be
 a `javascript:` (or other-scheme) open-redirect the return page would navigate to. The
 public read (`CheckoutSessionPublic`) exposes `successUrl`/`failureUrl` (the return page

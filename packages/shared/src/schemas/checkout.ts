@@ -85,15 +85,23 @@ export const NewCheckoutSession = CheckoutSession.pipe(
 
 export type NewCheckoutSession = Schema.Schema.Type<typeof NewCheckoutSession>;
 
+/** The stored `period` for a one-time checkout, which has no renewal cadence. A valid
+ * zero-length ISO-8601 duration: it satisfies the NOT NULL `period` columns and is never
+ * parsed (only recurring renewals call `addPeriod`), so a one-time never reads it back. */
+export const ONE_TIME_PERIOD = 'P0D';
+
 /** POST /api/checkout-sessions body (docs/06): the external system's intent. `method`
  * is the default payment method preselected on the checkout page; optional on the wire
  * and defaulted to Card (PaymentMethod.Card) when the caller omits it. `recurring`
  * defaults to true (a subscription) — a caller opts a one-time payment in with `false`.
- * `successUrl`/`failureUrl` are optional post-payment browser redirects (http(s) only). */
+ * `period` (ISO-8601 duration) is the renewal cadence: required for a recurring checkout,
+ * omitted for a one-time purchase (it never renews). `successUrl`/`failureUrl` are
+ * optional post-payment browser redirects (http(s) only). */
 export const CreateCheckoutSession = CheckoutSession.pipe(
-  Schema.pick('externalUserId', 'amount', 'currency', 'period'),
+  Schema.pick('externalUserId', 'amount', 'currency'),
   Schema.extend(
     Schema.Struct({
+      period: Schema.optional(Schema.String),
       method: Schema.optionalWith(PaymentMethodSchema, {
         default: () => PaymentMethod.Card,
       }),
@@ -101,6 +109,13 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       successUrl: Schema.optional(RedirectUrl),
       failureUrl: Schema.optional(RedirectUrl),
     }),
+  ),
+  // A recurring checkout needs its renewal cadence; a one-time purchase never renews, so
+  // `period` may be omitted there (the server stores ONE_TIME_PERIOD instead).
+  Schema.filter(
+    (v) =>
+      !v.recurring || (typeof v.period === 'string' && v.period.length > 0),
+    { message: () => 'period is required for a recurring checkout' },
   ),
 );
 

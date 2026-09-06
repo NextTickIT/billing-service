@@ -2,6 +2,7 @@ import { it } from '@effect/vitest';
 import { Effect, Schema } from 'effect';
 import { expect } from 'vitest';
 
+import { CreateCheckoutSession } from '@/schemas/checkout.js';
 import {
   CreatePayment,
   Currency,
@@ -72,5 +73,48 @@ it.effect('CreatePayment is the entity without id (computed from schema)', () =>
       Schema.decodeUnknown(Payment)(createParams),
     );
     expect(missingId._tag).toBe('Failure');
+  }),
+);
+
+const baseCheckout = {
+  externalUserId: 'guildmaster:1',
+  amount: 899,
+  currency: Currency.USD,
+  method: PaymentMethod.Card,
+};
+
+it.effect('CreateCheckoutSession: a one-time purchase may omit period', () =>
+  Effect.gen(function* () {
+    const decoded = yield* Schema.decodeUnknown(CreateCheckoutSession)({
+      ...baseCheckout,
+      recurring: false,
+    });
+    expect(decoded.recurring).toBe(false);
+    expect(decoded.period).toBeUndefined();
+  }),
+);
+
+it.effect('CreateCheckoutSession: a recurring checkout requires period', () =>
+  Effect.gen(function* () {
+    // `recurring` defaults to true, so an omitted period must be rejected.
+    const missingDefault = yield* Effect.exit(
+      Schema.decodeUnknown(CreateCheckoutSession)(baseCheckout),
+    );
+    expect(missingDefault._tag).toBe('Failure');
+    // ...and an explicit `recurring: true` with no period is likewise rejected.
+    const missingExplicit = yield* Effect.exit(
+      Schema.decodeUnknown(CreateCheckoutSession)({
+        ...baseCheckout,
+        recurring: true,
+      }),
+    );
+    expect(missingExplicit._tag).toBe('Failure');
+    // A recurring checkout WITH a period decodes fine.
+    const ok = yield* Schema.decodeUnknown(CreateCheckoutSession)({
+      ...baseCheckout,
+      recurring: true,
+      period: 'P1M',
+    });
+    expect(ok.period).toBe('P1M');
   }),
 );
