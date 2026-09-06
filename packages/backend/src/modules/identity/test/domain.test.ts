@@ -1,7 +1,11 @@
 import { SqlError } from '@effect/sql';
 import { it } from '@effect/vitest';
-import type { NewExternalUserIdChange, Payment } from '@billing-service/shared';
-import { Effect } from 'effect';
+import type {
+  ExternalUserIdChange,
+  NewExternalUserIdChange,
+  Payment,
+} from '@billing-service/shared';
+import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
@@ -59,15 +63,29 @@ const existingPayment: Payment = {
   updatedAt: new Date(0),
 };
 
-/** A payments repo whose remap moves `moved` rows, or fails with the one-active-per-user
- * unique violation (SQLSTATE 23505) when `moved` is 'conflict'. `existingAtTarget` is
- * what `findByExternalUser(to)` returns — non-empty means the target id is occupied. */
+const cmd = { from: 'sp:old', to: 'sp:new' };
+
+/**
+ * A payments repo whose remap moves `moved` rows (or fails with the one-active-per-user
+ * 23505 violation when `moved` is 'conflict'). `findByExternalUser` answers per id:
+ * `targetRecords` for `to` (non-empty → occupied), `fromRecords` for `from` (empty →
+ * eligible for the idempotent-replay path). `from` defaults to a single existing payment
+ * (a normal, non-replay rename).
+ */
 const payments = (
   moved: number | 'conflict',
-  existingAtTarget: readonly Payment[] = [],
+  opts: {
+    fromRecords?: readonly Payment[];
+    targetRecords?: readonly Payment[];
+  } = {},
 ): PaymentRepo => ({
   ...unusedPayments,
-  findByExternalUser: () => Effect.succeed(existingAtTarget),
+  findByExternalUser: (uid) =>
+    Effect.succeed(
+      uid === cmd.to
+        ? (opts.targetRecords ?? [])
+        : (opts.fromRecords ?? [existingPayment]),
+    ),
   renameExternalUser: () =>
     moved === 'conflict'
       ? Effect.fail(new SqlError.SqlError({ cause: { code: '23505' } }))
@@ -79,7 +97,9 @@ const checkout = (moved: number): CheckoutRepo => ({
   renameOpenSessionsExternalUser: () => Effect.succeed(moved),
 });
 
-const ledger = (): {
+const ledger = (
+  prior?: ExternalUserIdChange,
+): {
   repo: ExternalUserIdChangeRepo;
   appends: NewExternalUserIdChange[];
 } => {
@@ -92,11 +112,25 @@ const ledger = (): {
           appends.push(input);
           return { ...input, id: 'euc_1', occurredAt: new Date(0) };
         }),
+      findLatestChange: () =>
+        Effect.succeed(
+          prior === undefined ? Option.none() : Option.some(prior),
+        ),
     },
   };
 };
 
-const cmd = { from: 'sp:old', to: 'sp:new' };
+/** A previously recorded sp:old → sp:new remap (the basis for an idempotent replay). */
+const priorChange: ExternalUserIdChange = {
+  id: 'euc_prior',
+  fromExternalUserId: 'sp:old',
+  toExternalUserId: 'sp:new',
+  source: 'service',
+  reason: null,
+  movedPayments: 3,
+  movedSessions: 1,
+  occurredAt: new Date(0),
+};
 
 it.effect('remaps live records and appends the change to the ledger', () =>
   Effect.gen(function* () {
@@ -150,8 +184,9 @@ it.effect(
 it.effect('is a NotFound (no ledger row) when no live record matches', () =>
   Effect.gen(function* () {
     const log = ledger();
+    // from is empty and there is no prior remap on record → genuinely nothing to move.
     const deps = {
-      payments: payments(0),
+      payments: payments(0, { fromRecords: [] }),
       checkout: checkout(0),
       ledger: log.repo,
     };
@@ -184,7 +219,7 @@ it.effect('refuses a rename onto an id that already has billing records', () =>
     const log = ledger();
     // The target id is occupied; the remap must not stack a second payment there.
     const deps = {
-      payments: payments(2, [existingPayment]),
+      payments: payments(2, { targetRecords: [existingPayment] }),
       checkout: checkout(1),
       ledger: log.repo,
     };
@@ -194,4 +229,29 @@ it.effect('refuses a rename onto an id that already has billing records', () =>
     expect(error._tag).toBe('Conflict');
     expect(log.appends).toHaveLength(0);
   }),
+);
+
+it.effect(
+  'replays a prior identical rename (idempotent) without moving again',
+  () =>
+    Effect.gen(function* () {
+      const log = ledger(priorChange);
+      // from is already emptied and the remap is on record; renameExternalUser is stubbed
+      // to fail, so a passing result proves the replay short-circuits before any move.
+      const deps = {
+        payments: payments('conflict', { fromRecords: [] }),
+        checkout: checkout(0),
+        ledger: log.repo,
+      };
+
+      const result = yield* renameExternalUser(deps)(cmd, 'service');
+
+      expect(result).toEqual({
+        from: 'sp:old',
+        to: 'sp:new',
+        movedPayments: 3,
+        movedSessions: 1,
+      });
+      expect(log.appends).toHaveLength(0);
+    }),
 );
