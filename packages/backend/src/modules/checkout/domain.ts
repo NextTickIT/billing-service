@@ -23,6 +23,29 @@ export const checkoutPath = (sessionId: string): string =>
   `https://bill.nexttick.it/checkout/${sessionId}`;
 
 /**
+ * A caller-supplied post-payment redirect must point at an allowed host (docs/30). An
+ * empty allowlist accepts any host (dev/default); otherwise the URL's hostname must be
+ * listed — this stops an open redirect off our own checkout domain. The URL already
+ * passed the http(s) scheme filter, so an unparseable value here is malformed → rejected.
+ */
+export const redirectHostAllowed = (
+  allowedHosts: readonly string[],
+  url: string,
+): boolean => {
+  if (allowedHosts.length === 0) {
+    return true;
+  }
+  try {
+    return allowedHosts.includes(new URL(url).hostname);
+  } catch (err) {
+    if (err instanceof TypeError) {
+      return false;
+    }
+    throw err;
+  }
+};
+
+/**
  * Checkout matcher: an incoming event whose `externalRef` is a known checkout
  * session id resolves to a `checkout` match. A succeeded event is create-or-extend;
  * a declined one is a first-payment failure (the pipeline emits

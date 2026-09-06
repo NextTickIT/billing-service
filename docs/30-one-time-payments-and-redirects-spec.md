@@ -82,6 +82,11 @@ webhook-confirmed outcome it then navigates to the caller's URL:
 A redirect therefore always reflects confirmed state — an optimistic provider bounce
 never triggers it. When a URL is absent the behaviour is exactly as before.
 
+**Host allowlist.** `successUrl`/`failureUrl` are http(s)-only (the shared `RedirectUrl`
+schema). In production `REDIRECT_ALLOWED_HOSTS` (comma-separated) further restricts the
+redirect hostname at creation — an off-list host is a `422` — closing the open-redirect
+vector off our own checkout domain. Empty (the dev default) accepts any host.
+
 **Known gap:** WhitePay's `failure_link` default points at the checkout page, not the
 return page, so a crypto *hard failure* is not redirect-honoured until the session
 times out on the return page (a slower `failureUrl` hit). The success path and the

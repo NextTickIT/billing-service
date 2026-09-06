@@ -150,6 +150,12 @@ export interface AppConfig {
    * rejects any request to the BFF-proxied surface that lacks the header.
    */
   readonly bffSecret: Redacted.Redacted;
+  /**
+   * Allowed hostnames for a checkout's post-payment redirect (`successUrl`/`failureUrl`,
+   * env `REDIRECT_ALLOWED_HOSTS`, comma-separated). Empty (default) accepts any http(s)
+   * host; set it in production to prevent an open redirect off `bill.nexttick.it`.
+   */
+  readonly redirectAllowedHosts: readonly string[];
 }
 
 /** Queue tuning is its own loader so `loadConfig` stays simple (one concern each). */
@@ -273,4 +279,8 @@ export const loadConfig = (): AppConfig => ({
     },
   },
   bffSecret: Redacted.make(process.env['BFF_SECRET'] ?? ''),
+  redirectAllowedHosts: (process.env['REDIRECT_ALLOWED_HOSTS'] ?? '')
+    .split(',')
+    .map((h) => h.trim())
+    .filter((h) => h.length > 0),
 });
