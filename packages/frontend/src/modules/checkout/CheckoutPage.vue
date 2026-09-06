@@ -40,14 +40,12 @@ const isPayable = computed(
     store.session?.status !== CheckoutSessionStatus.Expired,
 );
 
-// Crypto (WhitePay) is offered ONLY when the build flag is on AND this checkout was
-// explicitly created with Crypto as its method (`method: 1`). Default/card checkouts
-// hide the crypto button entirely; a crypto invoice opts in at creation. (Kept dark
-// otherwise while webhook delivery is still being finalized — docs/25.)
+// Crypto (WhitePay) is offered whenever the build flag is on — both methods are shown on
+// every checkout so a buyer can pick crypto even when the checkout didn't preselect it
+// (the backend `pay` route honors whichever method the buyer picks). Kept dark until the
+// WhitePay slug + API token + webhook token are provisioned (VITE_WHITEPAY_ENABLED — docs/25).
 const cryptoOffered = computed(
-  () =>
-    import.meta.env.VITE_WHITEPAY_ENABLED === 'true' &&
-    store.session?.method === PaymentMethod.Crypto,
+  () => import.meta.env.VITE_WHITEPAY_ENABLED === 'true',
 );
 
 onMounted(() => {
@@ -94,7 +92,7 @@ watch(
   },
 );
 
-// The methods the picker offers: Card always; Crypto only when this checkout opted in.
+// The methods the picker offers: Card always; Crypto whenever WhitePay is enabled.
 const methods = computed<PaymentMethod[]>(() =>
   cryptoOffered.value
     ? [PaymentMethod.Card, PaymentMethod.Crypto]
