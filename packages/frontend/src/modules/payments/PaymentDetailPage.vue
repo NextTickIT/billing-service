@@ -95,6 +95,14 @@ async function handleDefer(): Promise<void> {
           <span>{{ store.current.period }}</span>
         </div>
         <div class="info-row">
+          <span class="lbl">{{ t('payments.type') }}</span>
+          <span>{{
+            store.current.recurring
+              ? t('payments.recurring')
+              : t('payments.oneTime')
+          }}</span>
+        </div>
+        <div class="info-row">
           <span class="lbl">{{ t('common.status') }}</span>
           <span>{{ effectiveStatusLabel() }}</span>
         </div>

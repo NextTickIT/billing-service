@@ -72,6 +72,12 @@ function statusLabel(p: Payment): string {
   return t(`payments.statuses.${p.status}`);
 }
 
+// Recurring (subscription) vs one-time purchase — the value comes from the shared
+// `recurring` flag; the label is localised (never a JS map redefined per component).
+function typeLabel(p: Payment): string {
+  return p.recurring ? t('payments.recurring') : t('payments.oneTime');
+}
+
 function matchUser(p: Payment, q: string): boolean {
   return p.externalUserId.toLowerCase().includes(q);
 }
@@ -163,12 +169,13 @@ async function onCreate(): Promise<void> {
         :filter-label="t('payments.externalUserId')"
         :filter-match="matchUser"
         :row-key="rowKey"
-        :colspan="6"
+        :colspan="7"
         :empty-text="t('payments.noResults')"
         clickable
         @row-click="onRowClick"
       >
         <template #head>
+          <th>{{ t('payments.type') }}</th>
           <th>{{ t('common.amount') }}</th>
           <th>{{ t('common.period') }}</th>
           <th>
@@ -179,6 +186,16 @@ async function onCreate(): Promise<void> {
         </template>
         <template #row="{ item }">
           <td class="mono">{{ item.externalUserId }}</td>
+          <td>
+            <span
+              class="type-badge"
+              :class="
+                item.recurring ? 'type-badge--recurring' : 'type-badge--oneTime'
+              "
+            >
+              {{ typeLabel(item) }}
+            </span>
+          </td>
           <td class="mono">{{ formatAmount(item.amount, item.currency) }}</td>
           <td>{{ item.period }}</td>
           <td>
@@ -311,6 +328,22 @@ async function onCreate(): Promise<void> {
 .status--RenewalFailed,
 .status--Cancelled {
   color: var(--red);
+}
+
+.type-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.type-badge--recurring {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 40%, var(--line));
+}
+.type-badge--oneTime {
+  color: var(--muted);
 }
 
 .create-form {
