@@ -18,6 +18,7 @@ const params: ApplyPaymentParams = {
   currency: 0,
   method: 0,
   period: 'P1M',
+  recurring: true,
   recurringTokenRef: 'tok_1',
   paidAt: new Date('2026-01-15T00:00:00Z'),
 };
@@ -30,6 +31,7 @@ const activePayment: Payment = {
   method: 0,
   period: 'P1M',
   status: PaymentStatus.Active,
+  recurring: true,
   currentPeriodStart: new Date('2025-12-15T00:00:00Z'),
   currentPeriodEnd: new Date('2026-01-15T00:00:00Z'),
   nextPaymentDate: new Date('2026-01-15T00:00:00Z'),
@@ -45,7 +47,7 @@ const makeFakeRepo = (existing: Payment | null) => {
   let inserted: unknown = null;
   let extended: { id: string; input: ExtendPayment } | null = null;
   const repo: PaymentRepo = {
-    findActiveByExternalUser: () =>
+    findActiveRecurringByExternalUser: () =>
       Effect.succeed(existing === null ? Option.none() : Option.some(existing)),
     insert: (input) =>
       Effect.sync(() => {
@@ -74,6 +76,7 @@ const makeFakeRepo = (existing: Payment | null) => {
     markCancelledLapsed: () => Effect.die('unused'),
     defer: () => Effect.die('unused'),
     updateToken: () => Effect.die('unused'),
+    renameExternalUser: () => Effect.die('unused'),
   };
   return { repo, getInserted: () => inserted, getExtended: () => extended };
 };
@@ -120,4 +123,29 @@ it.effect('extends the existing active payment in place', () =>
       '2026-02-15',
     );
   }),
+);
+
+it.effect(
+  'a one-time charge inserts a fresh payment even when an active one exists',
+  () =>
+    Effect.gen(function* () {
+      // An active recurring payment is present, yet a one-time charge must not extend
+      // it: it inserts a brand-new record with recurring=false and no stored token.
+      const fake = makeFakeRepo(activePayment);
+
+      const result = yield* createOrExtend(fake.repo)({
+        ...params,
+        recurring: false,
+      });
+
+      expect(result.created).toBe(true);
+      expect(result.subscriptionId).toBe('sub_new');
+      expect(fake.getExtended()).toBe(null);
+      const inserted = fake.getInserted() as {
+        recurring: boolean;
+        recurringTokenRef: string | null;
+      };
+      expect(inserted.recurring).toBe(false);
+      expect(inserted.recurringTokenRef).toBe(null);
+    }),
 );

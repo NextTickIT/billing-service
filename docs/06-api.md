@@ -25,6 +25,11 @@ Request body:
 }
 ```
 
+Optional: `method` (defaults to Card), `recurring` (defaults to `true`), and
+`successUrl`/`failureUrl` (http(s) post-payment redirects). `period` (ISO-8601 duration)
+is **required for a recurring checkout** but **optional for a one-time purchase**
+(`recurring: false`) — a one-time never renews, so it has no cadence.
+
 Response: session ID, payment link URL, expiry.
 
 ## Payment (gateway billing record)

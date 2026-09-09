@@ -206,6 +206,7 @@ it.effect('a checkout first charge also emits payment_created', () =>
         externalUserId: 'sp:2',
         period: 'P1M',
         method: 0,
+        recurring: true,
       }),
       applier: applierOf({ subscriptionId: 'sub_new', created: true }),
       publish: pub.publish,
@@ -217,6 +218,37 @@ it.effect('a checkout first charge also emits payment_created', () =>
     ]);
     expect(pub.events.every((e) => e.aggregateId === 'sub_new')).toBe(true);
   }),
+);
+
+it.effect(
+  'a one-time checkout emits payment_created + one_time_purchase_succeeded',
+  () =>
+    Effect.gen(function* () {
+      const { repo } = makeFakeRepo();
+      const pub = recordingPublish();
+
+      yield* handleChargeEvent({
+        repo,
+        matcher: matcherOf({
+          matched: true,
+          kind: 'checkout',
+          subscriptionId: null,
+          externalUserId: 'sp:ot',
+          period: 'P1M',
+          method: 0,
+          recurring: false,
+        }),
+        applier: applierOf({ subscriptionId: 'pay_ot', created: true }),
+        publish: pub.publish,
+      })(encodedPayload('k_ot'));
+
+      // A one-time purchase fires its OWN success event, never initial_payment_succeeded.
+      expect(pub.events.map((e) => e.name)).toEqual([
+        'payment_created',
+        'one_time_purchase_succeeded',
+      ]);
+      expect(pub.events.every((e) => e.aggregateId === 'pay_ot')).toBe(true);
+    }),
 );
 
 it.effect(

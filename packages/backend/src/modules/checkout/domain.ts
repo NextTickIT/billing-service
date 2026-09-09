@@ -23,6 +23,29 @@ export const checkoutPath = (sessionId: string): string =>
   `https://bill.nexttick.it/checkout/${sessionId}`;
 
 /**
+ * A caller-supplied post-payment redirect must point at an allowed host (docs/30). An
+ * empty allowlist accepts any host (dev/default); otherwise the URL's hostname must be
+ * listed — this stops an open redirect off our own checkout domain. The URL already
+ * passed the http(s) scheme filter, so an unparseable value here is malformed → rejected.
+ */
+export const redirectHostAllowed = (
+  allowedHosts: readonly string[],
+  url: string,
+): boolean => {
+  if (allowedHosts.length === 0) {
+    return true;
+  }
+  try {
+    return allowedHosts.includes(new URL(url).hostname);
+  } catch (err) {
+    if (err instanceof TypeError) {
+      return false;
+    }
+    throw err;
+  }
+};
+
+/**
  * Checkout matcher: an incoming event whose `externalRef` is a known checkout
  * session id resolves to a `checkout` match. A succeeded event is create-or-extend;
  * a declined one is a first-payment failure (the pipeline emits
@@ -61,6 +84,7 @@ export const makeCheckoutMatcher =
         externalUserId: session.externalUserId,
         period: session.period,
         method: session.method ?? PaymentMethod.Card,
+        recurring: session.recurring,
       };
     });
 
@@ -178,6 +202,9 @@ export const makeCheckoutApplier =
       currency: event.currency,
       method: match.method,
       period: match.period,
+      // Absent on a recurring/card_change match — those act on an existing recurring
+      // payment; only a checkout match can carry a one-time (false) intent.
+      recurring: match.recurring ?? true,
       recurringTokenRef: recToken(event.payload),
       paidAt: event.occurredAt,
     }).pipe(Effect.tap(() => checkout.markCompleted(event.externalRef)));

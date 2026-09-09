@@ -2,6 +2,7 @@ node_modules
 dist
 .turbo
 .omc
+.claude
 coverage
 docs
 package-lock.json

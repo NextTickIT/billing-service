@@ -20,7 +20,10 @@ const session: CheckoutSession = {
   method: 0,
   status: 1,
   kind: CheckoutSessionKind.Checkout,
+  recurring: true,
   paymentId: null,
+  successUrl: null,
+  failureUrl: null,
   expiresAt: new Date(0),
   createdAt: new Date(0),
 };
@@ -31,6 +34,7 @@ const repoWith = (found: CheckoutSession | null): CheckoutRepo => ({
   insert: () => Effect.void,
   setPending: () => Effect.void,
   markCompleted: () => Effect.void,
+  renameOpenSessionsExternalUser: () => Effect.succeed(0),
 });
 
 const event = (over: Partial<Charge>): Charge => ({

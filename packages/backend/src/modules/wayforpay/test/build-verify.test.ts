@@ -32,7 +32,10 @@ const session: CheckoutSession = {
   method: null,
   status: CheckoutSessionStatus.Pending,
   kind: CheckoutSessionKind.CardChange,
+  recurring: true,
   paymentId: 'pay_1',
+  successUrl: null,
+  failureUrl: null,
   expiresAt: new Date(0),
   createdAt: new Date(0),
 };
@@ -54,9 +57,7 @@ describe('buildVerify', () => {
   });
 
   test('fills the returnUrl template with the session id', () => {
-    expect(form.fields['returnUrl']).toBe(
-      'https://us/checkout/chk_1/return',
-    );
+    expect(form.fields['returnUrl']).toBe('https://us/checkout/chk_1/return');
   });
 
   test('carries the 5-field verify signature (HMAC-MD5 over the verify base)', () => {

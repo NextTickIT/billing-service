@@ -16,6 +16,7 @@ export const SINK_DELIVERY_SLA_SECONDS = 60;
 export const EVENT_NAMES = [
   'initial_payment_succeeded',
   'recurring_payment_succeeded',
+  'one_time_purchase_succeeded',
   'initial_payment_failed',
   'charge_retry_failed',
   'renewal_failed',
@@ -23,6 +24,7 @@ export const EVENT_NAMES = [
   'payment_cancelled',
   'payment_reactivated',
   'payment_deferred',
+  'external_user_id_changed',
   'card_change_succeeded',
   'card_change_failed',
   'unknown_payment_quarantined',
@@ -46,10 +48,12 @@ const envelope = {
 };
 
 /**
- * A successful payment, split by scenario so downstream flows can differ: an
- * INITIAL checkout payment vs a RECURRING renewal charge. Both carry the same
- * facts; the pipeline picks the variant from the match kind ('checkout' vs
- * 'recurring'). A matched incoming event or an operator bind produces one of these.
+ * A successful payment, split by scenario so downstream flows can differ: an INITIAL
+ * (recurring) checkout payment, a RECURRING renewal charge, or a ONE-TIME purchase (a
+ * checkout the caller marked non-recurring — a single buy, never renewed). All three
+ * carry the same facts; the pipeline picks the variant from the match kind ('checkout'
+ * vs 'recurring') and, for checkout, the session's `recurring` flag. A matched incoming
+ * event or an operator bind produces one of these.
  */
 const succeededPayload = {
   amount: Schema.Int,
@@ -79,6 +83,17 @@ export const RecurringPaymentSucceededEvent = Schema.Struct({
 
 export type RecurringPaymentSucceededEvent = Schema.Schema.Type<
   typeof RecurringPaymentSucceededEvent
+>;
+
+export const OneTimePurchaseSucceededEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('one_time_purchase_succeeded'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct(succeededPayload),
+});
+
+export type OneTimePurchaseSucceededEvent = Schema.Schema.Type<
+  typeof OneTimePurchaseSucceededEvent
 >;
 
 /**
@@ -250,9 +265,32 @@ export type UnknownPaymentQuarantinedEvent = Schema.Schema.Type<
  * `name`. `externalUserId` is carried verbatim from the calling system (AC9) and is
  * null only for a quarantined unknown payment.
  */
+/**
+ * A service action remapped a user's opaque external id (docs/31). Emitted ONLY when
+ * the rename opts in (`refireEvents`), so a sink can react to the change; the default
+ * rename is silent. `externalUserId` is the NEW id (the go-forward contact); the payload
+ * carries the old id and the moved-record counts. Payment events are NOT re-emitted.
+ */
+export const ExternalUserIdChangedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('external_user_id_changed'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({
+    from: Schema.String,
+    to: Schema.String,
+    movedPayments: Schema.Int,
+    movedSessions: Schema.Int,
+  }),
+});
+
+export type ExternalUserIdChangedEvent = Schema.Schema.Type<
+  typeof ExternalUserIdChangedEvent
+>;
+
 export const DomainEvent = Schema.Union(
   InitialPaymentSucceededEvent,
   RecurringPaymentSucceededEvent,
+  OneTimePurchaseSucceededEvent,
   InitialPaymentFailedEvent,
   PaymentCreatedEvent,
   ChargeRetryFailedEvent,
@@ -260,6 +298,7 @@ export const DomainEvent = Schema.Union(
   PaymentCancelledEvent,
   PaymentReactivatedEvent,
   PaymentDeferredEvent,
+  ExternalUserIdChangedEvent,
   CardChangeSucceededEvent,
   CardChangeFailedEvent,
   UnknownPaymentQuarantinedEvent,

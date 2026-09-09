@@ -343,7 +343,10 @@ const driveCheckout = Effect.gen(function* () {
     currency: 0,
     period: 'P1M',
     kind: CheckoutSessionKind.Checkout,
+    recurring: true,
     paymentId: null,
+    successUrl: null,
+    failureUrl: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -433,6 +436,7 @@ const driveScheduler = Effect.gen(function* () {
     method: 0,
     period: 'P1M',
     status: 0,
+    recurring: true,
     currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
     currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
     nextPaymentDate: new Date('2026-01-01T00:00:00Z'),
@@ -516,6 +520,7 @@ const driveCancel = Effect.gen(function* () {
     method: 0,
     period: 'P1M',
     status: 0,
+    recurring: true,
     currentPeriodStart: new Date('2029-12-01T00:00:00Z'),
     currentPeriodEnd: new Date('2030-01-01T00:00:00Z'),
     nextPaymentDate: new Date('2030-01-01T00:00:00Z'),
@@ -593,6 +598,7 @@ const driveLapse = Effect.gen(function* () {
     method: 0,
     period: 'P1M',
     status: 0,
+    recurring: true,
     currentPeriodStart: new Date('2026-06-01T00:00:00Z'),
     currentPeriodEnd: new Date('2026-07-01T00:00:00Z'),
     nextPaymentDate: new Date('2026-07-01T00:00:00Z'), // due in the past
@@ -683,6 +689,7 @@ const driveCardChangeOwed = Effect.gen(function* () {
     method: 0,
     period: 'P1M',
     status: PaymentStatus.PastDue,
+    recurring: true,
     currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
     currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
     nextPaymentDate: new Date('2026-01-08T00:00:00Z'),
@@ -697,7 +704,10 @@ const driveCardChangeOwed = Effect.gen(function* () {
     currency: 0,
     period: 'P1M',
     kind: CheckoutSessionKind.CardChange,
+    recurring: true,
     paymentId: created.id,
+    successUrl: null,
+    failureUrl: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -791,6 +801,7 @@ const driveCardChangeDecline = Effect.gen(function* () {
     method: 0,
     period: 'P1M',
     status: PaymentStatus.PastDue,
+    recurring: true,
     currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
     currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
     nextPaymentDate: new Date('2026-01-08T00:00:00Z'),
@@ -805,7 +816,10 @@ const driveCardChangeDecline = Effect.gen(function* () {
     currency: 0,
     period: 'P1M',
     kind: CheckoutSessionKind.CardChange,
+    recurring: true,
     paymentId: created.id,
+    successUrl: null,
+    failureUrl: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;

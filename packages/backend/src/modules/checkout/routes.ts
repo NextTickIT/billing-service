@@ -8,6 +8,7 @@ import {
   CheckoutSessionPublic,
   CheckoutSessionStatus,
   CreateCheckoutSession,
+  ONE_TIME_PERIOD,
   PayInstruction,
   PaymentMethod,
   PaymentStatus,
@@ -24,13 +25,17 @@ import {
   Conflict,
   NotFound,
   Unauthorized,
+  UnprocessableEntity,
 } from '@/infra/http/errors.js';
 import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { PAYMENT_EVENT_RECEIVED } from '@/modules/charge/contracts.js';
 import { authenticateToken } from '@/modules/auth/domain.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
-import { checkoutPath } from '@/modules/checkout/domain.js';
+import {
+  checkoutPath,
+  redirectHostAllowed,
+} from '@/modules/checkout/domain.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import {
   ackResponse,
@@ -62,9 +67,34 @@ const serviceActor = (request: FastifyRequest) => {
 const readId = (request: FastifyRequest): string =>
   (request.params as { readonly id: string }).id;
 
+/** Refuse a checkout whose post-payment redirect points off the allowed hosts (docs/30). */
+const assertRedirectAllowed = (
+  allowedHosts: readonly string[],
+  url: string | undefined,
+): Effect.Effect<void, UnprocessableEntity> =>
+  url === undefined || redirectHostAllowed(allowedHosts, url)
+    ? Effect.void
+    : Effect.fail(
+        new UnprocessableEntity({
+          reason: `redirect host not allowed: ${url}`,
+        }),
+      );
+
+/** Both post-payment redirects on a create request must point at an allowed host. */
+const assertRedirects = (
+  input: CreateCheckoutSession,
+  request: FastifyRequest,
+): Effect.Effect<void, UnprocessableEntity> =>
+  Effect.gen(function* () {
+    const hosts = request.server.appConfig.redirectAllowedHosts;
+    yield* assertRedirectAllowed(hosts, input.successUrl);
+    yield* assertRedirectAllowed(hosts, input.failureUrl);
+  });
+
 const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
   Effect.gen(function* () {
     yield* serviceActor(request);
+    yield* assertRedirects(input, request);
     const sql = yield* SqlClient.SqlClient;
     const nowMillis = yield* Clock.currentTimeMillis;
     const id = `chk_${randomUUID()}`;
@@ -76,12 +106,19 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
       externalUserId: input.externalUserId,
       amount: input.amount,
       currency: input.currency,
-      period: input.period,
+      // A recurring checkout always carries its cadence (enforced by the schema); a
+      // one-time purchase never renews, so it may omit `period` — store the zero-length
+      // sentinel to satisfy the NOT NULL column (it is never read back for a one-time).
+      period: input.period ?? ONE_TIME_PERIOD,
       // Default preselected method (Card unless the caller passed one; the schema
       // defaults it to Card). The page can still switch it before Pay.
       method: input.method,
       kind: CheckoutSessionKind.Checkout,
+      // Schema-defaulted to true; false opts this checkout into a one-time payment.
+      recurring: input.recurring,
       paymentId: null,
+      successUrl: input.successUrl ?? null,
+      failureUrl: input.failureUrl ?? null,
       expiresAt,
     });
     return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };
@@ -96,9 +133,28 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
     if (found._tag === 'None') {
       return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
     }
-    const { amount, currency, period, status, kind, method, expiresAt } =
-      found.value;
-    return { amount, currency, period, status, kind, method, expiresAt };
+    const {
+      amount,
+      currency,
+      period,
+      status,
+      kind,
+      method,
+      successUrl,
+      failureUrl,
+      expiresAt,
+    } = found.value;
+    return {
+      amount,
+      currency,
+      period,
+      status,
+      kind,
+      method,
+      successUrl,
+      failureUrl,
+      expiresAt,
+    };
   });
 
 /** Card (WayForPay): a 0-amount card change verifies the card (buildVerify) when verify
@@ -260,7 +316,9 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
     const found = yield* makePaymentRepo(sql).findByExternalUser(
       input.externalUserId,
     );
-    const payment = found[0];
+    // A card change re-tokenizes the recurring payment; one-time payments (which hold
+    // no reusable token) are never its target, so skip past them to the newest recurring.
+    const payment = found.find((p) => p.recurring);
     if (payment === undefined || payment.status === PaymentStatus.Cancelled) {
       return yield* Effect.fail(
         new CardChangeUnavailable({
@@ -292,7 +350,11 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
       // A card change is always a WayForPay re-tokenization, so it preselects Card.
       method: PaymentMethod.Card,
       kind: CheckoutSessionKind.CardChange,
+      // A card change re-tokenizes the recurring payment; never a one-time session.
+      recurring: true,
       paymentId: payment.id,
+      successUrl: null,
+      failureUrl: null,
       expiresAt,
     });
     return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };
