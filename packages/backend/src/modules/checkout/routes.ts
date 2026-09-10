@@ -37,6 +37,7 @@ import {
   redirectHostAllowed,
 } from '@/modules/checkout/domain.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
+import { isValidPeriod } from '@/modules/payment/period.js';
 import {
   ackResponse,
   type CallbackPayload,
@@ -91,10 +92,26 @@ const assertRedirects = (
     yield* assertRedirectAllowed(hosts, input.failureUrl);
   });
 
+/** A promo's bonus must be a period in our format (an ISO-8601 duration). Reject a
+ * malformed one at creation with a 422 rather than let it throw when the charge applies
+ * it in the worker (where it would fail the attempt instead of the caller's request). */
+const assertPromo = (input: CreateCheckoutSession) => {
+  const promo = input.promo;
+  if (promo !== undefined && !isValidPeriod(promo.additionalFreePeriod)) {
+    return Effect.fail(
+      new UnprocessableEntity({
+        reason: `unsupported promo period '${promo.additionalFreePeriod}'`,
+      }),
+    );
+  }
+  return Effect.void;
+};
+
 const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
   Effect.gen(function* () {
     yield* serviceActor(request);
     yield* assertRedirects(input, request);
+    yield* assertPromo(input);
     const sql = yield* SqlClient.SqlClient;
     const nowMillis = yield* Clock.currentTimeMillis;
     const id = `chk_${randomUUID()}`;
@@ -119,6 +136,8 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
       paymentId: null,
       successUrl: input.successUrl ?? null,
       failureUrl: input.failureUrl ?? null,
+      // A one-time bonus period applied once, when this session is paid (see CheckoutPromo).
+      promo: input.promo ?? null,
       expiresAt,
     });
     return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };
@@ -355,6 +374,8 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
       paymentId: payment.id,
       successUrl: null,
       failureUrl: null,
+      // A card change re-tokenizes an existing payment; it grants no bonus period.
+      promo: null,
       expiresAt,
     });
     return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };

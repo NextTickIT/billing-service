@@ -21,6 +21,12 @@ export interface ApplyPaymentParams {
   readonly recurring: boolean;
   readonly recurringTokenRef: string | null;
   readonly paidAt: Date;
+  /**
+   * A one-time bonus period (ISO-8601 duration) granted on top of the paid period, or
+   * null. Only a checkout that carried a promo sets it; a recurring renewal never does,
+   * so the bonus lands exactly once — on the charge that earned it.
+   */
+  readonly promoBonus?: string | null;
 }
 
 export interface ApplyPaymentResult {
@@ -37,7 +43,16 @@ interface PeriodAnchors {
 }
 
 const periodAnchors = (params: ApplyPaymentParams): PeriodAnchors => {
-  const currentPeriodEnd = addPeriod(params.paidAt, params.period);
+  const paidThrough = addPeriod(params.paidAt, params.period);
+  // A promo grants free time ON TOP of the paid period, once: it pushes the paid-through
+  // anchor further, and the next charge date derives from that anchor — so the bonus
+  // shifts both together and drift stays impossible (CLAUDE.md §6). Applied only here, on
+  // the charge that carried the promo; a later renewal has no `promoBonus` and resumes
+  // the normal cadence.
+  const currentPeriodEnd =
+    params.promoBonus != null && params.promoBonus.length > 0
+      ? addPeriod(paidThrough, params.promoBonus)
+      : paidThrough;
   return {
     currentPeriodStart: params.paidAt,
     currentPeriodEnd,

@@ -72,7 +72,9 @@ export type MatchKind = 'checkout' | 'recurring' | 'card_change';
  * amount (past_due/renewal_failed) vs a 0-amount verify. `recurring` is only consumed
  * on the `checkout` create path (false → a one-time payment); it defaults to true when
  * absent, since a `recurring`/`card_change` match acts on an already-recurring payment.
- * No match → quarantine.
+ * `promoBonus` is a one-time bonus period (ISO-8601 duration) a `checkout` session may
+ * carry: applied once on the create path to push the paid-through anchor further; absent
+ * on `recurring`/`card_change` (a renewal never re-earns it). No match → quarantine.
  */
 export type MatchResult =
   | {
@@ -84,6 +86,7 @@ export type MatchResult =
       readonly method: number;
       readonly owed?: boolean;
       readonly recurring?: boolean;
+      readonly promoBonus?: string | null;
     }
   | { readonly matched: false };
 

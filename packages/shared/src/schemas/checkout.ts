@@ -46,6 +46,19 @@ export const RedirectUrl = Schema.String.pipe(
   }),
 );
 
+/**
+ * An optional promo attached to a checkout. `additionalFreePeriod` is an ISO-8601
+ * duration in our period format (e.g. `P14D`, `P1M`) granted ON TOP of the paid period
+ * when — and only when — this checkout is paid: it pushes the paid-through anchor (and
+ * the next charge date derived from it) further, exactly once. It is a one-time bonus,
+ * never re-applied on the later recurring renewals the scheduler drives.
+ */
+export const CheckoutPromo = Schema.Struct({
+  additionalFreePeriod: Schema.String,
+});
+
+export type CheckoutPromo = Schema.Schema.Type<typeof CheckoutPromo>;
+
 /** A checkout session at rest. `method` is null until chosen on the page. */
 export const CheckoutSession = Schema.Struct({
   id: Schema.String,
@@ -67,6 +80,9 @@ export const CheckoutSession = Schema.Struct({
   // page first, so state is always reconciled from the webhook, never the redirect.
   successUrl: Schema.NullOr(Schema.String),
   failureUrl: Schema.NullOr(Schema.String),
+  // Optional one-time promo; null when the caller attached none. Consumed once, when the
+  // session is paid, to extend the paid-through anchor (see CheckoutPromo).
+  promo: Schema.NullOr(CheckoutPromo),
   expiresAt: Schema.Date,
   createdAt: Schema.Date,
 });
@@ -96,7 +112,8 @@ export const ONE_TIME_PERIOD = 'P0D';
  * defaults to true (a subscription) — a caller opts a one-time payment in with `false`.
  * `period` (ISO-8601 duration) is the renewal cadence: required for a recurring checkout,
  * omitted for a one-time purchase (it never renews). `successUrl`/`failureUrl` are
- * optional post-payment browser redirects (http(s) only). */
+ * optional post-payment browser redirects (http(s) only). `promo`, if present, grants a
+ * one-time bonus free period on top of the paid period when this checkout is paid. */
 export const CreateCheckoutSession = CheckoutSession.pipe(
   Schema.pick('externalUserId', 'amount', 'currency'),
   Schema.extend(
@@ -108,6 +125,7 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       recurring: Schema.optionalWith(Schema.Boolean, { default: () => true }),
       successUrl: Schema.optional(RedirectUrl),
       failureUrl: Schema.optional(RedirectUrl),
+      promo: Schema.optional(CheckoutPromo),
     }),
   ),
   // A recurring checkout needs its renewal cadence; a one-time purchase never renews, so

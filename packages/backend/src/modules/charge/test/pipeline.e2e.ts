@@ -347,6 +347,7 @@ const driveCheckout = Effect.gen(function* () {
     paymentId: null,
     successUrl: null,
     failureUrl: null,
+    promo: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -708,6 +709,7 @@ const driveCardChangeOwed = Effect.gen(function* () {
     paymentId: created.id,
     successUrl: null,
     failureUrl: null,
+    promo: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -820,6 +822,7 @@ const driveCardChangeDecline = Effect.gen(function* () {
     paymentId: created.id,
     successUrl: null,
     failureUrl: null,
+    promo: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;

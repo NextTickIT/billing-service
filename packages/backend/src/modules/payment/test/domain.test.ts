@@ -126,6 +126,49 @@ it.effect('extends the existing active payment in place', () =>
 );
 
 it.effect(
+  'a promo bonus pushes the anchor once, on top of the paid period',
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo(null);
+
+      // paidAt + P1M = 2026-02-15, then +P14D bonus = 2026-03-01. Both the paid-through
+      // anchor and the derived next charge date move together by the bonus.
+      const result = yield* createOrExtend(fake.repo)({
+        ...params,
+        promoBonus: 'P14D',
+      });
+
+      expect(result.created).toBe(true);
+      const inserted = fake.getInserted() as {
+        currentPeriodEnd: Date;
+        nextPaymentDate: Date;
+      };
+      expect(inserted.currentPeriodEnd.toISOString().slice(0, 10)).toBe(
+        '2026-03-01',
+      );
+      expect(inserted.nextPaymentDate.toISOString().slice(0, 10)).toBe(
+        '2026-03-01',
+      );
+    }),
+);
+
+it.effect(
+  'an absent promo bonus leaves the anchor at the paid period end',
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo(null);
+
+      // A null bonus is the common case: no extra free time, anchor = paidAt + period.
+      yield* createOrExtend(fake.repo)({ ...params, promoBonus: null });
+
+      const inserted = fake.getInserted() as { currentPeriodEnd: Date };
+      expect(inserted.currentPeriodEnd.toISOString().slice(0, 10)).toBe(
+        '2026-02-15',
+      );
+    }),
+);
+
+it.effect(
   'a one-time charge inserts a fresh payment even when an active one exists',
   () =>
     Effect.gen(function* () {

@@ -85,6 +85,8 @@ export const makeCheckoutMatcher =
         period: session.period,
         method: session.method ?? PaymentMethod.Card,
         recurring: session.recurring,
+        // A one-time bonus period the session carried; applied once on the create path.
+        promoBonus: session.promo?.additionalFreePeriod ?? null,
       };
     });
 
@@ -205,6 +207,8 @@ export const makeCheckoutApplier =
       // Absent on a recurring/card_change match — those act on an existing recurring
       // payment; only a checkout match can carry a one-time (false) intent.
       recurring: match.recurring ?? true,
+      // One-time bonus period from the session; extends the paid-through anchor once.
+      promoBonus: match.promoBonus ?? null,
       recurringTokenRef: recToken(event.payload),
       paidAt: event.occurredAt,
     }).pipe(Effect.tap(() => checkout.markCompleted(event.externalRef)));

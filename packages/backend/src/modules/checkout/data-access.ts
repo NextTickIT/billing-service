@@ -38,17 +38,21 @@ export interface CheckoutRepo {
 
 const COLUMNS = columnList(CheckoutSession.fields);
 
-const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) =>
-  sql`
+const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
+  // jsonb bound as `${JSON.stringify(x)}::jsonb`; a bare null stays SQL NULL (no promo),
+  // never the jsonb `'null'` literal — mirrors the queue/outbox jsonb convention.
+  const promo = input.promo === null ? null : JSON.stringify(input.promo);
+  return sql`
     INSERT INTO checkout_sessions
       (id, "externalUserId", amount, currency, period, method, kind, recurring,
-       "paymentId", "successUrl", "failureUrl", "expiresAt")
+       "paymentId", "successUrl", "failureUrl", promo, "expiresAt")
     VALUES
       (${input.id}, ${input.externalUserId}, ${input.amount}, ${input.currency},
        ${input.period}, ${input.method ?? null}, ${input.kind}, ${input.recurring},
        ${input.paymentId}, ${input.successUrl}, ${input.failureUrl},
-       ${input.expiresAt})
+       ${promo}::jsonb, ${input.expiresAt})
   `.pipe(Effect.asVoid);
+};
 
 const findById = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<CheckoutSession>`

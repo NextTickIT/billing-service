@@ -36,6 +36,7 @@ const session: CheckoutSession = {
   paymentId: 'pay_1',
   successUrl: null,
   failureUrl: null,
+  promo: null,
   expiresAt: new Date(0),
   createdAt: new Date(0),
 };
