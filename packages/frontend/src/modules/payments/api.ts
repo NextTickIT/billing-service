@@ -53,10 +53,15 @@ export async function cancelPayment(id: string, reason: string): Promise<void> {
 
 export async function createPayment(
   body: CreatePaymentRequest,
+  idempotencyKey: string,
 ): Promise<CreateAccepted> {
   const res = await apiFetch('/api/payment', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    // The key dedups a retried/double-submitted create so it never books two payments.
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+    },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
@@ -70,11 +75,19 @@ export async function reactivatePayment(id: string): Promise<void> {
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
 }
 
-export async function deferPayment(id: string, days: number): Promise<void> {
+export async function deferPayment(
+  id: string,
+  days: number,
+  idempotencyKey: string,
+): Promise<void> {
   const body: DeferPaymentRequest = { days };
   const res = await apiFetch(`/api/payment/${id}/defer`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    // The key dedups a retried/double-submitted defer so it grants the free days once.
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': idempotencyKey,
+    },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);

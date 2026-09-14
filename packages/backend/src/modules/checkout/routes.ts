@@ -28,6 +28,10 @@ import {
   Unauthorized,
   UnprocessableEntity,
 } from '@/infra/http/errors.js';
+import {
+  assertIdempotencyKey,
+  idempotencyKeyOf,
+} from '@/infra/http/idempotency-key.js';
 import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { PAYMENT_EVENT_RECEIVED } from '@/modules/charge/contracts.js';
@@ -109,25 +113,6 @@ const assertPromo = (input: CreateCheckoutSession) => {
     );
   }
   return Effect.void;
-};
-
-/** The optional `Idempotency-Key` header, normalized: a present non-empty value, else null. */
-const idempotencyKeyOf = (request: FastifyRequest): string | null => {
-  const key = header(request, 'idempotency-key');
-  return key !== undefined && key.length > 0 ? key : null;
-};
-
-/** An Idempotency-Key, when supplied, must be a sane length — reject an oversized value
- * (a caller bug / abuse) with a 422 rather than persist an unbounded string. */
-const assertIdempotencyKey = (request: FastifyRequest) => {
-  const key = header(request, 'idempotency-key');
-  return key !== undefined && key.length > 200
-    ? Effect.fail(
-        new UnprocessableEntity({
-          reason: 'Idempotency-Key too long (max 200)',
-        }),
-      )
-    : Effect.void;
 };
 
 /** The SessionCreated response for a session id + expiry. */

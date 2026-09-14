@@ -300,6 +300,108 @@ async function idempotentCreate(
   assert.equal(count, '1', 'exactly one session row for the key');
 }
 
+interface OpPost {
+  readonly path: string;
+  readonly cookie: string;
+  readonly key: string;
+  readonly body: unknown;
+}
+
+/** A POST to an operator payment route through the BFF, carrying a bss cookie (auth) and
+ * an Idempotency-Key so a re-send dedups. */
+function opPost(baseUrl: string, o: OpPost): Request {
+  return new Request(`${baseUrl}${o.path}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      cookie: o.cookie,
+      'idempotency-key': o.key,
+    },
+    body: JSON.stringify(o.body),
+  });
+}
+
+/** Seed an operator and log in via the BFF, returning its `bss=<token>` cookie. */
+async function seedOperatorCookie(
+  baseUrl: string,
+  bff: (req: Request) => Promise<Response>,
+): Promise<string> {
+  await postJson(
+    `${baseUrl}/auth/operators`,
+    { login: 'idem-op', password: 'idem-pass', role: 1 },
+    { authorization: `Bearer ${ADMIN_TOKEN}` },
+  );
+  const loginRes = await bff(
+    new Request(`${baseUrl}/api/auth/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ login: 'idem-op', password: 'idem-pass' }),
+    }),
+  );
+  return `bss=${extractBssCookie(loginRes) ?? ''}`;
+}
+
+/**
+ * The operator create + defer endpoints are additive (a re-send would book a second
+ * payment / grant the free days twice). With an Idempotency-Key both replay: one payment
+ * row, and `currentPeriodEnd` advanced exactly once.
+ */
+async function idempotentPaymentOps(
+  baseUrl: string,
+  query: (sql: string) => Promise<string>,
+): Promise<void> {
+  const bff = makeBff(await loadBffHandler(), baseUrl);
+  const cookie = await seedOperatorCookie(baseUrl, bff);
+  const body = {
+    externalUserId: 'idem-pay',
+    amount: 30000,
+    currency: 0,
+    period: 'P1M',
+    recurring: false,
+  };
+  const create = { path: '/api/payment', cookie, key: 'ik-create', body };
+  const c1 = (await bff(opPost(baseUrl, create)).then((r) => r.json())) as {
+    id: string;
+  };
+  const c2 = (await bff(opPost(baseUrl, create)).then((r) => r.json())) as {
+    id: string;
+  };
+  assert.equal(
+    c2.id,
+    c1.id,
+    'same key → same payment id (no duplicate create)',
+  );
+  const rows = (
+    await query(
+      `SELECT count(*) FROM payments WHERE "externalUserId" = 'idem-pay'`,
+    )
+  ).trim();
+  assert.equal(rows, '1', 'exactly one payment row');
+  const defer = {
+    path: `/api/payment/${c1.id}/defer`,
+    cookie,
+    key: 'ik-defer',
+    body: { days: 5 },
+  };
+  const d1 = (await bff(opPost(baseUrl, defer)).then((r) => r.json())) as {
+    newPeriodEnd: string;
+  };
+  const d2 = (await bff(opPost(baseUrl, defer)).then((r) => r.json())) as {
+    newPeriodEnd: string;
+  };
+  assert.equal(
+    d2.newPeriodEnd,
+    d1.newPeriodEnd,
+    'same key → same defer result (applied once)',
+  );
+  const advancedOnce = (
+    await query(
+      `SELECT "currentPeriodEnd" = '${d1.newPeriodEnd}'::timestamptz FROM payments WHERE id = '${c1.id}'`,
+    )
+  ).trim();
+  assert.equal(advancedOnce, 't', 'currentPeriodEnd advanced exactly once');
+}
+
 export const edgeScenarios: readonly Scenario[] = [
   {
     name: 'BFF edge: full checkout→operator round-trip through the BFF handler',
@@ -313,6 +415,12 @@ export const edgeScenarios: readonly Scenario[] = [
     name: 'checkout: same Idempotency-Key returns the same session (no duplicate)',
     run: async ({ baseUrl, query }) => {
       await idempotentCreate(baseUrl, query);
+    },
+  },
+  {
+    name: 'operator: same Idempotency-Key replays create + defer (no double apply)',
+    run: async ({ baseUrl, query }) => {
+      await idempotentPaymentOps(baseUrl, query);
     },
   },
 ];

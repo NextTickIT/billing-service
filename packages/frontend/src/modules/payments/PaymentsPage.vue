@@ -33,6 +33,9 @@ const createAmount = ref('');
 const createCurrency = ref<number>(Currency.UAH);
 const createPeriod = ref('P4W');
 const createMethod = ref<number>(PaymentMethod.Card);
+// A stable idempotency key per create intent, minted when the dialog opens so a
+// double-submit within one open reuses it; the server then books exactly one payment.
+let createKey = crypto.randomUUID();
 
 // Status filter state — null means "show all"
 const activeChip = ref<'cancelling' | PaymentStatus | null>(null);
@@ -121,8 +124,14 @@ function buildBody(): CreatePaymentRequest {
   };
 }
 
+// Mint a fresh key each time the dialog opens: one create intent → one key → one payment.
+function openCreate(): void {
+  createKey = crypto.randomUUID();
+  showCreate.value = true;
+}
+
 async function onCreate(): Promise<void> {
-  const result = await store.create(buildBody());
+  const result = await store.create(buildBody(), createKey);
   if (result) {
     showCreate.value = false;
     createUserId.value = '';
@@ -140,7 +149,7 @@ async function onCreate(): Promise<void> {
           class="add-btn"
           :title="t('payments.createButton')"
           :aria-label="t('payments.createButton')"
-          @click="showCreate = true"
+          @click="openCreate"
         >
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <path

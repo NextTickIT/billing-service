@@ -16,6 +16,7 @@ import {
 import { Clock, Effect, Option, Redacted, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import { withIdempotencyKey } from '@/infra/db/idempotency.js';
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
 import {
@@ -23,6 +24,10 @@ import {
   Unauthorized,
   UnprocessableEntity,
 } from '@/infra/http/errors.js';
+import {
+  assertIdempotencyKey,
+  idempotencyKeyOf,
+} from '@/infra/http/idempotency-key.js';
 import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { authenticate, requireRole } from '@/modules/auth/domain.js';
@@ -110,23 +115,14 @@ const getPayment = (_input: unknown, request: FastifyRequest) =>
     return { ...found.value, charges };
   });
 
-const createPayment = (
+/** Insert a fresh operator-created Payment; its terms anchor on now. */
+const insertPayment = (
+  sql: SqlClient.SqlClient,
   body: Schema.Schema.Type<typeof CreatePaymentRequest>,
-  request: FastifyRequest,
 ) =>
   Effect.gen(function* () {
-    assertBffSecret(request);
-    yield* operatorActor(request);
-    const sql = yield* SqlClient.SqlClient;
     const nowMs = yield* Clock.currentTimeMillis;
     const paidAt = new Date(nowMs);
-    if (!isValidPeriod(body.period)) {
-      return yield* Effect.fail(
-        new UnprocessableEntity({
-          reason: `unsupported billing period '${body.period}'`,
-        }),
-      );
-    }
     const currentPeriodEnd = addPeriod(paidAt, body.period);
     const payment = yield* makePaymentRepo(sql).insert({
       externalUserId: body.externalUserId,
@@ -144,6 +140,31 @@ const createPayment = (
       retryAttempt: 0,
     });
     return { id: payment.id };
+  });
+
+const createPayment = (
+  body: Schema.Schema.Type<typeof CreatePaymentRequest>,
+  request: FastifyRequest,
+) =>
+  Effect.gen(function* () {
+    assertBffSecret(request);
+    yield* operatorActor(request);
+    yield* assertIdempotencyKey(request);
+    if (!isValidPeriod(body.period)) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({
+          reason: `unsupported billing period '${body.period}'`,
+        }),
+      );
+    }
+    const sql = yield* SqlClient.SqlClient;
+    // Dedup a retried or double-submitted create on the caller's key: one Payment per key
+    // (without it, a one-time create would insert a second row — no unique guard applies).
+    return yield* withIdempotencyKey(
+      'payment.create',
+      idempotencyKeyOf(request),
+      CreateAccepted,
+    )(insertPayment(sql, body));
   });
 
 /** Audit the operator action and enqueue the cancel notify (docs/23). */
@@ -266,6 +287,44 @@ const assertDeferrable = (payment: Payment, days: number) => {
   return Effect.void;
 };
 
+/** Apply a deferral: push the anchor, audit, and enqueue the notify. Wrapped by the
+ * idempotency ledger in `deferPayment`, so a re-send neither double-grants the free days
+ * nor double-emits `payment_deferred`. */
+const applyDefer = (
+  sql: SqlClient.SqlClient,
+  actor: { readonly role: Role },
+  payment: Payment,
+  days: number,
+) =>
+  Effect.gen(function* () {
+    const { newPeriodEnd, newNextPaymentDate } = computeDeferral(payment, days);
+    yield* makePaymentRepo(sql).defer(
+      payment.id,
+      newPeriodEnd,
+      newNextPaymentDate,
+    );
+    const at = yield* Clock.currentTimeMillis;
+    yield* makeChargeRepo(sql).insertAudit({
+      actor: Role[actor.role],
+      action: 'defer_payment',
+      targetType: 'payment',
+      targetId: payment.id,
+      detail: { days },
+    });
+    yield* enqueue(sql)({
+      messageType: PAYMENT_DEFER,
+      idemKey: `defer:${payment.id}:${at.toString()}`,
+      payload: {
+        paymentId: payment.id,
+        externalUserId: payment.externalUserId,
+        newPeriodEnd: newPeriodEnd.toISOString(),
+        days,
+        at,
+      },
+    });
+    return { status: 'deferred' as const, newPeriodEnd };
+  });
+
 const deferPayment = (
   body: Schema.Schema.Type<typeof DeferPaymentRequest>,
   request: FastifyRequest,
@@ -273,6 +332,7 @@ const deferPayment = (
   Effect.gen(function* () {
     assertBffSecret(request);
     const actor = yield* operatorActor(request);
+    yield* assertIdempotencyKey(request);
     const id = readId(request);
     const sql = yield* SqlClient.SqlClient;
     const repo = makePaymentRepo(sql);
@@ -281,31 +341,11 @@ const deferPayment = (
       return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
     yield* assertDeferrable(found.value, body.days);
-    const { newPeriodEnd, newNextPaymentDate } = computeDeferral(
-      found.value,
-      body.days,
-    );
-    yield* repo.defer(id, newPeriodEnd, newNextPaymentDate);
-    const at = yield* Clock.currentTimeMillis;
-    yield* makeChargeRepo(sql).insertAudit({
-      actor: Role[actor.role],
-      action: 'defer_payment',
-      targetType: 'payment',
-      targetId: id,
-      detail: { days: body.days },
-    });
-    yield* enqueue(sql)({
-      messageType: PAYMENT_DEFER,
-      idemKey: `defer:${id}:${at.toString()}`,
-      payload: {
-        paymentId: id,
-        externalUserId: found.value.externalUserId,
-        newPeriodEnd: newPeriodEnd.toISOString(),
-        days: body.days,
-        at,
-      },
-    });
-    return { status: 'deferred' as const, newPeriodEnd };
+    return yield* withIdempotencyKey(
+      'payment.defer',
+      idempotencyKeyOf(request),
+      DeferAccepted,
+    )(applyDefer(sql, actor, found.value, body.days));
   });
 
 export default function payments(fastify: FastifyInstance): void {

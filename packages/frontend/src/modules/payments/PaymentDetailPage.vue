@@ -19,6 +19,9 @@ const id = route.params['id'] as string;
 const cancelReason = ref('');
 const deferDays = ref(1);
 const deferError = ref<string | null>(null);
+// A stable idempotency key per defer intent: a double-click or a retry of an ambiguous
+// failure reuses it (the server dedups), and it rotates only after a success.
+let deferKey = crypto.randomUUID();
 
 onMounted(() => {
   void store.loadDetail(id);
@@ -65,7 +68,9 @@ async function handleDefer(): Promise<void> {
     deferError.value = t('payments.deferDaysError');
     return;
   }
-  await store.defer(id, deferDays.value);
+  await store.defer(id, deferDays.value, deferKey);
+  // Rotate only on success; a failed/ambiguous attempt keeps the key so a retry dedups.
+  if (store.error === null) deferKey = crypto.randomUUID();
 }
 </script>
 
