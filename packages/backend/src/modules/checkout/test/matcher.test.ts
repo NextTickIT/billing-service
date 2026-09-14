@@ -25,6 +25,7 @@ const session: CheckoutSession = {
   successUrl: null,
   failureUrl: null,
   promo: null,
+  idempotencyKey: null,
   expiresAt: new Date(0),
   createdAt: new Date(0),
 };
@@ -32,7 +33,8 @@ const session: CheckoutSession = {
 const repoWith = (found: CheckoutSession | null): CheckoutRepo => ({
   findById: () =>
     Effect.succeed(found === null ? Option.none() : Option.some(found)),
-  insert: () => Effect.void,
+  findByIdempotencyKey: () => Effect.succeed(Option.none()),
+  insert: () => Effect.succeed(true),
   claimForPayment: () => Effect.succeed(false),
   releasePending: () => Effect.void,
   markCompleted: () => Effect.void,

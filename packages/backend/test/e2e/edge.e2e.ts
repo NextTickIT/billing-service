@@ -249,6 +249,57 @@ async function operatorFlow(
   assert.ok(logoutSetCookie.includes('Max-Age=0'), 'logout clears bss cookie');
 }
 
+/**
+ * A repeated POST /api/checkout-sessions with the same Idempotency-Key (the CRM's own
+ * service-token path, not the BFF) must return the SAME session and create exactly one
+ * row — so a retried/parallel create never mints a duplicate WayForPay/WhitePay flow.
+ */
+async function idempotentCreate(
+  baseUrl: string,
+  query: (sql: string) => Promise<string>,
+): Promise<void> {
+  const mintRes = await postJson(
+    `${baseUrl}/auth/tokens`,
+    { alias: 'idem-svc', role: 2 },
+    { authorization: `Bearer ${ADMIN_TOKEN}` },
+  );
+  assert.equal(mintRes.status, 201, 'service token minted');
+  const { secret } = (await mintRes.json()) as { secret: string };
+  const headers = {
+    authorization: `Bearer ${secret}`,
+    'idempotency-key': 'idem-key-1',
+  };
+  const body = {
+    externalUserId: 'idem-user',
+    amount: 30000,
+    currency: 0,
+    period: 'P1M',
+  };
+
+  const first = (await postJson(
+    `${baseUrl}/api/checkout-sessions`,
+    body,
+    headers,
+  ).then((r) => r.json())) as { sessionId: string };
+  const second = (await postJson(
+    `${baseUrl}/api/checkout-sessions`,
+    body,
+    headers,
+  ).then((r) => r.json())) as { sessionId: string };
+
+  assert.equal(
+    second.sessionId,
+    first.sessionId,
+    'same Idempotency-Key → same session',
+  );
+  const count = (
+    await query(
+      `SELECT count(*) FROM checkout_sessions WHERE "idempotencyKey" = 'idem-key-1'`,
+    )
+  ).trim();
+  assert.equal(count, '1', 'exactly one session row for the key');
+}
+
 export const edgeScenarios: readonly Scenario[] = [
   {
     name: 'BFF edge: full checkout→operator round-trip through the BFF handler',
@@ -256,6 +307,12 @@ export const edgeScenarios: readonly Scenario[] = [
       const { sessionId, bff } = await seedAndCheckout(baseUrl);
       await checkoutFlow(bff, baseUrl, sessionId);
       await operatorFlow(bff, baseUrl);
+    },
+  },
+  {
+    name: 'checkout: same Idempotency-Key returns the same session (no duplicate)',
+    run: async ({ baseUrl, query }) => {
+      await idempotentCreate(baseUrl, query);
     },
   },
 ];

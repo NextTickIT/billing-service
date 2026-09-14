@@ -8,6 +8,7 @@ import {
   CheckoutSessionPublic,
   CheckoutSessionStatus,
   CreateCheckoutSession,
+  type NewCheckoutSession,
   ONE_TIME_PERIOD,
   PayInstruction,
   PaymentMethod,
@@ -110,18 +111,66 @@ const assertPromo = (input: CreateCheckoutSession) => {
   return Effect.void;
 };
 
+/** The optional `Idempotency-Key` header, normalized: a present non-empty value, else null. */
+const idempotencyKeyOf = (request: FastifyRequest): string | null => {
+  const key = header(request, 'idempotency-key');
+  return key !== undefined && key.length > 0 ? key : null;
+};
+
+/** An Idempotency-Key, when supplied, must be a sane length — reject an oversized value
+ * (a caller bug / abuse) with a 422 rather than persist an unbounded string. */
+const assertIdempotencyKey = (request: FastifyRequest) => {
+  const key = header(request, 'idempotency-key');
+  return key !== undefined && key.length > 200
+    ? Effect.fail(
+        new UnprocessableEntity({
+          reason: 'Idempotency-Key too long (max 200)',
+        }),
+      )
+    : Effect.void;
+};
+
+/** The SessionCreated response for a session id + expiry. */
+const created = (id: string, expiresAt: Date): SessionCreated => ({
+  sessionId: id,
+  checkoutUrl: checkoutPath(id),
+  expiresAt,
+});
+
+/**
+ * Insert the session, or replay the existing one when its Idempotency-Key already maps to
+ * a session (a retry, or a concurrent create that lost the ON CONFLICT race). The unique
+ * index makes this atomic — concurrent creates with one key collapse to a single row and
+ * every caller gets the same sessionId/checkoutUrl/expiresAt, so one intent never mints
+ * two provider flows. A key-less create (null) always inserts.
+ */
+const insertOrReplay = (repo: CheckoutRepo, input: NewCheckoutSession) =>
+  Effect.gen(function* () {
+    const inserted = yield* repo.insert(input);
+    const key = input.idempotencyKey;
+    if (inserted || key === null) {
+      return created(input.id, input.expiresAt);
+    }
+    const existing = yield* repo.findByIdempotencyKey(key);
+    if (existing._tag === 'None') {
+      return yield* Effect.fail(new Conflict({ field: 'idempotency key' }));
+    }
+    return created(existing.value.id, existing.value.expiresAt);
+  });
+
 const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
   Effect.gen(function* () {
     yield* serviceActor(request);
     yield* assertRedirects(input, request);
     yield* assertPromo(input);
+    yield* assertIdempotencyKey(request);
     const sql = yield* SqlClient.SqlClient;
     const nowMillis = yield* Clock.currentTimeMillis;
     const id = `chk_${randomUUID()}`;
     const expiresAt = new Date(
       nowMillis + request.server.appConfig.wayforpay.sessionTtlSeconds * 1000,
     );
-    yield* makeCheckoutRepo(sql).insert({
+    return yield* insertOrReplay(makeCheckoutRepo(sql), {
       id,
       externalUserId: input.externalUserId,
       amount: input.amount,
@@ -141,9 +190,10 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
       failureUrl: input.failureUrl ?? null,
       // A one-time bonus period applied once, when this session is paid (see CheckoutPromo).
       promo: input.promo ?? null,
+      // Opt-in dedup key from the caller's header; null → always a fresh session.
+      idempotencyKey: idempotencyKeyOf(request),
       expiresAt,
     });
-    return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };
   });
 
 const getSession = (_input: unknown, request: FastifyRequest) =>
@@ -403,6 +453,8 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
       failureUrl: null,
       // A card change re-tokenizes an existing payment; it grants no bonus period.
       promo: null,
+      // Server-initiated (not a caller retry), so it carries no idempotency key.
+      idempotencyKey: null,
       expiresAt,
     });
     return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };

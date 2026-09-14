@@ -83,6 +83,10 @@ export const CheckoutSession = Schema.Struct({
   // Optional one-time promo; null when the caller attached none. Consumed once, when the
   // session is paid, to extend the paid-through anchor (see CheckoutPromo).
   promo: Schema.NullOr(CheckoutPromo),
+  // Opt-in dedup key from the caller's `Idempotency-Key` header (null when absent). A
+  // unique index enforces one session per key, so a retried/parallel create returns the
+  // same session instead of minting a duplicate. Never exposed on the public session.
+  idempotencyKey: Schema.NullOr(Schema.String),
   expiresAt: Schema.Date,
   createdAt: Schema.Date,
 });

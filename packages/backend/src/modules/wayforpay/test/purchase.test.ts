@@ -38,6 +38,7 @@ describe('buildPurchase', () => {
       successUrl: null,
       failureUrl: null,
       promo: null,
+      idempotencyKey: null,
       expiresAt: new Date(0),
       createdAt: new Date(0),
     },

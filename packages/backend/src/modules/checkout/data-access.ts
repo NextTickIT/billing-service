@@ -10,11 +10,21 @@ import { Effect, Option } from 'effect';
 import { columnList } from '@/infra/db/columns.js';
 
 export interface CheckoutRepo {
+  /**
+   * Insert a session, keyed on `idempotencyKey` via INSERT … ON CONFLICT DO NOTHING:
+   * returns true when THIS call inserted the row, false when a session for that key
+   * already exists (a retry or a concurrent create that lost the race). A null key never
+   * conflicts (the unique index is partial), so a key-less insert always returns true.
+   */
   readonly insert: (
     input: NewCheckoutSession,
-  ) => Effect.Effect<void, SqlError.SqlError>;
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
   readonly findById: (
     id: string,
+  ) => Effect.Effect<Option.Option<CheckoutSession>, SqlError.SqlError>;
+  /** The session an idempotency key maps to (for replaying a deduped create). */
+  readonly findByIdempotencyKey: (
+    key: string,
   ) => Effect.Effect<Option.Option<CheckoutSession>, SqlError.SqlError>;
   /**
    * Atomically claim a payable session for payment: record the chosen method and move
@@ -57,21 +67,32 @@ const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
   // jsonb bound as `${JSON.stringify(x)}::jsonb`; a bare null stays SQL NULL (no promo),
   // never the jsonb `'null'` literal — mirrors the queue/outbox jsonb convention.
   const promo = input.promo === null ? null : JSON.stringify(input.promo);
-  return sql`
+  // ON CONFLICT keys on the partial unique index (idempotencyKey IS NOT NULL): a repeat
+  // or concurrent create with the same key hits DO NOTHING and returns no row; a null key
+  // is outside the index, so it never conflicts and always inserts.
+  return sql<{ readonly id: string }>`
     INSERT INTO checkout_sessions
       (id, "externalUserId", amount, currency, period, method, kind, recurring,
-       "paymentId", "successUrl", "failureUrl", promo, "expiresAt")
+       "paymentId", "successUrl", "failureUrl", promo, "idempotencyKey", "expiresAt")
     VALUES
       (${input.id}, ${input.externalUserId}, ${input.amount}, ${input.currency},
        ${input.period}, ${input.method ?? null}, ${input.kind}, ${input.recurring},
        ${input.paymentId}, ${input.successUrl}, ${input.failureUrl},
-       ${promo}::jsonb, ${input.expiresAt})
-  `.pipe(Effect.asVoid);
+       ${promo}::jsonb, ${input.idempotencyKey}, ${input.expiresAt})
+    ON CONFLICT ("idempotencyKey") WHERE "idempotencyKey" IS NOT NULL DO NOTHING
+    RETURNING id
+  `.pipe(Effect.map((rows) => rows.length > 0));
 };
 
 const findById = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<CheckoutSession>`
     SELECT ${sql.unsafe(COLUMNS)} FROM checkout_sessions WHERE id = ${id}
+  `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
+
+const findByIdempotencyKey = (sql: SqlClient.SqlClient) => (key: string) =>
+  sql<CheckoutSession>`
+    SELECT ${sql.unsafe(COLUMNS)} FROM checkout_sessions
+    WHERE "idempotencyKey" = ${key}
   `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
 const claimForPayment =
@@ -107,6 +128,7 @@ const renameOpenSessionsExternalUser =
 export const makeCheckoutRepo = (sql: SqlClient.SqlClient): CheckoutRepo => ({
   insert: insert(sql),
   findById: findById(sql),
+  findByIdempotencyKey: findByIdempotencyKey(sql),
   claimForPayment: claimForPayment(sql),
   releasePending: releasePending(sql),
   markCompleted: markCompleted(sql),
