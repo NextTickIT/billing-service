@@ -16,10 +16,25 @@ export interface CheckoutRepo {
   readonly findById: (
     id: string,
   ) => Effect.Effect<Option.Option<CheckoutSession>, SqlError.SqlError>;
-  /** Record the chosen method and move the session to `pending`. */
-  readonly setPending: (
+  /**
+   * Atomically claim a payable session for payment: record the chosen method and move
+   * it to `pending`, but ONLY from `created`. The session id is the idempotency key —
+   * a second concurrent or repeat /pay (button spam, two tabs) finds the row no longer
+   * `created` and loses the claim, so exactly one caller mints exactly one provider
+   * order per session. Returns true iff this call won the claim.
+   */
+  readonly claimForPayment: (
     id: string,
     method: number,
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
+  /**
+   * Release a claim back to `created` after the provider mint failed, so the buyer can
+   * retry (or pick another method) instead of the session bricking in `pending`. Only a
+   * still-`pending` row is reopened — a callback that completed the session meanwhile is
+   * never reverted.
+   */
+  readonly releasePending: (
+    id: string,
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly markCompleted: (
     id: string,
@@ -59,11 +74,19 @@ const findById = (sql: SqlClient.SqlClient) => (id: string) =>
     SELECT ${sql.unsafe(COLUMNS)} FROM checkout_sessions WHERE id = ${id}
   `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
-const setPending = (sql: SqlClient.SqlClient) => (id: string, method: number) =>
+const claimForPayment =
+  (sql: SqlClient.SqlClient) => (id: string, method: number) =>
+    sql<{ readonly id: string }>`
+      UPDATE checkout_sessions
+      SET method = ${method}, status = ${CheckoutSessionStatus.Pending}
+      WHERE id = ${id} AND status = ${CheckoutSessionStatus.Created}
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length > 0));
+
+const releasePending = (sql: SqlClient.SqlClient) => (id: string) =>
   sql`
-    UPDATE checkout_sessions
-    SET method = ${method}, status = ${CheckoutSessionStatus.Pending}
-    WHERE id = ${id}
+    UPDATE checkout_sessions SET status = ${CheckoutSessionStatus.Created}
+    WHERE id = ${id} AND status = ${CheckoutSessionStatus.Pending}
   `.pipe(Effect.asVoid);
 
 const markCompleted = (sql: SqlClient.SqlClient) => (id: string) =>
@@ -84,7 +107,8 @@ const renameOpenSessionsExternalUser =
 export const makeCheckoutRepo = (sql: SqlClient.SqlClient): CheckoutRepo => ({
   insert: insert(sql),
   findById: findById(sql),
-  setPending: setPending(sql),
+  claimForPayment: claimForPayment(sql),
+  releasePending: releasePending(sql),
   markCompleted: markCompleted(sql),
   renameOpenSessionsExternalUser: renameOpenSessionsExternalUser(sql),
 });

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 
-import { callbackSignatureBase, hmacMd5Hex } from '@/modules/wayforpay/signature.js';
+import {
+  callbackSignatureBase,
+  hmacMd5Hex,
+} from '@/modules/wayforpay/signature.js';
 
 /**
  * Edge integration test: drives the FULL checkout→operator round-trip THROUGH
@@ -165,6 +168,22 @@ async function checkoutFlow(
   assert.ok(typeof payBody['action'] === 'string', 'response has action url');
   assert.ok(typeof payBody['fields'] === 'object', 'response has form fields');
 
+  // The session id is the idempotency key: a repeat /pay must not mint a second provider
+  // order — the now-pending session loses the created→pending claim and gets a 409.
+  assert.equal(
+    (
+      await bff(
+        new Request(`${baseUrl}/api/checkout-sessions/${sessionId}/pay`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ method: 0 }),
+        }),
+      )
+    ).status,
+    409,
+    'repeat POST /pay → 409 (idempotent on session id)',
+  );
+
   const cbRes = await postJson(
     `${baseUrl}/api/providers/wayforpay/callback`,
     signCallback({
@@ -204,7 +223,11 @@ async function operatorFlow(
   assert.equal(loginRes.status, 200, 'login via BFF → 200');
   const loginBody = (await loginRes.json()) as Record<string, unknown>;
   assert.equal(loginBody['ok'], true, 'login response is {ok:true}');
-  assert.equal('token' in loginBody, false, 'session token must not leak in body');
+  assert.equal(
+    'token' in loginBody,
+    false,
+    'session token must not leak in body',
+  );
   const bssToken = extractBssCookie(loginRes);
   assert.ok(bssToken !== null && bssToken.length > 0, 'Set-Cookie bss present');
 

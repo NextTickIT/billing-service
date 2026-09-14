@@ -31,7 +31,10 @@ import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { PAYMENT_EVENT_RECEIVED } from '@/modules/charge/contracts.js';
 import { authenticateToken } from '@/modules/auth/domain.js';
-import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
+import {
+  type CheckoutRepo,
+  makeCheckoutRepo,
+} from '@/modules/checkout/data-access.js';
 import {
   checkoutPath,
   redirectHostAllowed,
@@ -222,36 +225,60 @@ const payCrypto = (
     return { kind: 'redirect', url: order.acquiringUrl };
   });
 
+/**
+ * Resolve a session and atomically claim it for payment, or fail: 404 when unknown, 409
+ * when terminal (completed/expired) or already claimed. The claim IS the idempotency
+ * guard — the session id is the key, so a concurrent or repeat /pay (button spam, two
+ * tabs, a scripted client) finds the row already pending, loses the created→pending
+ * claim, and gets the 409. Exactly one provider order is ever minted per session
+ * (docs/26). Returns the now-pending session, ready to hand to a provider.
+ */
+const claimPayableSession = (repo: CheckoutRepo, id: string, method: number) =>
+  Effect.gen(function* () {
+    const found = yield* repo.findById(id);
+    if (found._tag === 'None') {
+      return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
+    }
+    const { status } = found.value;
+    if (
+      status === CheckoutSessionStatus.Completed ||
+      status === CheckoutSessionStatus.Expired
+    ) {
+      return yield* Effect.fail(
+        new Conflict({ field: 'checkout session (completed or expired)' }),
+      );
+    }
+    const claimed = yield* repo.claimForPayment(id, method);
+    if (!claimed) {
+      return yield* Effect.fail(
+        new Conflict({
+          field: 'checkout session payment (already in progress)',
+        }),
+      );
+    }
+    return {
+      ...found.value,
+      method,
+      status: CheckoutSessionStatus.Pending,
+    } satisfies CheckoutSession;
+  });
+
 const pay = (input: SelectMethod, request: FastifyRequest) =>
   Effect.gen(function* () {
     assertBffSecret(request);
     const sql = yield* SqlClient.SqlClient;
     const repo = makeCheckoutRepo(sql);
     const id = readId(request);
-    const found = yield* repo.findById(id);
-    if (found._tag === 'None') {
-      return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
-    }
-    // A completed session must not mint a second provider order — that is the crypto
-    // double-pay vector (two paid orders → a second create-or-extend). Expired is
-    // non-payable. Both are terminal; refuse (409) rather than re-issue (docs/26).
-    if (
-      found.value.status === CheckoutSessionStatus.Completed ||
-      found.value.status === CheckoutSessionStatus.Expired
-    ) {
-      return yield* Effect.fail(
-        new Conflict({ field: 'checkout session (completed or expired)' }),
+    const session = yield* claimPayableSession(repo, id, input.method);
+    // A card handoff is a pure signed form (WayForPay dedups on our orderReference), so it
+    // cannot fail. Only crypto calls out to WhitePay: if that mint fails (5xx / disabled),
+    // release the claim so the buyer can retry or switch method instead of bricking here.
+    if (input.method === PaymentMethod.Crypto) {
+      return yield* payCrypto(session, request).pipe(
+        Effect.tapError(() => repo.releasePending(id)),
       );
     }
-    yield* repo.setPending(id, input.method);
-    const session: CheckoutSession = {
-      ...found.value,
-      method: input.method,
-      status: CheckoutSessionStatus.Pending,
-    };
-    return input.method === PaymentMethod.Crypto
-      ? yield* payCrypto(session, request)
-      : yield* payCard(session, request);
+    return yield* payCard(session, request);
   });
 
 const providerOf = (request: FastifyRequest): string =>

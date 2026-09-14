@@ -42,7 +42,8 @@ const unusedSubs: PaymentRepo = {
 const unusedCheckout: CheckoutRepo = {
   findById: () => Effect.die('unused'),
   insert: () => Effect.die('unused'),
-  setPending: () => Effect.die('unused'),
+  claimForPayment: () => Effect.die('unused'),
+  releasePending: () => Effect.die('unused'),
   markCompleted: () => Effect.die('unused'),
   renameOpenSessionsExternalUser: () => Effect.die('unused'),
 };

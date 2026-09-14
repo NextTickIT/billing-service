@@ -37,7 +37,8 @@ const unusedPayments: PaymentRepo = {
 const unusedCheckout: CheckoutRepo = {
   findById: die,
   insert: die,
-  setPending: die,
+  claimForPayment: die,
+  releasePending: die,
   markCompleted: die,
   renameOpenSessionsExternalUser: die,
 };

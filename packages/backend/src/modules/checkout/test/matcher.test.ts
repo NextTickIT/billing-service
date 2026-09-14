@@ -33,7 +33,8 @@ const repoWith = (found: CheckoutSession | null): CheckoutRepo => ({
   findById: () =>
     Effect.succeed(found === null ? Option.none() : Option.some(found)),
   insert: () => Effect.void,
-  setPending: () => Effect.void,
+  claimForPayment: () => Effect.succeed(false),
+  releasePending: () => Effect.void,
   markCompleted: () => Effect.void,
   renameOpenSessionsExternalUser: () => Effect.succeed(0),
 });
