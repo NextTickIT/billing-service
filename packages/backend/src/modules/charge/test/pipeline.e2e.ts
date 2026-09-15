@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 import { SqlClient } from '@effect/sql';
 import { CheckoutSessionKind, PaymentStatus } from '@billing-service/shared';
-import { Duration, Effect } from 'effect';
+import { Duration, Effect, Option } from 'effect';
 
 import type { AppConfig } from '@/config.js';
 import { defaultRetryConfig } from '@/infra/queue/policy.js';
@@ -461,6 +461,8 @@ const driveScheduler = Effect.gen(function* () {
       ingest: pipeline.ingest,
       publish: outbox.publish,
       lapse: () => Effect.void,
+      createManualCheckout: () =>
+        Effect.die('manual checkout unused: this payment has a token'),
     },
     { intervalSeconds: 60, batchSize: 10 },
   );
@@ -626,6 +628,8 @@ const driveLapse = Effect.gen(function* () {
           idemKey: `lapse:${sub.id}`,
           payload: { paymentId: sub.id, externalUserId: sub.externalUserId },
         }).pipe(Effect.asVoid),
+      createManualCheckout: () =>
+        Effect.die('manual checkout unused: this payment has a token'),
     },
     { intervalSeconds: 60, batchSize: 10 },
   );
@@ -879,8 +883,125 @@ const cardChangeDeclineLeavesPayment: EffectScenario = {
   },
 };
 
+/**
+ * The revive-in-place guard (docs/28): a crypto manual-renewal prompt flips the payment to
+ * PastDue, so `findActiveRecurringByExternalUser` MUST still return it — otherwise paying
+ * the manual session would insert a duplicate recurring payment instead of extending. This
+ * exercises the real SQL predicate against Postgres.
+ */
+const findExtendableMatchesPastDue: EffectScenario = {
+  name: 'create-or-extend: a PastDue recurring payment is still extendable (revive-in-place)',
+  run: async ({ config }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const subs = makePaymentRepo(sql);
+          const created = yield* subs.insert({
+            externalUserId: 'sp:pastdue',
+            amount: 30000,
+            currency: 0,
+            method: 1, // crypto
+            period: 'P1M',
+            status: PaymentStatus.PastDue,
+            recurring: true,
+            currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
+            currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
+            nextPaymentDate: new Date('2026-01-01T00:00:00Z'),
+            recurringTokenRef: null, // token-less → the manual-prompt path
+            firstFailureAt: new Date('2026-01-01T00:00:00Z'),
+            retryAttempt: 1,
+          });
+          const found =
+            yield* subs.findActiveRecurringByExternalUser('sp:pastdue');
+          assert.equal(
+            Option.isSome(found),
+            true,
+            'a PastDue recurring payment must be extendable (else paying duplicates it)',
+          );
+          assert.equal(
+            Option.isSome(found) ? found.value.id : null,
+            created.id,
+          );
+        }),
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
+/**
+ * Guards against a unique-violation brick (23505): if a user somehow has BOTH an Active and
+ * a PastDue recurring row, the finder must return the ACTIVE one (Active-first ordering), so
+ * create-or-extend revives the already-Active row and never flips the PastDue to a SECOND
+ * Active — which `payments_one_active_per_user` (migration 0014) would reject.
+ */
+const findPrefersActiveWhenBothExist: EffectScenario = {
+  name: 'create-or-extend: prefers the Active recurring over a coexisting PastDue (no 23505 brick)',
+  run: async ({ config }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const subs = makePaymentRepo(sql);
+          // PastDue is inserted FIRST (older createdAt); Active SECOND (newer) — so a naive
+          // "newest first" would wrongly pick the PastDue. Active-first ordering must win.
+          const pastDue = yield* subs.insert({
+            externalUserId: 'sp:both',
+            amount: 30000,
+            currency: 0,
+            method: 1,
+            period: 'P1M',
+            status: PaymentStatus.PastDue,
+            recurring: true,
+            currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
+            currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
+            nextPaymentDate: new Date('2026-01-01T00:00:00Z'),
+            recurringTokenRef: null,
+            firstFailureAt: new Date('2026-01-01T00:00:00Z'),
+            retryAttempt: 1,
+          });
+          const active = yield* subs.insert({
+            externalUserId: 'sp:both',
+            amount: 30000,
+            currency: 0,
+            method: 0,
+            period: 'P1M',
+            status: PaymentStatus.Active,
+            recurring: true,
+            currentPeriodStart: new Date('2026-02-01T00:00:00Z'),
+            currentPeriodEnd: new Date('2026-03-01T00:00:00Z'),
+            nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+            recurringTokenRef: 'tok',
+            firstFailureAt: null,
+            retryAttempt: 0,
+          });
+          const found =
+            yield* subs.findActiveRecurringByExternalUser('sp:both');
+          assert.equal(
+            Option.isSome(found) ? found.value.id : null,
+            active.id,
+            'must return the Active row, not the (older) PastDue one',
+          );
+          assert.notEqual(
+            Option.isSome(found) ? found.value.id : null,
+            pastDue.id,
+          );
+        }),
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
+  findExtendableMatchesPastDue,
+  findPrefersActiveWhenBothExist,
   bindReprocesses,
   pollerIngestsJournal,
   checkoutCreatesPayment,

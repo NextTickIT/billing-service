@@ -131,6 +131,7 @@ export default {
       initial_payment_failed: 'Первый платёж не удался',
       charge_retry_failed: 'Повтор списания не удался',
       renewal_failed: 'Обновление не удалось',
+      payment_manual_required: 'Требуется ручная оплата',
       payment_created: 'Платёж создан',
       payment_cancelled: 'Платёж отменён',
       payment_reactivated: 'Платёж возобновлён',

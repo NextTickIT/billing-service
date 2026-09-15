@@ -20,6 +20,7 @@ export const EVENT_NAMES = [
   'initial_payment_failed',
   'charge_retry_failed',
   'renewal_failed',
+  'payment_manual_required',
   'payment_created',
   'payment_cancelled',
   'payment_reactivated',
@@ -61,6 +62,10 @@ const succeededPayload = {
   method: Schema.Int,
   period: Schema.String,
   source: Schema.String,
+  // ISO-8601 date of the next scheduled charge; null for a one-time purchase (never
+  // renews). A string (not Schema.Date) to match the payload-date convention used by
+  // `payment_deferred.newPeriodEnd` / `charge_retry_failed.nextRetryDate`.
+  nextPaymentDate: Schema.NullOr(Schema.String),
 };
 
 export const InitialPaymentSucceededEvent = Schema.Struct({
@@ -161,6 +166,32 @@ export const RenewalFailedEvent = Schema.Struct({
 });
 
 export type RenewalFailedEvent = Schema.Schema.Type<typeof RenewalFailedEvent>;
+
+/**
+ * A recurring charge came due for a payment WITHOUT a usable token — WhitePay crypto has
+ * no reusable token, so it can't be auto-charged (docs/28). Instead of charging, we mint
+ * OUR internal checkout session and fire this event so the user can pay again (crypto or
+ * card) at `checkoutUrl`. Recurring cycles only — the initial payment is already a manual
+ * checkout. `dueDate`/`windowExpiresAt` are ISO-8601 strings (payload-date convention).
+ */
+export const PaymentManualRequiredEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('payment_manual_required'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({
+    amount: Schema.Int,
+    currency: CurrencySchema,
+    method: Schema.Int,
+    paymentId: Schema.String,
+    checkoutUrl: Schema.String,
+    dueDate: Schema.String,
+    windowExpiresAt: Schema.String,
+  }),
+});
+
+export type PaymentManualRequiredEvent = Schema.Schema.Type<
+  typeof PaymentManualRequiredEvent
+>;
 
 /** A payment cancelled by an operator or a provider event (FR-012). */
 export const PaymentCancelledEvent = Schema.Struct({
@@ -295,6 +326,7 @@ export const DomainEvent = Schema.Union(
   PaymentCreatedEvent,
   ChargeRetryFailedEvent,
   RenewalFailedEvent,
+  PaymentManualRequiredEvent,
   PaymentCancelledEvent,
   PaymentReactivatedEvent,
   PaymentDeferredEvent,

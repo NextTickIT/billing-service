@@ -131,6 +131,7 @@ export default {
       initial_payment_failed: 'Initial payment failed',
       charge_retry_failed: 'Charge retry failed',
       renewal_failed: 'Renewal failed',
+      payment_manual_required: 'Manual payment required',
       payment_created: 'Payment created',
       payment_cancelled: 'Payment cancelled',
       payment_reactivated: 'Payment reactivated',

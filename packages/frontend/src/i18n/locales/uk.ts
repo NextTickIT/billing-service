@@ -130,6 +130,7 @@ export default {
       initial_payment_failed: 'Перший платіж не вдався',
       charge_retry_failed: 'Повтор списання не вдався',
       renewal_failed: 'Поновлення не вдалось',
+      payment_manual_required: 'Потрібна ручна оплата',
       payment_created: 'Платіж створено',
       payment_cancelled: 'Платіж скасовано',
       payment_reactivated: 'Платіж поновлено',

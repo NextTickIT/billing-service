@@ -43,8 +43,13 @@ export interface AdvanceAnchor {
  */
 export interface PaymentRepo {
   /**
-   * The user's active RECURRING payment (create-or-extend keys on it). One-time
-   * payments are excluded so they never get extended and never block a new one.
+   * The user's live RECURRING payment that create-or-extend acts on: Active, or PastDue
+   * (a renewal mid-retry — incl. a crypto manual-renewal prompt that flipped it to
+   * PastDue). A paid checkout REVIVES that row in place instead of minting a duplicate.
+   * Active is preferred over PastDue (Active-first order) so an existing Active is never
+   * revive-collided with the `payments_one_active_per_user` unique index. RenewalFailed
+   * is terminal (docs/28 D4) and excluded — a post-failure checkout starts a fresh row;
+   * one-time and Cancelled are excluded too.
    */
   readonly findActiveRecurringByExternalUser: (
     externalUserId: string,
@@ -142,7 +147,10 @@ const findActiveRecurringByExternalUser =
     sql<Payment>`
       SELECT ${sql.unsafe(COLUMNS)} FROM payments
       WHERE "externalUserId" = ${externalUserId}
-        AND status = ${PaymentStatus.Active} AND recurring = true
+        AND recurring = true
+        AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+      ORDER BY status, "createdAt" DESC
+      LIMIT 1
     `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
 const findById = (sql: SqlClient.SqlClient) => (id: string) =>
@@ -156,7 +164,6 @@ const findDue = (sql: SqlClient.SqlClient) => (now: Date, limit: number) =>
     WHERE status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
       AND recurring = true
       AND "nextPaymentDate" <= ${now}
-      AND "recurringTokenRef" IS NOT NULL
     ORDER BY "nextPaymentDate"
     LIMIT ${limit}
     FOR UPDATE SKIP LOCKED

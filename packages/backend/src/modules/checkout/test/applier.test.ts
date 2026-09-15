@@ -7,6 +7,7 @@ import { makeCheckoutApplier } from '@/modules/checkout/domain.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import type { Charge, Match } from '@/modules/charge/contracts.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
+import { addPeriod } from '@/modules/payment/period.js';
 
 const event: Charge = {
   source: 'wayforpay_callback',
@@ -88,7 +89,11 @@ it.effect(
 
       const result = yield* makeCheckoutApplier(subs, checkout)(event, match);
 
-      expect(result).toEqual({ subscriptionId: 'sub_1', created: true });
+      expect(result).toEqual({
+        subscriptionId: 'sub_1',
+        created: true,
+        nextPaymentDate: addPeriod(event.occurredAt, 'P1M'),
+      });
       expect(insertedToken).toBe('tok');
       expect(completed).toBe(true);
     }),
@@ -133,7 +138,13 @@ it.effect(
 
       const result = yield* makeCheckoutApplier(subs, checkout)(event, match);
 
-      expect(result).toEqual({ subscriptionId: 'pay_ot', created: true });
+      // The applier still surfaces the paid-through anchor; the one-time event builder is
+      // what nulls it (a one-time never renews) — the applier result itself carries it.
+      expect(result).toEqual({
+        subscriptionId: 'pay_ot',
+        created: true,
+        nextPaymentDate: addPeriod(event.occurredAt, 'P1M'),
+      });
       expect(insertedRecurring).toBe(false);
       // The provider returned a recToken; a one-time payment must not store it.
       expect(insertedToken).toBe(null);
@@ -141,9 +152,34 @@ it.effect(
 );
 
 it.effect(
-  'a recurring match reports the existing subscription, touching nothing',
-  () =>
-    makeCheckoutApplier(unusedSubs, unusedCheckout)(event, {
+  'a recurring match reports the existing subscription and its next charge date, writing nothing',
+  () => {
+    // The recurring branch READS the payment (for its next-charge date) but writes nothing —
+    // the scheduler already advanced it before the incoming event re-entered the pipeline.
+    const recurringPayment: Payment = {
+      id: 'sub_x',
+      externalUserId: 'sp:1',
+      amount: 30000,
+      currency: 0,
+      method: 0,
+      period: 'P1M',
+      status: PaymentStatus.Active,
+      recurring: true,
+      currentPeriodStart: new Date('2026-02-01T00:00:00Z'),
+      currentPeriodEnd: new Date('2026-03-01T00:00:00Z'),
+      nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+      recurringTokenRef: 'tok',
+      firstFailureAt: null,
+      retryAttempt: 0,
+      cancelRequestedAt: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    };
+    const subs: PaymentRepo = {
+      ...unusedSubs,
+      findById: () => Effect.succeed(Option.some(recurringPayment)),
+    };
+    return makeCheckoutApplier(subs, unusedCheckout)(event, {
       matched: true,
       kind: 'recurring',
       subscriptionId: 'sub_x',
@@ -152,9 +188,14 @@ it.effect(
       method: 0,
     }).pipe(
       Effect.map((result) => {
-        expect(result).toEqual({ subscriptionId: 'sub_x', created: false });
+        expect(result).toEqual({
+          subscriptionId: 'sub_x',
+          created: false,
+          nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+        });
       }),
-    ),
+    );
+  },
 );
 
 /** A past_due payment the owed card-change advances (only the read status matters). */

@@ -33,6 +33,9 @@ export interface ApplyPaymentResult {
   readonly subscriptionId: string;
   /** true when a new payment was created (drives `payment_created`). */
   readonly created: boolean;
+  /** The next scheduled charge date established by this charge (the paid-through anchor).
+   * Carried out so the succeeded event can report it. */
+  readonly nextPaymentDate: Date;
 }
 
 /** The period a successful charge pays for; the next charge anchors on its end. */
@@ -61,7 +64,9 @@ const periodAnchors = (params: ApplyPaymentParams): PeriodAnchors => {
 };
 
 /** Insert a fresh Payment. A one-time payment stores no reusable token (it is never
- * charged again), so the scheduler — which requires a token — can never pick it up. */
+ * charged again) and is `recurring: false`, so the scheduler — which only selects
+ * `recurring = true` rows — never renews it. (Token-less RECURRING payments ARE now
+ * picked up: they get a manual-pay prompt instead of an autocharge, docs/28.) */
 const insertNew =
   (repo: PaymentRepo) =>
   (
@@ -86,6 +91,7 @@ const insertNew =
         Effect.map((created) => ({
           subscriptionId: created.id,
           created: true,
+          nextPaymentDate: anchors.nextPaymentDate,
         })),
       );
 
@@ -113,7 +119,11 @@ export const createOrExtend =
           ...anchors,
           recurringTokenRef: params.recurringTokenRef,
         });
-        return { subscriptionId: existing.value.id, created: false };
+        return {
+          subscriptionId: existing.value.id,
+          created: false,
+          nextPaymentDate: anchors.nextPaymentDate,
+        };
       }
       return yield* insertNew(repo)(params, anchors);
     });

@@ -169,6 +169,32 @@ it.effect(
 );
 
 it.effect(
+  'revives a PastDue recurring payment in place (crypto manual-renewal pay), not a duplicate',
+  () =>
+    Effect.gen(function* () {
+      // A crypto manual-renewal prompt flips the payment to PastDue (recordRetry). When the
+      // user then pays the manual session, create-or-extend must EXTEND that same (PastDue)
+      // payment — reviving it — not insert a second recurring payment. The finder returning
+      // the PastDue row is what makes this work (see findActiveRecurringByExternalUser SQL).
+      const pastDue: Payment = {
+        ...activePayment,
+        status: PaymentStatus.PastDue,
+        firstFailureAt: new Date('2026-01-01T00:00:00Z'),
+        retryAttempt: 2,
+        recurringTokenRef: null,
+      };
+      const fake = makeFakeRepo(pastDue);
+
+      const result = yield* createOrExtend(fake.repo)(params);
+
+      expect(result.created).toBe(false);
+      expect(result.subscriptionId).toBe('sub_1');
+      expect(fake.getInserted()).toBe(null); // never a duplicate
+      expect(fake.getExtended()?.id).toBe('sub_1');
+    }),
+);
+
+it.effect(
   'a one-time charge inserts a fresh payment even when an active one exists',
   () =>
     Effect.gen(function* () {

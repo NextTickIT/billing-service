@@ -120,6 +120,9 @@ export const makeCompositeMatcher =
 export interface AppliedCharge {
   readonly subscriptionId: string;
   readonly created: boolean;
+  /** The payment's next scheduled charge date after applying this charge, or null when
+   * there is none (a one-time purchase, or a reconciliation with no known schedule). */
+  readonly nextPaymentDate: Date | null;
 }
 
 /**
