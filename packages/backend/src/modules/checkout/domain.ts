@@ -273,9 +273,8 @@ export const makeCheckoutApplier =
   (payments: PaymentRepo, checkout: CheckoutRepo): ChargeApplier =>
   (event, match: Match) => {
     if (match.kind === 'card_change' && match.subscriptionId !== null) {
-      // The recorded method is derived from the callback payload (token present → Card,
-      // absent → Crypto) inside the applier, NOT from the session's requested target —
-      // so what we store reflects what the buyer actually paid.
+      // applyCardChange records the rail from the event SOURCE (WayForPay → card,
+      // WhitePay → crypto), not from the session's requested target.
       return applyCardChange(payments, checkout)(
         event,
         match.subscriptionId,

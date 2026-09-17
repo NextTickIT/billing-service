@@ -56,12 +56,12 @@ export class UnprocessableEntity extends Data.TaggedError(
 }
 
 /**
- * A card change was requested for a payment that cannot be re-tokenized (docs/23):
- * a cancelled payment, no payment at all, or a proactive verify while the standalone
- * Card Verify method is not enabled. 409 → the caller starts a fresh checkout instead.
+ * A card- or method-change was requested for a payment that cannot be changed (docs/23,
+ * docs/32): a cancelled payment, no payment at all, or a proactive verify while the
+ * standalone Card Verify method is not enabled. 409 → the caller starts a fresh checkout.
  */
-export class CardChangeUnavailable extends Data.TaggedError(
-  'CardChangeUnavailable',
+export class ChangeUnavailable extends Data.TaggedError(
+  'ChangeUnavailable',
 )<{
   readonly reason: string;
 }> {

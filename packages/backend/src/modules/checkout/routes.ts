@@ -26,7 +26,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
 import {
-  CardChangeUnavailable,
+  ChangeUnavailable,
   Conflict,
   NotFound,
   Unauthorized,
@@ -49,6 +49,7 @@ import {
   planMethodChange,
   redirectHostAllowed,
 } from '@/modules/checkout/domain.js';
+import type { MethodChangeNotify } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import { isValidPeriod } from '@/modules/payment/period.js';
 import {
@@ -434,6 +435,8 @@ const changeSession = (
   currency: payment.currency,
   period: payment.period,
   method: targetMethod,
+  // Reused for ALL method-change sessions (card- and crypto-target): the callback matcher
+  // routes on this kind, while the applier keys on the event source, not this label.
   kind: CheckoutSessionKind.CardChange,
   recurring: true,
   paymentId: payment.id,
@@ -457,7 +460,7 @@ const resolveChangeable = (sql: SqlClient.SqlClient, externalUserId: string) =>
     const payment = found.find((p) => p.recurring);
     if (payment === undefined || payment.status === PaymentStatus.Cancelled) {
       return yield* Effect.fail(
-        new CardChangeUnavailable({
+        new ChangeUnavailable({
           reason: 'no changeable payment; start a new checkout',
         }),
       );
@@ -560,15 +563,18 @@ const methodChange = (input: MethodChangeRequest, request: FastifyRequest) =>
         Effect.gen(function* () {
           yield* payments.clearToken(payment.id);
           yield* payments.setMethod(payment.id, PaymentMethod.Crypto);
+          // Typed so a field rename can't silently drift from what methodChangeNotify
+          // decodes in the worker (the queue payload is otherwise `unknown`).
+          const payload: MethodChangeNotify = {
+            paymentId: payment.id,
+            externalUserId: payment.externalUserId,
+            method: PaymentMethod.Crypto,
+            at,
+          };
           yield* enqueue(sql)({
             messageType: PAYMENT_METHOD_CHANGE,
             idemKey: `method-change:${payment.id}:${payment.currentPeriodEnd.toISOString()}`,
-            payload: {
-              paymentId: payment.id,
-              externalUserId: payment.externalUserId,
-              method: PaymentMethod.Crypto,
-              at,
-            },
+            payload,
           });
         }),
       );

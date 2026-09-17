@@ -196,9 +196,8 @@ export type MethodChangeRequest = Schema.Schema.Type<typeof MethodChangeRequest>
  */
 export const MethodChangeCheckout = Schema.Struct({
   kind: Schema.Literal('checkout'),
-  sessionId: Schema.String,
-  checkoutUrl: Schema.String,
-  expiresAt: Schema.Date,
+  // Same payload as SessionCreated (spread so the two can never drift), plus `kind`.
+  ...SessionCreated.fields,
 });
 
 export type MethodChangeCheckout = Schema.Schema.Type<
@@ -207,6 +206,7 @@ export type MethodChangeCheckout = Schema.Schema.Type<
 
 export const MethodChangeApplied = Schema.Struct({
   kind: Schema.Literal('applied'),
+  // Today only ever Crypto (the sole no-payment flip); typed as a method for future flips.
   method: PaymentMethodSchema,
 });
 
