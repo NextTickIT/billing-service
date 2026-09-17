@@ -242,7 +242,7 @@ export type PaymentDeferredEvent = Schema.Schema.Type<
 >;
 
 /**
- * A subscription's payment method changed WITHOUT a payment (docs/method-change): the
+ * A subscription's payment method changed WITHOUT a payment (docs/32): the
  * no-payment flip of an up-to-date subscription to crypto (card token dropped, crypto
  * recorded). The paid method-change paths already emit a payment event; this fills the
  * one branch that mutates the payment but takes no money. `method` is the new method.

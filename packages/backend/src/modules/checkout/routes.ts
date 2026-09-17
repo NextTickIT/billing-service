@@ -516,7 +516,7 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
   });
 
 /**
- * SendPulse-initiated payment-method change (docs/method-change), previous-method agnostic:
+ * SendPulse-initiated payment-method change (docs/32), previous-method agnostic:
  * switch the user's one recurring payment to `input.method` (0=Card, 1=Crypto). Per
  * `planMethodChange`:
  * - `flip` (an up-to-date subscription → crypto): drop the card token + record crypto with
@@ -539,26 +539,39 @@ const methodChange = (input: MethodChangeRequest, request: FastifyRequest) =>
       config.cardChangeChargeMinor,
     );
     if (plan.action === 'flip') {
+      // Already crypto with no stored token → nothing to change; return without mutating
+      // or emitting a spurious `method_changed` for a genuine no-op.
+      if (
+        payment.method === PaymentMethod.Crypto &&
+        payment.recurringTokenRef === null
+      ) {
+        return { kind: 'applied', method: PaymentMethod.Crypto } as const;
+      }
       const payments = makePaymentRepo(sql);
-      yield* payments.clearToken(payment.id);
-      yield* payments.setMethod(payment.id, PaymentMethod.Crypto);
+      const at = yield* Clock.currentTimeMillis;
       // The no-payment flip mutates the payment but takes no money, so no charge event
       // fires — enqueue `method_changed` so a sink learns the method moved (the paid
-      // paths already emit card_change_succeeded / recurring_payment_succeeded). The
-      // idemKey anchors on the paid-through end (which the flip does not move), so a
-      // double-submit / client retry within the period dedupes to ONE notification —
-      // wall-clock ms would let each retry re-emit.
-      const at = yield* Clock.currentTimeMillis;
-      yield* enqueue(sql)({
-        messageType: PAYMENT_METHOD_CHANGE,
-        idemKey: `method-change:${payment.id}:${payment.currentPeriodEnd.toISOString()}`,
-        payload: {
-          paymentId: payment.id,
-          externalUserId: payment.externalUserId,
-          method: PaymentMethod.Crypto,
-          at,
-        },
-      });
+      // paths already emit card_change_succeeded / recurring_payment_succeeded). All three
+      // writes run in ONE transaction so the request can never leave the sub switched but
+      // the notification unsent. The idemKey anchors on the paid-through end (which the flip
+      // does not move), so a double-submit / client retry within the period dedupes to ONE
+      // notification — wall-clock ms would let each retry re-emit.
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* payments.clearToken(payment.id);
+          yield* payments.setMethod(payment.id, PaymentMethod.Crypto);
+          yield* enqueue(sql)({
+            messageType: PAYMENT_METHOD_CHANGE,
+            idemKey: `method-change:${payment.id}:${payment.currentPeriodEnd.toISOString()}`,
+            payload: {
+              paymentId: payment.id,
+              externalUserId: payment.externalUserId,
+              method: PaymentMethod.Crypto,
+              at,
+            },
+          });
+        }),
+      );
       return { kind: 'applied', method: PaymentMethod.Crypto } as const;
     }
     const session = yield* openChangeSession(

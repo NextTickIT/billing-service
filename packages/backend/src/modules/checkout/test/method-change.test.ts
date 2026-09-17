@@ -16,7 +16,7 @@ import {
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
 
 /**
- * Tests for the previous-method-agnostic payment-method change (docs/method-change):
+ * Tests for the previous-method-agnostic payment-method change (docs/32):
  * `planMethodChange` (the pure owed/active × Card/Crypto decision the route branches on)
  * and the applier that lands a paid method-change on the payment. The applier records the
  * method ACTUALLY PAID, read off the callback payload: a `recToken` present → Card (store
@@ -78,8 +78,11 @@ it('owed → card bills the arrears amount (verify config ignored)', () => {
 
 // ---- applier: how a paid method-change lands on the payment ----
 
-const event = (payload: Record<string, unknown>): Charge => ({
-  source: 'wayforpay_callback',
+const event = (
+  payload: Record<string, unknown>,
+  source = 'wayforpay_callback',
+): Charge => ({
+  source,
   idemKey: 'k',
   externalRef: 'chk_1',
   externalUserId: null,
@@ -91,8 +94,8 @@ const event = (payload: Record<string, unknown>): Charge => ({
 });
 
 // The `method` arg fills the match's `method` field but NO LONGER drives the applier's
-// branch — the applier keys on the payload's `recToken` (present → Card, absent → Crypto).
-// It is kept only to build a well-formed match; the payload is what selects the outcome.
+// branch — the applier keys on the event SOURCE (whitepay_callback → Crypto; any WayForPay
+// source → Card). It is kept only to build a well-formed match.
 const cardChangeMatch = (method: number, owed: boolean): Match => ({
   matched: true,
   kind: 'card_change',
@@ -159,7 +162,7 @@ const completingCheckout = (onComplete: () => void): CheckoutRepo => ({
 });
 
 it.effect(
-  'a payload WITH a recToken records Card: stores the new token, never clearing',
+  'a WayForPay callback with a recToken records Card: stores the new token, never clearing',
   () =>
     Effect.gen(function* () {
       const { calls, repo } = recordingRepo();
@@ -168,8 +171,8 @@ it.effect(
         completed = true;
       });
 
-      // A card payment returned a recToken → CARD, regardless of the session's target:
-      // tokenize the new card, no arrears advance (owed=false, active card verify).
+      // WayForPay (card) success with a recToken → CARD: tokenize the new card, no arrears
+      // advance (owed=false, active card verify).
       const result = yield* makeCheckoutApplier(repo, checkout)(
         event({ recToken: 'new-tok' }),
         cardChangeMatch(CARD, false),
@@ -189,17 +192,38 @@ it.effect(
 );
 
 it.effect(
-  'a payload WITHOUT a recToken records Crypto: drops the card token (manual renewal next cycle)',
+  'REGRESSION: a WayForPay success with NO recToken stays Card and NEVER clears the token',
   () =>
     Effect.gen(function* () {
       const { calls, repo } = recordingRepo();
       const checkout = completingCheckout(() => {});
 
-      // An empty payload (no recToken) → CRYPTO: an owed crypto change pays arrears in
-      // crypto, advances, and clears the token so the scheduler's token-less branch
-      // prompts a manual crypto renewal next cycle.
+      // An Approved WayForPay charge can omit recToken (docs/14). It must keep the sub on
+      // card: do NOT clear the existing token (that would silently strip a live card sub to
+      // manual). Store nothing (no new token), leave method Card.
+      yield* makeCheckoutApplier(repo, checkout)(
+        event({}), // wayforpay_callback, no recToken
+        cardChangeMatch(CARD, false),
+      );
+
+      expect(calls.clearedToken).toBe(false); // the regression this guards against
+      expect(calls.updatedToken).toBeNull(); // nothing new to store
+      expect(calls.setMethod).toBe(CARD);
+    }),
+);
+
+it.effect(
+  'a WhitePay callback records Crypto: drops the card token (manual renewal next cycle)',
+  () =>
+    Effect.gen(function* () {
+      const { calls, repo } = recordingRepo();
+      const checkout = completingCheckout(() => {});
+
+      // WhitePay (crypto) success → CRYPTO: an owed crypto change pays arrears in crypto,
+      // advances, and clears the token so the scheduler's token-less branch prompts a manual
+      // crypto renewal next cycle.
       const result = yield* makeCheckoutApplier(repo, checkout)(
-        event({}),
+        event({}, 'whitepay_callback'),
         cardChangeMatch(CRYPTO, true),
       );
 

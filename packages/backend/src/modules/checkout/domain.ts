@@ -86,7 +86,7 @@ export type MethodChangePlan =
   | { readonly action: 'checkout'; readonly amount: number };
 
 /**
- * Decide how a method change takes effect (docs/method-change), previous-method agnostic:
+ * Decide how a method change takes effect (docs/32), previous-method agnostic:
  * an up-to-date subscription switching TO crypto flips server-side — crypto has no free
  * verify (WhitePay minimum), so we just drop the card token and record crypto, and the
  * next renewal becomes a manual crypto prompt. Every other case issues a checkout in the
@@ -219,20 +219,24 @@ const applyCardChange =
     owed: boolean,
   ): Effect.Effect<AppliedCharge, SqlError.SqlError> =>
     Effect.gen(function* () {
-      // Persist the method that was ACTUALLY PAID, read off the callback payload — not the
-      // session's requested target: a WayForPay card payment returns a `recToken`, a WhitePay
-      // crypto payment never does. Keying on the token keeps the recorded state self-consistent
-      // even if the buyer picked a different method on the checkout page than was requested.
-      // → CARD (token present): store the new token so the scheduler auto-charges it. → CRYPTO
-      // (no token): drop any token so the next renewal is a manual crypto prompt (the scheduler
-      // branches on token presence). `setMethod` keeps the label the page/events read in step.
-      const token = recToken(event.payload);
-      if (token !== null) {
-        yield* payments.updateToken(paymentId, token);
-        yield* payments.setMethod(paymentId, PaymentMethod.Card);
-      } else {
+      // Persist the rail the payment ACTUALLY came in on — keyed on the event SOURCE, not on
+      // whether a token came back. This records what the buyer really paid even if they
+      // switched method on the checkout page from what was requested.
+      // → WhitePay (crypto): never a reusable token, so switch to manual crypto renewals —
+      //   drop any stored token and set Crypto (the scheduler's token-less branch prompts).
+      // → WayForPay (card): stay on card. Store the new token if the callback returned one,
+      //   but NEVER clear the existing token — an Approved WayForPay charge CAN omit `recToken`
+      //   (docs/14), and clearing it would silently strip a live card sub to manual. `setMethod`
+      //   keeps the label in step (a crypto→card switch flips it; a card→card is a no-op).
+      if (event.source === 'whitepay_callback') {
         yield* payments.clearToken(paymentId);
         yield* payments.setMethod(paymentId, PaymentMethod.Crypto);
+      } else {
+        const token = recToken(event.payload);
+        if (token !== null) {
+          yield* payments.updateToken(paymentId, token);
+        }
+        yield* payments.setMethod(paymentId, PaymentMethod.Card);
       }
       // The next charge date this change establishes: for an owed change it advances the
       // anchor (below); otherwise the payment's existing schedule is unchanged.
