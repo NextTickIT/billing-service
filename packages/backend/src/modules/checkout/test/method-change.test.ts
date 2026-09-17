@@ -18,8 +18,10 @@ import type { PaymentRepo } from '@/modules/payment/data-access.js';
 /**
  * Tests for the previous-method-agnostic payment-method change (docs/method-change):
  * `planMethodChange` (the pure owed/active × Card/Crypto decision the route branches on)
- * and the applier that lands a paid method-change on the payment — storing a card token
- * for → Card, dropping it for → Crypto so the scheduler prompts a manual crypto renewal.
+ * and the applier that lands a paid method-change on the payment. The applier records the
+ * method ACTUALLY PAID, read off the callback payload: a `recToken` present → Card (store
+ * the token); absent → Crypto (drop the token so the scheduler prompts a manual crypto
+ * renewal). The session's requested method does not drive this branch.
  */
 
 const CARD = PaymentMethod.Card;
@@ -88,6 +90,9 @@ const event = (payload: Record<string, unknown>): Charge => ({
   payload,
 });
 
+// The `method` arg fills the match's `method` field but NO LONGER drives the applier's
+// branch — the applier keys on the payload's `recToken` (present → Card, absent → Crypto).
+// It is kept only to build a well-formed match; the payload is what selects the outcome.
 const cardChangeMatch = (method: number, owed: boolean): Match => ({
   matched: true,
   kind: 'card_change',
@@ -154,7 +159,7 @@ const completingCheckout = (onComplete: () => void): CheckoutRepo => ({
 });
 
 it.effect(
-  'a paid change → Card stores the new token and records Card, never clearing',
+  'a payload WITH a recToken records Card: stores the new token, never clearing',
   () =>
     Effect.gen(function* () {
       const { calls, repo } = recordingRepo();
@@ -163,7 +168,8 @@ it.effect(
         completed = true;
       });
 
-      // Active card verify (owed=false): tokenize the new card, no arrears advance.
+      // A card payment returned a recToken → CARD, regardless of the session's target:
+      // tokenize the new card, no arrears advance (owed=false, active card verify).
       const result = yield* makeCheckoutApplier(repo, checkout)(
         event({ recToken: 'new-tok' }),
         cardChangeMatch(CARD, false),
@@ -183,14 +189,15 @@ it.effect(
 );
 
 it.effect(
-  'a paid change → Crypto drops the card token and records Crypto (manual renewal next cycle)',
+  'a payload WITHOUT a recToken records Crypto: drops the card token (manual renewal next cycle)',
   () =>
     Effect.gen(function* () {
       const { calls, repo } = recordingRepo();
       const checkout = completingCheckout(() => {});
 
-      // Owed crypto method-change: pays arrears in crypto (no recToken), advances, and
-      // the token is cleared so the scheduler's token-less branch prompts manual crypto.
+      // An empty payload (no recToken) → CRYPTO: an owed crypto change pays arrears in
+      // crypto, advances, and clears the token so the scheduler's token-less branch
+      // prompts a manual crypto renewal next cycle.
       const result = yield* makeCheckoutApplier(repo, checkout)(
         event({}),
         cardChangeMatch(CRYPTO, true),

@@ -217,22 +217,22 @@ const applyCardChange =
     event: Parameters<ChargeApplier>[0],
     paymentId: string,
     owed: boolean,
-    targetMethod: number,
   ): Effect.Effect<AppliedCharge, SqlError.SqlError> =>
     Effect.gen(function* () {
-      // Persist the destination method (docs/method-change), previous-method agnostic:
-      // → Crypto drops the card token (WhitePay carries none) so the next renewal is a
-      // manual crypto prompt (scheduler branches on token presence); → Card stores the new
-      // token the provider returned. `setMethod` keeps the label the page/events read in step.
-      if (targetMethod === PaymentMethod.Crypto) {
+      // Persist the method that was ACTUALLY PAID, read off the callback payload — not the
+      // session's requested target: a WayForPay card payment returns a `recToken`, a WhitePay
+      // crypto payment never does. Keying on the token keeps the recorded state self-consistent
+      // even if the buyer picked a different method on the checkout page than was requested.
+      // → CARD (token present): store the new token so the scheduler auto-charges it. → CRYPTO
+      // (no token): drop any token so the next renewal is a manual crypto prompt (the scheduler
+      // branches on token presence). `setMethod` keeps the label the page/events read in step.
+      const token = recToken(event.payload);
+      if (token !== null) {
+        yield* payments.updateToken(paymentId, token);
+        yield* payments.setMethod(paymentId, PaymentMethod.Card);
+      } else {
         yield* payments.clearToken(paymentId);
         yield* payments.setMethod(paymentId, PaymentMethod.Crypto);
-      } else {
-        const token = recToken(event.payload);
-        if (token !== null) {
-          yield* payments.updateToken(paymentId, token);
-        }
-        yield* payments.setMethod(paymentId, PaymentMethod.Card);
       }
       // The next charge date this change establishes: for an owed change it advances the
       // anchor (below); otherwise the payment's existing schedule is unchanged.
@@ -269,13 +269,13 @@ export const makeCheckoutApplier =
   (payments: PaymentRepo, checkout: CheckoutRepo): ChargeApplier =>
   (event, match: Match) => {
     if (match.kind === 'card_change' && match.subscriptionId !== null) {
+      // The recorded method is derived from the callback payload (token present → Card,
+      // absent → Crypto) inside the applier, NOT from the session's requested target —
+      // so what we store reflects what the buyer actually paid.
       return applyCardChange(payments, checkout)(
         event,
         match.subscriptionId,
         match.owed === true,
-        // The session's method is the change's DESTINATION (Card re-tokenizes, Crypto
-        // drops the token); the matcher lifted it onto the match.
-        match.method,
       );
     }
     if (match.kind === 'recurring' && match.subscriptionId !== null) {

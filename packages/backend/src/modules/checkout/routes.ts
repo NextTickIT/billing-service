@@ -14,6 +14,7 @@ import {
   ONE_TIME_PERIOD,
   type Payment,
   PayInstruction,
+  PAYMENT_METHOD_CHANGE,
   PaymentMethod,
   PaymentStatus,
   SelectMethod,
@@ -450,6 +451,9 @@ const resolveChangeable = (sql: SqlClient.SqlClient, externalUserId: string) =>
   Effect.gen(function* () {
     const found =
       yield* makePaymentRepo(sql).findByExternalUser(externalUserId);
+    // Intentionally accepts a RenewalFailed (owed) recurring payment so a method-change
+    // can revive it in place by billing the arrears — a deliberate divergence from
+    // `findActiveRecurringByExternalUser`, which treats RenewalFailed as terminal.
     const payment = found.find((p) => p.recurring);
     if (payment === undefined || payment.status === PaymentStatus.Cancelled) {
       return yield* Effect.fail(
@@ -538,6 +542,23 @@ const methodChange = (input: MethodChangeRequest, request: FastifyRequest) =>
       const payments = makePaymentRepo(sql);
       yield* payments.clearToken(payment.id);
       yield* payments.setMethod(payment.id, PaymentMethod.Crypto);
+      // The no-payment flip mutates the payment but takes no money, so no charge event
+      // fires — enqueue `method_changed` so a sink learns the method moved (the paid
+      // paths already emit card_change_succeeded / recurring_payment_succeeded). The
+      // idemKey anchors on the paid-through end (which the flip does not move), so a
+      // double-submit / client retry within the period dedupes to ONE notification —
+      // wall-clock ms would let each retry re-emit.
+      const at = yield* Clock.currentTimeMillis;
+      yield* enqueue(sql)({
+        messageType: PAYMENT_METHOD_CHANGE,
+        idemKey: `method-change:${payment.id}:${payment.currentPeriodEnd.toISOString()}`,
+        payload: {
+          paymentId: payment.id,
+          externalUserId: payment.externalUserId,
+          method: PaymentMethod.Crypto,
+          at,
+        },
+      });
       return { kind: 'applied', method: PaymentMethod.Crypto } as const;
     }
     const session = yield* openChangeSession(

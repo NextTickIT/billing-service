@@ -34,12 +34,14 @@ import {
   cancelNotify,
   deferNotify,
   lapseNotify,
+  methodChangeNotify,
   reactivateNotify,
 } from '@/modules/payment/cancel.js';
 import {
   PAYMENT_CANCEL,
   PAYMENT_DEFER,
   PAYMENT_LAPSE,
+  PAYMENT_METHOD_CHANGE,
   PAYMENT_REACTIVATE,
 } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
@@ -81,6 +83,10 @@ const registerHandlers = (
       reactivateNotify(outbox.publish),
     );
     yield* registry.register(PAYMENT_DEFER, deferNotify(outbox.publish));
+    yield* registry.register(
+      PAYMENT_METHOD_CHANGE,
+      methodChangeNotify(outbox.publish),
+    );
     yield* registry.register(
       PAYMENT_LAPSE,
       lapseNotify(makePaymentRepo(sql), outbox.publish),

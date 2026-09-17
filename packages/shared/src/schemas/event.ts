@@ -25,6 +25,7 @@ export const EVENT_NAMES = [
   'payment_cancelled',
   'payment_reactivated',
   'payment_deferred',
+  'method_changed',
   'external_user_id_changed',
   'card_change_succeeded',
   'card_change_failed',
@@ -241,6 +242,21 @@ export type PaymentDeferredEvent = Schema.Schema.Type<
 >;
 
 /**
+ * A subscription's payment method changed WITHOUT a payment (docs/method-change): the
+ * no-payment flip of an up-to-date subscription to crypto (card token dropped, crypto
+ * recorded). The paid method-change paths already emit a payment event; this fills the
+ * one branch that mutates the payment but takes no money. `method` is the new method.
+ */
+export const MethodChangedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('method_changed'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({ method: Schema.Int }),
+});
+
+export type MethodChangedEvent = Schema.Schema.Type<typeof MethodChangedEvent>;
+
+/**
  * A SendPulse-initiated card change tokenized (verify) or collected (owed) the
  * new card (docs/23). `method` is the payment method used.
  */
@@ -330,6 +346,7 @@ export const DomainEvent = Schema.Union(
   PaymentCancelledEvent,
   PaymentReactivatedEvent,
   PaymentDeferredEvent,
+  MethodChangedEvent,
   ExternalUserIdChangedEvent,
   CardChangeSucceededEvent,
   CardChangeFailedEvent,

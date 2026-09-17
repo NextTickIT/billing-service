@@ -4,6 +4,7 @@ export {
   PAYMENT_CANCEL,
   PAYMENT_REACTIVATE,
   PAYMENT_DEFER,
+  PAYMENT_METHOD_CHANGE,
   PAYMENT_LAPSE,
 } from '@billing-service/shared';
 
@@ -42,6 +43,16 @@ export const DeferNotify = Schema.Struct({
 });
 
 export type DeferNotify = Schema.Schema.Type<typeof DeferNotify>;
+
+/** payment_method_change payload: the no-payment flip recorded the new method. */
+export const MethodChangeNotify = Schema.Struct({
+  paymentId: Schema.String,
+  externalUserId: Schema.String,
+  method: Schema.Int,
+  at: Schema.Number,
+});
+
+export type MethodChangeNotify = Schema.Schema.Type<typeof MethodChangeNotify>;
 
 /** payment_lapse payload: a cancel-pending payment reached its due date. */
 export const LapseNotify = Schema.Struct({
