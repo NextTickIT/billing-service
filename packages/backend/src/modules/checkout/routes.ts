@@ -8,8 +8,11 @@ import {
   CheckoutSessionPublic,
   CheckoutSessionStatus,
   CreateCheckoutSession,
+  MethodChangeRequest,
+  MethodChangeResult,
   type NewCheckoutSession,
   ONE_TIME_PERIOD,
+  type Payment,
   PayInstruction,
   PaymentMethod,
   PaymentStatus,
@@ -42,6 +45,7 @@ import {
 } from '@/modules/checkout/data-access.js';
 import {
   checkoutPath,
+  planMethodChange,
   redirectHostAllowed,
 } from '@/modules/checkout/domain.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
@@ -413,72 +417,137 @@ const callback = (body: unknown, request: FastifyRequest) => {
   return Effect.fail(new NotFound({ resource: 'provider' }));
 };
 
+/** A `card_change` session for a method change: it re-tokenizes/switches the SAME recurring
+ * payment, preselecting the DESTINATION method. Never one-time, carries no promo/redirects,
+ * server-initiated so no idempotency key. */
+const changeSession = (
+  payment: Payment,
+  targetMethod: number,
+  amount: number,
+  id: string,
+  expiresAt: Date,
+): NewCheckoutSession => ({
+  id,
+  externalUserId: payment.externalUserId,
+  amount,
+  currency: payment.currency,
+  period: payment.period,
+  method: targetMethod,
+  kind: CheckoutSessionKind.CardChange,
+  recurring: true,
+  paymentId: payment.id,
+  successUrl: null,
+  failureUrl: null,
+  promo: null,
+  idempotencyKey: null,
+  expiresAt,
+});
+
+/** The user's ONE recurring payment a card/method change acts on, or a 409: a cancelled
+ * one (or none) is refused — start a fresh checkout. One-time payments hold no reusable
+ * token and are never the target, so skip past them to the newest recurring. */
+const resolveChangeable = (sql: SqlClient.SqlClient, externalUserId: string) =>
+  Effect.gen(function* () {
+    const found =
+      yield* makePaymentRepo(sql).findByExternalUser(externalUserId);
+    const payment = found.find((p) => p.recurring);
+    if (payment === undefined || payment.status === PaymentStatus.Cancelled) {
+      return yield* Effect.fail(
+        new CardChangeUnavailable({
+          reason: 'no changeable payment; start a new checkout',
+        }),
+      );
+    }
+    return payment;
+  });
+
+/** Issue the pay/verify checkout for a method change and return its SessionCreated link. */
+const openChangeSession = (
+  sql: SqlClient.SqlClient,
+  payment: Payment,
+  targetMethod: number,
+  amount: number,
+  request: FastifyRequest,
+) =>
+  Effect.gen(function* () {
+    const config = request.server.appConfig.wayforpay;
+    const nowMillis = yield* Clock.currentTimeMillis;
+    const id = `chk_${randomUUID()}`;
+    const expiresAt = new Date(nowMillis + config.sessionTtlSeconds * 1000);
+    yield* makeCheckoutRepo(sql).insert(
+      changeSession(payment, targetMethod, amount, id, expiresAt),
+    );
+    return created(id, expiresAt, request.server.appConfig.checkoutBaseUrl);
+  });
+
 /**
- * SendPulse-initiated card change (docs/23). Resolve the user's payment: a cancelled
- * one (or none) is refused (409 — start a fresh checkout); a current payment runs a
- * 0-amount Card Verify when enabled, else falls back to a minimal tokenizing Purchase
- * (`cardChangeChargeMinor`); a past_due/renewal_failed payment takes the owed-amount
- * path (a priced Purchase that revives it in place). Either way a `card_change` session
- * is issued and its callback re-tokenizes the SAME payment.
+ * SendPulse-initiated card change (docs/23): re-tokenize the user's recurring CARD. A
+ * cancelled payment (or none) is refused (409 — start a fresh checkout); a current one runs
+ * a 0-amount Card Verify when enabled, else a minimal tokenizing Purchase
+ * (`cardChangeChargeMinor`); a past_due/renewal_failed one pays the owed amount (revives in
+ * place). The card-only special case of `methodChange` below (kept for its callers).
  */
 const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
   Effect.gen(function* () {
     yield* serviceActor(request);
     const config = request.server.appConfig.wayforpay;
     const sql = yield* SqlClient.SqlClient;
-    const found = yield* makePaymentRepo(sql).findByExternalUser(
-      input.externalUserId,
+    const payment = yield* resolveChangeable(sql, input.externalUserId);
+    const plan = planMethodChange(
+      payment,
+      PaymentMethod.Card,
+      config.cardVerifyEnabled,
+      config.cardChangeChargeMinor,
     );
-    // A card change re-tokenizes the recurring payment; one-time payments (which hold
-    // no reusable token) are never its target, so skip past them to the newest recurring.
-    const payment = found.find((p) => p.recurring);
-    if (payment === undefined || payment.status === PaymentStatus.Cancelled) {
-      return yield* Effect.fail(
-        new CardChangeUnavailable({
-          reason: 'no re-tokenizable payment; start a new checkout',
-        }),
-      );
-    }
-    const owed =
-      payment.status === PaymentStatus.PastDue ||
-      payment.status === PaymentStatus.RenewalFailed;
-    // Amount by state: an owed change collects the arrears (revives in place); an
-    // active change runs a 0-amount Card Verify when enabled, else falls back to a
-    // minimal tokenizing Purchase of `cardChangeChargeMinor` (0 tries free; 1 = 0.01
-    // UAH). Either way the callback re-tokenizes the SAME payment.
-    const amount = owed
-      ? payment.amount
-      : config.cardVerifyEnabled
-        ? 0
-        : config.cardChangeChargeMinor;
-    const nowMillis = yield* Clock.currentTimeMillis;
-    const id = `chk_${randomUUID()}`;
-    const expiresAt = new Date(nowMillis + config.sessionTtlSeconds * 1000);
-    yield* makeCheckoutRepo(sql).insert({
-      id,
-      externalUserId: payment.externalUserId,
+    // A card change is never the no-payment flip (that path is crypto-only), so `plan` is
+    // always a checkout; the fallback keeps the type total.
+    const amount = plan.action === 'checkout' ? plan.amount : payment.amount;
+    return yield* openChangeSession(
+      sql,
+      payment,
+      PaymentMethod.Card,
       amount,
-      currency: payment.currency,
-      period: payment.period,
-      // A card change is always a WayForPay re-tokenization, so it preselects Card.
-      method: PaymentMethod.Card,
-      kind: CheckoutSessionKind.CardChange,
-      // A card change re-tokenizes the recurring payment; never a one-time session.
-      recurring: true,
-      paymentId: payment.id,
-      successUrl: null,
-      failureUrl: null,
-      // A card change re-tokenizes an existing payment; it grants no bonus period.
-      promo: null,
-      // Server-initiated (not a caller retry), so it carries no idempotency key.
-      idempotencyKey: null,
-      expiresAt,
-    });
-    return {
-      sessionId: id,
-      checkoutUrl: checkoutPath(request.server.appConfig.checkoutBaseUrl, id),
-      expiresAt,
-    };
+      request,
+    );
+  });
+
+/**
+ * SendPulse-initiated payment-method change (docs/method-change), previous-method agnostic:
+ * switch the user's one recurring payment to `input.method` (0=Card, 1=Crypto). Per
+ * `planMethodChange`:
+ * - `flip` (an up-to-date subscription → crypto): drop the card token + record crypto with
+ *   NO payment — the existing scheduler then prompts a manual crypto renewal next cycle.
+ *   Returns `{ kind: 'applied' }`.
+ * - `checkout` (→ card always; → crypto while an amount is owed): issue a pay/verify session
+ *   in the target method whose callback re-tokenizes/switches the SAME payment. Returns
+ *   `{ kind: 'checkout', … }` with the link.
+ */
+const methodChange = (input: MethodChangeRequest, request: FastifyRequest) =>
+  Effect.gen(function* () {
+    yield* serviceActor(request);
+    const config = request.server.appConfig.wayforpay;
+    const sql = yield* SqlClient.SqlClient;
+    const payment = yield* resolveChangeable(sql, input.externalUserId);
+    const plan = planMethodChange(
+      payment,
+      input.method,
+      config.cardVerifyEnabled,
+      config.cardChangeChargeMinor,
+    );
+    if (plan.action === 'flip') {
+      const payments = makePaymentRepo(sql);
+      yield* payments.clearToken(payment.id);
+      yield* payments.setMethod(payment.id, PaymentMethod.Crypto);
+      return { kind: 'applied', method: PaymentMethod.Crypto } as const;
+    }
+    const session = yield* openChangeSession(
+      sql,
+      payment,
+      input.method,
+      plan.amount,
+      request,
+    );
+    return { kind: 'checkout', ...session } as const;
   });
 
 export default function checkout(fastify: FastifyInstance): void {
@@ -498,6 +567,14 @@ export default function checkout(fastify: FastifyInstance): void {
     output: SessionCreated,
     status: 201,
     handler: cardChange,
+  });
+
+  route(fastify, {
+    method: 'POST',
+    path: '/api/payment/method-change',
+    input: MethodChangeRequest,
+    output: MethodChangeResult,
+    handler: methodChange,
   });
 
   // Public JSON read (AC-9): BFF-proxied; no externalUserId in response.

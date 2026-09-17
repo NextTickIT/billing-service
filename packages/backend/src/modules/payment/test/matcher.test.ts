@@ -45,6 +45,8 @@ const repo = (found: Payment | null): PaymentRepo => ({
   markCancelledLapsed: die,
   defer: die,
   updateToken: die,
+  setMethod: die,
+  clearToken: die,
   renameExternalUser: die,
 });
 

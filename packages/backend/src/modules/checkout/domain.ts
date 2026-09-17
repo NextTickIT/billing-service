@@ -79,6 +79,41 @@ export const redirectHostAllowed = (
   }
 };
 
+/** How a method change lands. `flip` mutates the payment server-side (no payment);
+ * `checkout` issues a pay/verify session for `amount` in the target method. */
+export type MethodChangePlan =
+  | { readonly action: 'flip' }
+  | { readonly action: 'checkout'; readonly amount: number };
+
+/**
+ * Decide how a method change takes effect (docs/method-change), previous-method agnostic:
+ * an up-to-date subscription switching TO crypto flips server-side — crypto has no free
+ * verify (WhitePay minimum), so we just drop the card token and record crypto, and the
+ * next renewal becomes a manual crypto prompt. Every other case issues a checkout in the
+ * target method: an owed subscription (past_due/renewal_failed) pays its arrears and
+ * revives in place; an up-to-date one runs a 0-amount card verify when enabled, else a
+ * minimal tokenizing charge (`cardChangeChargeMinor`). Mirrors the card-change amount rule.
+ */
+export const planMethodChange = (
+  payment: Payment,
+  targetMethod: number,
+  cardVerifyEnabled: boolean,
+  cardChangeChargeMinor: number,
+): MethodChangePlan => {
+  const owed =
+    payment.status === PaymentStatus.PastDue ||
+    payment.status === PaymentStatus.RenewalFailed;
+  if (!owed && targetMethod === PaymentMethod.Crypto) {
+    return { action: 'flip' };
+  }
+  const amount = owed
+    ? payment.amount
+    : cardVerifyEnabled
+      ? 0
+      : cardChangeChargeMinor;
+  return { action: 'checkout', amount };
+};
+
 /**
  * Checkout matcher: an incoming event whose `externalRef` is a known checkout
  * session id resolves to a `checkout` match. A succeeded event is create-or-extend;
@@ -182,11 +217,22 @@ const applyCardChange =
     event: Parameters<ChargeApplier>[0],
     paymentId: string,
     owed: boolean,
+    targetMethod: number,
   ): Effect.Effect<AppliedCharge, SqlError.SqlError> =>
     Effect.gen(function* () {
-      const token = recToken(event.payload);
-      if (token !== null) {
-        yield* payments.updateToken(paymentId, token);
+      // Persist the destination method (docs/method-change), previous-method agnostic:
+      // → Crypto drops the card token (WhitePay carries none) so the next renewal is a
+      // manual crypto prompt (scheduler branches on token presence); → Card stores the new
+      // token the provider returned. `setMethod` keeps the label the page/events read in step.
+      if (targetMethod === PaymentMethod.Crypto) {
+        yield* payments.clearToken(paymentId);
+        yield* payments.setMethod(paymentId, PaymentMethod.Crypto);
+      } else {
+        const token = recToken(event.payload);
+        if (token !== null) {
+          yield* payments.updateToken(paymentId, token);
+        }
+        yield* payments.setMethod(paymentId, PaymentMethod.Card);
       }
       // The next charge date this change establishes: for an owed change it advances the
       // anchor (below); otherwise the payment's existing schedule is unchanged.
@@ -227,6 +273,9 @@ export const makeCheckoutApplier =
         event,
         match.subscriptionId,
         match.owed === true,
+        // The session's method is the change's DESTINATION (Card re-tokenizes, Crypto
+        // drops the token); the matcher lifted it onto the match.
+        match.method,
       );
     }
     if (match.kind === 'recurring' && match.subscriptionId !== null) {

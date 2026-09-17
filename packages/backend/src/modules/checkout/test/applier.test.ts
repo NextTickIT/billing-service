@@ -38,6 +38,8 @@ const unusedSubs: PaymentRepo = {
   markCancelledLapsed: () => Effect.die('unused'),
   defer: () => Effect.die('unused'),
   updateToken: () => Effect.die('unused'),
+  setMethod: () => Effect.die('unused'),
+  clearToken: () => Effect.die('unused'),
   renameExternalUser: () => Effect.die('unused'),
 };
 const unusedCheckout: CheckoutRepo = {
@@ -244,6 +246,8 @@ it.effect(
           Effect.sync(() => {
             tokenUpdated = token;
           }),
+        // A card change now also records the destination method (Card); a no-op here.
+        setMethod: () => Effect.void,
         findById: () =>
           Effect.succeed(Option.some({ ...owingPayment, status })),
         advanceAfterSuccess: () =>

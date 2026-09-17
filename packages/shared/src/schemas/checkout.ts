@@ -173,6 +173,53 @@ export const CardChangeRequest = Schema.Struct({
 export type CardChangeRequest = Schema.Schema.Type<typeof CardChangeRequest>;
 
 /**
+ * POST /api/payment/method-change body: switch the user's ONE recurring subscription to a
+ * target payment method, agnostic to whatever it is now. `method` is the DESTINATION
+ * (0=Card, 1=Crypto); the server resolves the user's recurring payment itself. Card→card
+ * (re-tokenize), crypto→card, and card→crypto are all valid.
+ */
+export const MethodChangeRequest = Schema.Struct({
+  externalUserId: Schema.String,
+  method: PaymentMethodSchema,
+});
+
+export type MethodChangeRequest = Schema.Schema.Type<typeof MethodChangeRequest>;
+
+/**
+ * POST /api/payment/method-change response, discriminated on `kind`:
+ * - `checkout`: the change needs the user to pay/verify at a link — switching TO card
+ *   always (a token can only be captured by the cardholder), and switching TO crypto while
+ *   an amount is owed (the arrears are collected in crypto). Same fields as SessionCreated.
+ * - `applied`: the change took effect server-side with no payment — an up-to-date
+ *   subscription switching TO crypto just drops the stored card token and records crypto,
+ *   so the next renewal becomes a manual crypto prompt (there is no free crypto verify).
+ */
+export const MethodChangeCheckout = Schema.Struct({
+  kind: Schema.Literal('checkout'),
+  sessionId: Schema.String,
+  checkoutUrl: Schema.String,
+  expiresAt: Schema.Date,
+});
+
+export type MethodChangeCheckout = Schema.Schema.Type<
+  typeof MethodChangeCheckout
+>;
+
+export const MethodChangeApplied = Schema.Struct({
+  kind: Schema.Literal('applied'),
+  method: PaymentMethodSchema,
+});
+
+export type MethodChangeApplied = Schema.Schema.Type<typeof MethodChangeApplied>;
+
+export const MethodChangeResult = Schema.Union(
+  MethodChangeCheckout,
+  MethodChangeApplied,
+);
+
+export type MethodChangeResult = Schema.Schema.Type<typeof MethodChangeResult>;
+
+/**
  * GET /api/checkout-sessions/:id response (public, BFF-proxied, AC-9):
  * amount/currency/period/status/kind/method/expiresAt only — no externalUserId so
  * subscriber data does not appear on the public checkout page. `kind` lets the checkout

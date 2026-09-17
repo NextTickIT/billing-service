@@ -118,6 +118,17 @@ export interface PaymentRepo {
     id: string,
     recToken: string,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /** Record the subscription's payment method (0=Card, 1=Crypto) — a method change.
+   * A label the checkout page preselects and events report; it shifts no date. */
+  readonly setMethod: (
+    id: string,
+    method: number,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  /** Drop the stored recurring token, so the scheduler prompts a manual (crypto) renewal
+   * next cycle instead of autocharging a card (docs/28). Shifts no date. */
+  readonly clearToken: (
+    id: string,
+  ) => Effect.Effect<void, SqlError.SqlError>;
   /**
    * Remap every payment of one opaque external user to another (docs/31), returning
    * how many rows moved. Fails with a unique-violation SqlError when both ids hold an
@@ -314,6 +325,18 @@ const updateToken =
       WHERE id = ${id}
     `.pipe(Effect.asVoid);
 
+const setMethod = (sql: SqlClient.SqlClient) => (id: string, method: number) =>
+  sql`
+    UPDATE payments SET method = ${method}, "updatedAt" = now()
+    WHERE id = ${id}
+  `.pipe(Effect.asVoid);
+
+const clearToken = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql`
+    UPDATE payments SET "recurringTokenRef" = NULL, "updatedAt" = now()
+    WHERE id = ${id}
+  `.pipe(Effect.asVoid);
+
 const renameExternalUser =
   (sql: SqlClient.SqlClient) => (from: string, to: string) =>
     sql<{ readonly id: string }>`
@@ -338,5 +361,7 @@ export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   markCancelledLapsed: markCancelledLapsed(sql),
   defer: defer(sql),
   updateToken: updateToken(sql),
+  setMethod: setMethod(sql),
+  clearToken: clearToken(sql),
   renameExternalUser: renameExternalUser(sql),
 });
