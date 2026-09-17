@@ -33,9 +33,17 @@ const createAmount = ref('');
 const createCurrency = ref<number>(Currency.UAH);
 const createPeriod = ref('P4W');
 const createMethod = ref<number>(PaymentMethod.Card);
+// A stable idempotency key per create intent, minted when the dialog opens so a
+// double-submit within one open reuses it; the server then books exactly one payment.
+let createKey = crypto.randomUUID();
 
 // Status filter state — null means "show all"
 const activeChip = ref<'cancelling' | PaymentStatus | null>(null);
+
+// Server-side contact lookup: fetch EVERY payment of one externalUserId (all statuses
+// and both recurring + one-time), independent of the client-side quick filter and the
+// default 500-row window — so "all purchases of a contact" is complete.
+const contactQuery = ref('');
 
 function chipClass(chip: 'cancelling' | PaymentStatus): string {
   return activeChip.value === chip ? 'chip chip--active' : 'chip';
@@ -59,6 +67,19 @@ function applyFilter(): void {
   }
 }
 
+// Load a single contact's full payment history server-side (empty input resets to all).
+function searchContact(): void {
+  activeChip.value = null;
+  const uid = contactQuery.value.trim();
+  void store.loadList(uid.length > 0 ? { externalUserId: uid } : {});
+}
+
+function clearContact(): void {
+  contactQuery.value = '';
+  activeChip.value = null;
+  void store.loadList({});
+}
+
 onMounted(() => {
   void store.loadList();
 });
@@ -70,6 +91,12 @@ function isCancelling(p: Payment): boolean {
 function statusLabel(p: Payment): string {
   if (isCancelling(p)) return t('payments.statuses.cancelling');
   return t(`payments.statuses.${p.status}`);
+}
+
+// Recurring (subscription) vs one-time purchase — the value comes from the shared
+// `recurring` flag; the label is localised (never a JS map redefined per component).
+function typeLabel(p: Payment): string {
+  return p.recurring ? t('payments.recurring') : t('payments.oneTime');
 }
 
 function matchUser(p: Payment, q: string): boolean {
@@ -97,8 +124,14 @@ function buildBody(): CreatePaymentRequest {
   };
 }
 
+// Mint a fresh key each time the dialog opens: one create intent → one key → one payment.
+function openCreate(): void {
+  createKey = crypto.randomUUID();
+  showCreate.value = true;
+}
+
 async function onCreate(): Promise<void> {
-  const result = await store.create(buildBody());
+  const result = await store.create(buildBody(), createKey);
   if (result) {
     showCreate.value = false;
     createUserId.value = '';
@@ -116,7 +149,7 @@ async function onCreate(): Promise<void> {
           class="add-btn"
           :title="t('payments.createButton')"
           :aria-label="t('payments.createButton')"
-          @click="showCreate = true"
+          @click="openCreate"
         >
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <path
@@ -130,7 +163,25 @@ async function onCreate(): Promise<void> {
         </button>
       </template>
 
-      <div class="filter-bar">
+      <div class="contact-bar">
+        <BaseInput
+          v-model="contactQuery"
+          :placeholder="t('payments.contactSearchPlaceholder')"
+          @keyup.enter="searchContact"
+        />
+        <BaseButton
+          :label="t('payments.contactSearchButton')"
+          @click="searchContact"
+        />
+        <BaseButton
+          v-if="store.filter.externalUserId"
+          variant="ghost"
+          :label="t('common.clear')"
+          @click="clearContact"
+        />
+      </div>
+
+      <div v-if="!store.filter.externalUserId" class="filter-bar">
         <button
           v-for="chip in [
             PaymentStatus.Active,
@@ -163,12 +214,13 @@ async function onCreate(): Promise<void> {
         :filter-label="t('payments.externalUserId')"
         :filter-match="matchUser"
         :row-key="rowKey"
-        :colspan="6"
+        :colspan="7"
         :empty-text="t('payments.noResults')"
         clickable
         @row-click="onRowClick"
       >
         <template #head>
+          <th>{{ t('payments.type') }}</th>
           <th>{{ t('common.amount') }}</th>
           <th>{{ t('common.period') }}</th>
           <th>
@@ -179,6 +231,16 @@ async function onCreate(): Promise<void> {
         </template>
         <template #row="{ item }">
           <td class="mono">{{ item.externalUserId }}</td>
+          <td>
+            <span
+              class="type-badge"
+              :class="
+                item.recurring ? 'type-badge--recurring' : 'type-badge--oneTime'
+              "
+            >
+              {{ typeLabel(item) }}
+            </span>
+          </td>
           <td class="mono">{{ formatAmount(item.amount, item.currency) }}</td>
           <td>{{ item.period }}</td>
           <td>
@@ -258,6 +320,17 @@ async function onCreate(): Promise<void> {
   border-color: var(--green);
 }
 
+.contact-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 4px;
+}
+.contact-bar > :first-child {
+  flex: 1;
+  max-width: 360px;
+}
+
 .filter-bar {
   display: flex;
   flex-wrap: wrap;
@@ -311,6 +384,22 @@ async function onCreate(): Promise<void> {
 .status--RenewalFailed,
 .status--Cancelled {
   color: var(--red);
+}
+
+.type-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.type-badge--recurring {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 40%, var(--line));
+}
+.type-badge--oneTime {
+  color: var(--muted);
 }
 
 .create-form {

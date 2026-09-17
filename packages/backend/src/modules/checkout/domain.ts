@@ -2,6 +2,8 @@ import type { SqlError } from '@effect/sql';
 import {
   CheckoutSessionKind,
   CheckoutSessionStatus,
+  type NewCheckoutSession,
+  type Payment,
   PaymentMethod,
   PaymentStatus,
 } from '@billing-service/shared';
@@ -18,9 +20,64 @@ import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import { createOrExtend } from '@/modules/payment/domain.js';
 import { addPeriod } from '@/modules/payment/period.js';
 
-/** The public checkout page URL for a session id (served by the frontend SPA). */
-export const checkoutPath = (sessionId: string): string =>
-  `https://bill.nexttick.it/checkout/${sessionId}`;
+/** The public checkout page URL for a session id (served by the frontend SPA). `baseUrl`
+ * is the environment's `checkoutBaseUrl` config (no trailing slash). */
+export const checkoutPath = (baseUrl: string, sessionId: string): string =>
+  `${baseUrl}/checkout/${sessionId}`;
+
+/**
+ * Build OUR internal checkout session for a token-less (crypto) renewal prompt (docs/28):
+ * a normal RECURRING checkout for the payment's own terms, with the last-used method
+ * preselected. Paying it runs through create-or-extend and extends THIS recurring payment
+ * (keyed on the user); a card pay captures a token and graduates it back to autocharge.
+ */
+export const manualRenewalSession = (
+  sub: Payment,
+  sessionId: string,
+  expiresAt: Date,
+  idempotencyKey: string,
+): NewCheckoutSession => ({
+  id: sessionId,
+  externalUserId: sub.externalUserId,
+  amount: sub.amount,
+  currency: sub.currency,
+  period: sub.period,
+  method: sub.method,
+  kind: CheckoutSessionKind.Checkout,
+  recurring: true,
+  paymentId: null,
+  successUrl: null,
+  failureUrl: null,
+  promo: null,
+  // One session per renewal cycle: re-prompts on the retry ladder reuse the SAME link
+  // (the unique idempotencyKey collapses re-inserts), so a user can never hold several
+  // independently-payable links for one cycle and double-pay.
+  idempotencyKey,
+  expiresAt,
+});
+
+/**
+ * A caller-supplied post-payment redirect must point at an allowed host (docs/30). An
+ * empty allowlist accepts any host (dev/default); otherwise the URL's hostname must be
+ * listed — this stops an open redirect off our own checkout domain. The URL already
+ * passed the http(s) scheme filter, so an unparseable value here is malformed → rejected.
+ */
+export const redirectHostAllowed = (
+  allowedHosts: readonly string[],
+  url: string,
+): boolean => {
+  if (allowedHosts.length === 0) {
+    return true;
+  }
+  try {
+    return allowedHosts.includes(new URL(url).hostname);
+  } catch (err) {
+    if (err instanceof TypeError) {
+      return false;
+    }
+    throw err;
+  }
+};
 
 /**
  * Checkout matcher: an incoming event whose `externalRef` is a known checkout
@@ -61,6 +118,9 @@ export const makeCheckoutMatcher =
         externalUserId: session.externalUserId,
         period: session.period,
         method: session.method ?? PaymentMethod.Card,
+        recurring: session.recurring,
+        // A one-time bonus period the session carried; applied once on the create path.
+        promoBonus: session.promo?.additionalFreePeriod ?? null,
       };
     });
 
@@ -128,6 +188,9 @@ const applyCardChange =
       if (token !== null) {
         yield* payments.updateToken(paymentId, token);
       }
+      // The next charge date this change establishes: for an owed change it advances the
+      // anchor (below); otherwise the payment's existing schedule is unchanged.
+      let nextPaymentDate: Date | null = null;
       if (owed) {
         const found = yield* payments.findById(paymentId);
         // Guard the advance on the payment still OWING (past_due/renewal_failed):
@@ -143,10 +206,11 @@ const applyCardChange =
             currentPeriodEnd,
             nextPaymentDate: currentPeriodEnd,
           });
+          nextPaymentDate = currentPeriodEnd;
         }
       }
       yield* checkout.markCompleted(event.externalRef);
-      return { subscriptionId: paymentId, created: false };
+      return { subscriptionId: paymentId, created: false, nextPaymentDate };
     });
 
 /**
@@ -166,11 +230,17 @@ export const makeCheckoutApplier =
       );
     }
     if (match.kind === 'recurring' && match.subscriptionId !== null) {
-      const applied: AppliedCharge = {
-        subscriptionId: match.subscriptionId,
-        created: false,
-      };
-      return Effect.succeed(applied);
+      const subscriptionId = match.subscriptionId;
+      // A recurring match already has its payment (the scheduler advanced it before the
+      // incoming event re-entered the pipeline), so read its new next-charge date to
+      // report on the succeeded event.
+      return Effect.gen(function* () {
+        const found = yield* payments.findById(subscriptionId);
+        const nextPaymentDate = Option.isSome(found)
+          ? found.value.nextPaymentDate
+          : null;
+        return { subscriptionId, created: false, nextPaymentDate };
+      });
     }
     return createOrExtend(payments)({
       externalUserId: match.externalUserId,
@@ -178,6 +248,11 @@ export const makeCheckoutApplier =
       currency: event.currency,
       method: match.method,
       period: match.period,
+      // Absent on a recurring/card_change match — those act on an existing recurring
+      // payment; only a checkout match can carry a one-time (false) intent.
+      recurring: match.recurring ?? true,
+      // One-time bonus period from the session; extends the paid-through anchor once.
+      promoBonus: match.promoBonus ?? null,
       recurringTokenRef: recToken(event.payload),
       paidAt: event.occurredAt,
     }).pipe(Effect.tap(() => checkout.markCompleted(event.externalRef)));

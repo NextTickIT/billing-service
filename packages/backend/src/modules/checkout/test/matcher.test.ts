@@ -20,7 +20,12 @@ const session: CheckoutSession = {
   method: 0,
   status: 1,
   kind: CheckoutSessionKind.Checkout,
+  recurring: true,
   paymentId: null,
+  successUrl: null,
+  failureUrl: null,
+  promo: null,
+  idempotencyKey: null,
   expiresAt: new Date(0),
   createdAt: new Date(0),
 };
@@ -28,9 +33,12 @@ const session: CheckoutSession = {
 const repoWith = (found: CheckoutSession | null): CheckoutRepo => ({
   findById: () =>
     Effect.succeed(found === null ? Option.none() : Option.some(found)),
-  insert: () => Effect.void,
-  setPending: () => Effect.void,
+  findByIdempotencyKey: () => Effect.succeed(Option.none()),
+  insert: () => Effect.succeed(true),
+  claimForPayment: () => Effect.succeed(false),
+  releasePending: () => Effect.void,
   markCompleted: () => Effect.void,
+  renameOpenSessionsExternalUser: () => Effect.succeed(0),
 });
 
 const event = (over: Partial<Charge>): Charge => ({

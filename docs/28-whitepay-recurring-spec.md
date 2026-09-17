@@ -17,6 +17,19 @@
 > **provider-agnostic charge function** (autocharge if a usable token exists, else fire a
 > `payment.manual_required` prompt). See decisions D6–D12 and "Provider-agnostic recurring charge".
 
+> **Implementation note (2026-09-15, MVP shipped).** The first cut deliberately SIMPLIFIES
+> this spec: the `payment.manual_required` event is implemented as `payment_manual_required`
+> and carries a link to our NORMAL internal checkout session (`checkoutUrl`) — there is **no
+> dedicated `/pay/{attemptToken}` mint endpoint** (D3/§"on-click mint"); the WhitePay order is
+> still minted on click by the existing checkout `/pay` → `payCrypto` path, preserving the
+> ~2-min rate lock. Re-prompts reuse the EXISTING card retry ladder rather than independent
+> per-attempt 48h windows (D5): the manual-pay window spans the ladder (~7d, `SCHEDULER_
+> MANUAL_PAYMENT_WINDOW_SECONDS`, default 604800) and is enforced at `/pay`. A paid session
+> revives the recurring payment in place (Active/PastDue only; RenewalFailed stays terminal
+> per D4). `payment.paid`/`payment.failed` reuse the existing `recurring_payment_succeeded` /
+> `renewal_failed` events. The per-attempt state machine (§Model) and pay-once crypto dedup
+> remain future work.
+
 ## Decisions locked (with the user)
 
 | # | Decision | Resolution |

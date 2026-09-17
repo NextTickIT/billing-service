@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 
 import { SqlClient } from '@effect/sql';
-import { Effect } from 'effect';
+import type { Payment } from '@billing-service/shared';
+import { Effect, Option } from 'effect';
 
 import type { AppConfig } from '@/config.js';
 import { defaultRetryConfig } from '@/infra/queue/policy.js';
@@ -21,6 +23,13 @@ import {
   type ChargePipelineService,
 } from '@/modules/charge/domain.js';
 import { runScheduler } from '@/modules/billing/scheduler.js';
+import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
+import {
+  checkoutPath,
+  manualRenewalSession,
+} from '@/modules/checkout/domain.js';
+import { EXTERNAL_USER_ID_CHANGE } from '@/modules/identity/contracts.js';
+import { externalUserIdChangedNotify } from '@/modules/identity/domain.js';
 import {
   cancelNotify,
   deferNotify,
@@ -76,6 +85,10 @@ const registerHandlers = (
       PAYMENT_LAPSE,
       lapseNotify(makePaymentRepo(sql), outbox.publish),
     );
+    yield* registry.register(
+      EXTERNAL_USER_ID_CHANGE,
+      externalUserIdChangedNotify(outbox.publish),
+    );
   });
 
 /** Fork the WayForPay migration poller (docs/15) if enabled. */
@@ -99,6 +112,39 @@ const startPoller = (config: AppConfig, ingest: Ingest) =>
     );
     yield* Effect.logInfo('w4p migration poller started');
   });
+
+/**
+ * Mint (or reuse) OUR internal checkout session for a token-less (crypto) renewal prompt
+ * (docs/28) and return its link + live window. ONE session per renewal cycle — keyed on the
+ * cycle anchor (firstFailureAt, stable across the ladder), so the day-1/3/5 re-prompts reuse
+ * the SAME link instead of minting a new independently-payable one each tick.
+ */
+const manualCheckoutMinter =
+  (sql: SqlClient.SqlClient, config: AppConfig) => (sub: Payment, now: Date) =>
+    Effect.gen(function* () {
+      const repo = makeCheckoutRepo(sql);
+      const anchor = sub.firstFailureAt ?? now;
+      const idempotencyKey = `manual:${sub.id}:${anchor.getTime().toString()}`;
+      const windowExpiresAt = new Date(
+        anchor.getTime() + config.scheduler.manualPaymentWindowSeconds * 1000,
+      );
+      const baseUrl = config.checkoutBaseUrl;
+      const id = `chk_${randomUUID()}`;
+      const inserted = yield* repo.insert(
+        manualRenewalSession(sub, id, windowExpiresAt, idempotencyKey),
+      );
+      if (inserted) {
+        return { checkoutUrl: checkoutPath(baseUrl, id), windowExpiresAt };
+      }
+      // A prior prompt this cycle already minted it — reuse that session/link.
+      const existing = yield* repo.findByIdempotencyKey(idempotencyKey);
+      return Option.isSome(existing)
+        ? {
+            checkoutUrl: checkoutPath(baseUrl, existing.value.id),
+            windowExpiresAt: existing.value.expiresAt,
+          }
+        : { checkoutUrl: checkoutPath(baseUrl, id), windowExpiresAt };
+    });
 
 /** Fork the recurring-charge scheduler (FR-004) if enabled. */
 const startScheduler = (
@@ -128,6 +174,8 @@ const startScheduler = (
                 externalUserId: sub.externalUserId,
               },
             }).pipe(Effect.asVoid),
+          // Token-less (crypto) renewal prompt (docs/28): mint/reuse our internal checkout.
+          createManualCheckout: manualCheckoutMinter(sql, config),
         },
         {
           intervalSeconds: config.scheduler.intervalSeconds,

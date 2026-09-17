@@ -16,6 +16,7 @@ import {
 import { Clock, Effect, Option, Redacted, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import { withIdempotencyKey } from '@/infra/db/idempotency.js';
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
 import {
@@ -23,6 +24,10 @@ import {
   Unauthorized,
   UnprocessableEntity,
 } from '@/infra/http/errors.js';
+import {
+  assertIdempotencyKey,
+  idempotencyKeyOf,
+} from '@/infra/http/idempotency-key.js';
 import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { authenticate, requireRole } from '@/modules/auth/domain.js';
@@ -110,23 +115,14 @@ const getPayment = (_input: unknown, request: FastifyRequest) =>
     return { ...found.value, charges };
   });
 
-const createPayment = (
+/** Insert a fresh operator-created Payment; its terms anchor on now. */
+const insertPayment = (
+  sql: SqlClient.SqlClient,
   body: Schema.Schema.Type<typeof CreatePaymentRequest>,
-  request: FastifyRequest,
 ) =>
   Effect.gen(function* () {
-    assertBffSecret(request);
-    yield* operatorActor(request);
-    const sql = yield* SqlClient.SqlClient;
     const nowMs = yield* Clock.currentTimeMillis;
     const paidAt = new Date(nowMs);
-    if (!isValidPeriod(body.period)) {
-      return yield* Effect.fail(
-        new UnprocessableEntity({
-          reason: `unsupported billing period '${body.period}'`,
-        }),
-      );
-    }
     const currentPeriodEnd = addPeriod(paidAt, body.period);
     const payment = yield* makePaymentRepo(sql).insert({
       externalUserId: body.externalUserId,
@@ -135,6 +131,7 @@ const createPayment = (
       method: body.method ?? PaymentMethod.Card,
       period: body.period,
       status: PaymentStatus.Active,
+      recurring: body.recurring ?? true,
       currentPeriodStart: paidAt,
       currentPeriodEnd,
       nextPaymentDate: currentPeriodEnd,
@@ -143,6 +140,58 @@ const createPayment = (
       retryAttempt: 0,
     });
     return { id: payment.id };
+  });
+
+const createPayment = (
+  body: Schema.Schema.Type<typeof CreatePaymentRequest>,
+  request: FastifyRequest,
+) =>
+  Effect.gen(function* () {
+    assertBffSecret(request);
+    yield* operatorActor(request);
+    yield* assertIdempotencyKey(request);
+    if (!isValidPeriod(body.period)) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({
+          reason: `unsupported billing period '${body.period}'`,
+        }),
+      );
+    }
+    const sql = yield* SqlClient.SqlClient;
+    // Dedup a retried or double-submitted create on the caller's key: one Payment per key
+    // (without it, a one-time create would insert a second row — no unique guard applies).
+    return yield* withIdempotencyKey(
+      'payment.create',
+      idempotencyKeyOf(request),
+      CreateAccepted,
+    )(insertPayment(sql, body));
+  });
+
+/** Audit the operator action and enqueue the cancel notify (docs/23). */
+const enqueueCancel = (
+  sql: SqlClient.SqlClient,
+  actor: { readonly role: Role },
+  payment: Payment,
+  reasonInput?: string,
+) =>
+  Effect.gen(function* () {
+    const reason = reasonInput ?? 'operator';
+    yield* makeChargeRepo(sql).insertAudit({
+      actor: Role[actor.role],
+      action: 'cancel_payment',
+      targetType: 'payment',
+      targetId: payment.id,
+      detail: { reason },
+    });
+    yield* enqueue(sql)({
+      messageType: PAYMENT_CANCEL,
+      idemKey: `cancel:${payment.id}`,
+      payload: {
+        subscriptionId: payment.id,
+        externalUserId: payment.externalUserId,
+        reason,
+      },
+    });
   });
 
 const cancelPayment = (
@@ -159,6 +208,17 @@ const cancelPayment = (
     if (Option.isNone(found)) {
       return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
+    // Soft-cancel stops a future renewal and lapses at the due date via the scheduler —
+    // which only ever processes recurring payments. A one-time payment never renews and
+    // is never in `findDue`, so a soft-cancel on it could never lapse (it would hang in
+    // "cancelling" forever); refuse it outright.
+    if (!found.value.recurring) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({
+          reason: 'only a recurring payment can be cancelled',
+        }),
+      );
+    }
     const requested = yield* repo.requestCancel(id);
     if (!requested) {
       return yield* Effect.fail(
@@ -167,23 +227,7 @@ const cancelPayment = (
         }),
       );
     }
-    const reason = body.reason ?? 'operator';
-    yield* makeChargeRepo(sql).insertAudit({
-      actor: Role[actor.role],
-      action: 'cancel_payment',
-      targetType: 'payment',
-      targetId: id,
-      detail: { reason },
-    });
-    yield* enqueue(sql)({
-      messageType: PAYMENT_CANCEL,
-      idemKey: `cancel:${id}`,
-      payload: {
-        subscriptionId: id,
-        externalUserId: found.value.externalUserId,
-        reason,
-      },
-    });
+    yield* enqueueCancel(sql, actor, found.value, body.reason);
     return { status: 'cancelled' as const };
   });
 
@@ -243,6 +287,44 @@ const assertDeferrable = (payment: Payment, days: number) => {
   return Effect.void;
 };
 
+/** Apply a deferral: push the anchor, audit, and enqueue the notify. Wrapped by the
+ * idempotency ledger in `deferPayment`, so a re-send neither double-grants the free days
+ * nor double-emits `payment_deferred`. */
+const applyDefer = (
+  sql: SqlClient.SqlClient,
+  actor: { readonly role: Role },
+  payment: Payment,
+  days: number,
+) =>
+  Effect.gen(function* () {
+    const { newPeriodEnd, newNextPaymentDate } = computeDeferral(payment, days);
+    yield* makePaymentRepo(sql).defer(
+      payment.id,
+      newPeriodEnd,
+      newNextPaymentDate,
+    );
+    const at = yield* Clock.currentTimeMillis;
+    yield* makeChargeRepo(sql).insertAudit({
+      actor: Role[actor.role],
+      action: 'defer_payment',
+      targetType: 'payment',
+      targetId: payment.id,
+      detail: { days },
+    });
+    yield* enqueue(sql)({
+      messageType: PAYMENT_DEFER,
+      idemKey: `defer:${payment.id}:${at.toString()}`,
+      payload: {
+        paymentId: payment.id,
+        externalUserId: payment.externalUserId,
+        newPeriodEnd: newPeriodEnd.toISOString(),
+        days,
+        at,
+      },
+    });
+    return { status: 'deferred' as const, newPeriodEnd };
+  });
+
 const deferPayment = (
   body: Schema.Schema.Type<typeof DeferPaymentRequest>,
   request: FastifyRequest,
@@ -250,6 +332,7 @@ const deferPayment = (
   Effect.gen(function* () {
     assertBffSecret(request);
     const actor = yield* operatorActor(request);
+    yield* assertIdempotencyKey(request);
     const id = readId(request);
     const sql = yield* SqlClient.SqlClient;
     const repo = makePaymentRepo(sql);
@@ -258,31 +341,11 @@ const deferPayment = (
       return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
     yield* assertDeferrable(found.value, body.days);
-    const { newPeriodEnd, newNextPaymentDate } = computeDeferral(
-      found.value,
-      body.days,
-    );
-    yield* repo.defer(id, newPeriodEnd, newNextPaymentDate);
-    const at = yield* Clock.currentTimeMillis;
-    yield* makeChargeRepo(sql).insertAudit({
-      actor: Role[actor.role],
-      action: 'defer_payment',
-      targetType: 'payment',
-      targetId: id,
-      detail: { days: body.days },
-    });
-    yield* enqueue(sql)({
-      messageType: PAYMENT_DEFER,
-      idemKey: `defer:${id}:${at.toString()}`,
-      payload: {
-        paymentId: id,
-        externalUserId: found.value.externalUserId,
-        newPeriodEnd: newPeriodEnd.toISOString(),
-        days: body.days,
-        at,
-      },
-    });
-    return { status: 'deferred' as const, newPeriodEnd };
+    return yield* withIdempotencyKey(
+      'payment.defer',
+      idempotencyKeyOf(request),
+      DeferAccepted,
+    )(applyDefer(sql, actor, found.value, body.days));
   });
 
 export default function payments(fastify: FastifyInstance): void {

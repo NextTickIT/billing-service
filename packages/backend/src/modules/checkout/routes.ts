@@ -8,6 +8,8 @@ import {
   CheckoutSessionPublic,
   CheckoutSessionStatus,
   CreateCheckoutSession,
+  type NewCheckoutSession,
+  ONE_TIME_PERIOD,
   PayInstruction,
   PaymentMethod,
   PaymentStatus,
@@ -24,14 +26,26 @@ import {
   Conflict,
   NotFound,
   Unauthorized,
+  UnprocessableEntity,
 } from '@/infra/http/errors.js';
+import {
+  assertIdempotencyKey,
+  idempotencyKeyOf,
+} from '@/infra/http/idempotency-key.js';
 import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { PAYMENT_EVENT_RECEIVED } from '@/modules/charge/contracts.js';
 import { authenticateToken } from '@/modules/auth/domain.js';
-import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
-import { checkoutPath } from '@/modules/checkout/domain.js';
+import {
+  type CheckoutRepo,
+  makeCheckoutRepo,
+} from '@/modules/checkout/data-access.js';
+import {
+  checkoutPath,
+  redirectHostAllowed,
+} from '@/modules/checkout/domain.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
+import { isValidPeriod } from '@/modules/payment/period.js';
 import {
   ackResponse,
   type CallbackPayload,
@@ -62,29 +76,121 @@ const serviceActor = (request: FastifyRequest) => {
 const readId = (request: FastifyRequest): string =>
   (request.params as { readonly id: string }).id;
 
+/** Refuse a checkout whose post-payment redirect points off the allowed hosts (docs/30). */
+const assertRedirectAllowed = (
+  allowedHosts: readonly string[],
+  url: string | undefined,
+): Effect.Effect<void, UnprocessableEntity> =>
+  url === undefined || redirectHostAllowed(allowedHosts, url)
+    ? Effect.void
+    : Effect.fail(
+        new UnprocessableEntity({
+          reason: `redirect host not allowed: ${url}`,
+        }),
+      );
+
+/** Both post-payment redirects on a create request must point at an allowed host. */
+const assertRedirects = (
+  input: CreateCheckoutSession,
+  request: FastifyRequest,
+): Effect.Effect<void, UnprocessableEntity> =>
+  Effect.gen(function* () {
+    const hosts = request.server.appConfig.redirectAllowedHosts;
+    yield* assertRedirectAllowed(hosts, input.successUrl);
+    yield* assertRedirectAllowed(hosts, input.failureUrl);
+  });
+
+/** A promo's bonus must be a period in our format (an ISO-8601 duration). Reject a
+ * malformed one at creation with a 422 rather than let it throw when the charge applies
+ * it in the worker (where it would fail the attempt instead of the caller's request). */
+const assertPromo = (input: CreateCheckoutSession) => {
+  const promo = input.promo;
+  if (promo !== undefined && !isValidPeriod(promo.additionalFreePeriod)) {
+    return Effect.fail(
+      new UnprocessableEntity({
+        reason: `unsupported promo period '${promo.additionalFreePeriod}'`,
+      }),
+    );
+  }
+  return Effect.void;
+};
+
+/** The SessionCreated response for a session id + expiry. */
+const created = (
+  id: string,
+  expiresAt: Date,
+  baseUrl: string,
+): SessionCreated => ({
+  sessionId: id,
+  checkoutUrl: checkoutPath(baseUrl, id),
+  expiresAt,
+});
+
+/**
+ * Insert the session, or replay the existing one when its Idempotency-Key already maps to
+ * a session (a retry, or a concurrent create that lost the ON CONFLICT race). The unique
+ * index makes this atomic — concurrent creates with one key collapse to a single row and
+ * every caller gets the same sessionId/checkoutUrl/expiresAt, so one intent never mints
+ * two provider flows. A key-less create (null) always inserts.
+ */
+const insertOrReplay = (
+  repo: CheckoutRepo,
+  input: NewCheckoutSession,
+  baseUrl: string,
+) =>
+  Effect.gen(function* () {
+    const inserted = yield* repo.insert(input);
+    const key = input.idempotencyKey;
+    if (inserted || key === null) {
+      return created(input.id, input.expiresAt, baseUrl);
+    }
+    const existing = yield* repo.findByIdempotencyKey(key);
+    if (existing._tag === 'None') {
+      return yield* Effect.fail(new Conflict({ field: 'idempotency key' }));
+    }
+    return created(existing.value.id, existing.value.expiresAt, baseUrl);
+  });
+
 const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
   Effect.gen(function* () {
     yield* serviceActor(request);
+    yield* assertRedirects(input, request);
+    yield* assertPromo(input);
+    yield* assertIdempotencyKey(request);
     const sql = yield* SqlClient.SqlClient;
     const nowMillis = yield* Clock.currentTimeMillis;
     const id = `chk_${randomUUID()}`;
     const expiresAt = new Date(
       nowMillis + request.server.appConfig.wayforpay.sessionTtlSeconds * 1000,
     );
-    yield* makeCheckoutRepo(sql).insert({
-      id,
-      externalUserId: input.externalUserId,
-      amount: input.amount,
-      currency: input.currency,
-      period: input.period,
-      // Default preselected method (Card unless the caller passed one; the schema
-      // defaults it to Card). The page can still switch it before Pay.
-      method: input.method,
-      kind: CheckoutSessionKind.Checkout,
-      paymentId: null,
-      expiresAt,
-    });
-    return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };
+    return yield* insertOrReplay(
+      makeCheckoutRepo(sql),
+      {
+        id,
+        externalUserId: input.externalUserId,
+        amount: input.amount,
+        currency: input.currency,
+        // A recurring checkout always carries its cadence (enforced by the schema); a
+        // one-time purchase never renews, so it may omit `period` — store the zero-length
+        // sentinel to satisfy the NOT NULL column (it is never read back for a one-time).
+        period: input.period ?? ONE_TIME_PERIOD,
+        // Default preselected method (Card unless the caller passed one; the schema
+        // defaults it to Card). The page can still switch it before Pay.
+        method: input.method,
+        kind: CheckoutSessionKind.Checkout,
+        // Schema-defaulted to true; false opts this checkout into a one-time payment.
+        recurring: input.recurring,
+        paymentId: null,
+        successUrl: input.successUrl ?? null,
+        failureUrl: input.failureUrl ?? null,
+        // A one-time bonus period applied once, when this session is paid (see CheckoutPromo).
+        promo: input.promo ?? null,
+        // Opt-in dedup key from the caller's header; null → always a fresh session.
+        idempotencyKey: idempotencyKeyOf(request),
+        expiresAt,
+      },
+      request.server.appConfig.checkoutBaseUrl,
+    );
   });
 
 const getSession = (_input: unknown, request: FastifyRequest) =>
@@ -96,9 +202,28 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
     if (found._tag === 'None') {
       return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
     }
-    const { amount, currency, period, status, kind, method, expiresAt } =
-      found.value;
-    return { amount, currency, period, status, kind, method, expiresAt };
+    const {
+      amount,
+      currency,
+      period,
+      status,
+      kind,
+      method,
+      successUrl,
+      failureUrl,
+      expiresAt,
+    } = found.value;
+    return {
+      amount,
+      currency,
+      period,
+      status,
+      kind,
+      method,
+      successUrl,
+      failureUrl,
+      expiresAt,
+    };
   });
 
 /** Card (WayForPay): a 0-amount card change verifies the card (buildVerify) when verify
@@ -147,36 +272,80 @@ const payCrypto = (
     return { kind: 'redirect', url: order.acquiringUrl };
   });
 
+/**
+ * Resolve a session and atomically claim it for payment, or fail: 404 when unknown, 409
+ * when terminal (completed/expired) or already claimed. The claim IS the idempotency
+ * guard — the session id is the key, so a concurrent or repeat /pay (button spam, two
+ * tabs, a scripted client) finds the row already pending, loses the created→pending
+ * claim, and gets the 409. Exactly one provider order is ever minted per session
+ * (docs/26). Returns the now-pending session, ready to hand to a provider.
+ */
+const claimPayableSession = (
+  repo: CheckoutRepo,
+  id: string,
+  method: number,
+  nowMillis: number,
+) =>
+  Effect.gen(function* () {
+    const found = yield* repo.findById(id);
+    if (found._tag === 'None') {
+      return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
+    }
+    const { status } = found.value;
+    if (
+      status === CheckoutSessionStatus.Completed ||
+      status === CheckoutSessionStatus.Expired
+    ) {
+      return yield* Effect.fail(
+        new Conflict({ field: 'checkout session (completed or expired)' }),
+      );
+    }
+    // Enforce the session TTL at claim time: a link past its `expiresAt` is not payable.
+    // Without this the checkout URL (incl. the crypto manual-renewal link with its
+    // advertised `windowExpiresAt`) would be a permanent bearer capability. State is still
+    // reconciled from the provider webhook, so a payment begun before expiry still settles.
+    if (found.value.expiresAt.getTime() <= nowMillis) {
+      return yield* Effect.fail(
+        new Conflict({ field: 'checkout session (expired)' }),
+      );
+    }
+    const claimed = yield* repo.claimForPayment(id, method);
+    if (!claimed) {
+      return yield* Effect.fail(
+        new Conflict({
+          field: 'checkout session payment (already in progress)',
+        }),
+      );
+    }
+    return {
+      ...found.value,
+      method,
+      status: CheckoutSessionStatus.Pending,
+    } satisfies CheckoutSession;
+  });
+
 const pay = (input: SelectMethod, request: FastifyRequest) =>
   Effect.gen(function* () {
     assertBffSecret(request);
     const sql = yield* SqlClient.SqlClient;
     const repo = makeCheckoutRepo(sql);
     const id = readId(request);
-    const found = yield* repo.findById(id);
-    if (found._tag === 'None') {
-      return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
-    }
-    // A completed session must not mint a second provider order — that is the crypto
-    // double-pay vector (two paid orders → a second create-or-extend). Expired is
-    // non-payable. Both are terminal; refuse (409) rather than re-issue (docs/26).
-    if (
-      found.value.status === CheckoutSessionStatus.Completed ||
-      found.value.status === CheckoutSessionStatus.Expired
-    ) {
-      return yield* Effect.fail(
-        new Conflict({ field: 'checkout session (completed or expired)' }),
+    const nowMillis = yield* Clock.currentTimeMillis;
+    const session = yield* claimPayableSession(
+      repo,
+      id,
+      input.method,
+      nowMillis,
+    );
+    // A card handoff is a pure signed form (WayForPay dedups on our orderReference), so it
+    // cannot fail. Only crypto calls out to WhitePay: if that mint fails (5xx / disabled),
+    // release the claim so the buyer can retry or switch method instead of bricking here.
+    if (input.method === PaymentMethod.Crypto) {
+      return yield* payCrypto(session, request).pipe(
+        Effect.tapError(() => repo.releasePending(id)),
       );
     }
-    yield* repo.setPending(id, input.method);
-    const session: CheckoutSession = {
-      ...found.value,
-      method: input.method,
-      status: CheckoutSessionStatus.Pending,
-    };
-    return input.method === PaymentMethod.Crypto
-      ? yield* payCrypto(session, request)
-      : yield* payCard(session, request);
+    return yield* payCard(session, request);
   });
 
 const providerOf = (request: FastifyRequest): string =>
@@ -260,7 +429,9 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
     const found = yield* makePaymentRepo(sql).findByExternalUser(
       input.externalUserId,
     );
-    const payment = found[0];
+    // A card change re-tokenizes the recurring payment; one-time payments (which hold
+    // no reusable token) are never its target, so skip past them to the newest recurring.
+    const payment = found.find((p) => p.recurring);
     if (payment === undefined || payment.status === PaymentStatus.Cancelled) {
       return yield* Effect.fail(
         new CardChangeUnavailable({
@@ -292,10 +463,22 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
       // A card change is always a WayForPay re-tokenization, so it preselects Card.
       method: PaymentMethod.Card,
       kind: CheckoutSessionKind.CardChange,
+      // A card change re-tokenizes the recurring payment; never a one-time session.
+      recurring: true,
       paymentId: payment.id,
+      successUrl: null,
+      failureUrl: null,
+      // A card change re-tokenizes an existing payment; it grants no bonus period.
+      promo: null,
+      // Server-initiated (not a caller retry), so it carries no idempotency key.
+      idempotencyKey: null,
       expiresAt,
     });
-    return { sessionId: id, checkoutUrl: checkoutPath(id), expiresAt };
+    return {
+      sessionId: id,
+      checkoutUrl: checkoutPath(request.server.appConfig.checkoutBaseUrl, id),
+      expiresAt,
+    };
   });
 
 export default function checkout(fastify: FastifyInstance): void {

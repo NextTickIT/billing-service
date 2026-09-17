@@ -42,7 +42,16 @@ export interface AdvanceAnchor {
  * Success` reset the retry state (a good payment restores standing).
  */
 export interface PaymentRepo {
-  readonly findActiveByExternalUser: (
+  /**
+   * The user's live RECURRING payment that create-or-extend acts on: Active, or PastDue
+   * (a renewal mid-retry — incl. a crypto manual-renewal prompt that flipped it to
+   * PastDue). A paid checkout REVIVES that row in place instead of minting a duplicate.
+   * Active is preferred over PastDue (Active-first order) so an existing Active is never
+   * revive-collided with the `payments_one_active_per_user` unique index. RenewalFailed
+   * is terminal (docs/28 D4) and excluded — a post-failure checkout starts a fresh row;
+   * one-time and Cancelled are excluded too.
+   */
+  readonly findActiveRecurringByExternalUser: (
     externalUserId: string,
   ) => Effect.Effect<Option.Option<Payment>, SqlError.SqlError>;
   readonly findById: (
@@ -109,6 +118,16 @@ export interface PaymentRepo {
     id: string,
     recToken: string,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /**
+   * Remap every payment of one opaque external user to another (docs/31), returning
+   * how many rows moved. Fails with a unique-violation SqlError when both ids hold an
+   * active recurring payment (the one-active-per-user index) — the caller maps it to a
+   * Conflict. `externalUserId` is carried verbatim (AC9); only the owning id changes.
+   */
+  readonly renameExternalUser: (
+    from: string,
+    to: string,
+  ) => Effect.Effect<number, SqlError.SqlError>;
 }
 
 /**
@@ -123,11 +142,15 @@ export interface PaymentListFilter {
 
 const COLUMNS = columnList(Payment.fields);
 
-const findActiveByExternalUser =
+const findActiveRecurringByExternalUser =
   (sql: SqlClient.SqlClient) => (externalUserId: string) =>
     sql<Payment>`
       SELECT ${sql.unsafe(COLUMNS)} FROM payments
-      WHERE "externalUserId" = ${externalUserId} AND status = ${PaymentStatus.Active}
+      WHERE "externalUserId" = ${externalUserId}
+        AND recurring = true
+        AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+      ORDER BY status, "createdAt" DESC
+      LIMIT 1
     `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
 const findById = (sql: SqlClient.SqlClient) => (id: string) =>
@@ -139,8 +162,8 @@ const findDue = (sql: SqlClient.SqlClient) => (now: Date, limit: number) =>
   sql<Payment>`
     SELECT ${sql.unsafe(COLUMNS)} FROM payments
     WHERE status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+      AND recurring = true
       AND "nextPaymentDate" <= ${now}
-      AND "recurringTokenRef" IS NOT NULL
     ORDER BY "nextPaymentDate"
     LIMIT ${limit}
     FOR UPDATE SKIP LOCKED
@@ -149,12 +172,12 @@ const findDue = (sql: SqlClient.SqlClient) => (now: Date, limit: number) =>
 const insert = (sql: SqlClient.SqlClient) => (input: CreatePayment) =>
   sql<Payment>`
     INSERT INTO payments
-      ("externalUserId", amount, currency, method, period, status,
+      ("externalUserId", amount, currency, method, period, status, recurring,
        "currentPeriodStart", "currentPeriodEnd", "nextPaymentDate",
        "recurringTokenRef", "firstFailureAt", "retryAttempt")
     VALUES
       (${input.externalUserId}, ${input.amount}, ${input.currency}, ${input.method},
-       ${input.period}, ${input.status}, ${input.currentPeriodStart},
+       ${input.period}, ${input.status}, ${input.recurring}, ${input.currentPeriodStart},
        ${input.currentPeriodEnd}, ${input.nextPaymentDate},
        ${input.recurringTokenRef}, ${input.firstFailureAt}, ${input.retryAttempt})
     RETURNING ${sql.unsafe(COLUMNS)}
@@ -291,8 +314,16 @@ const updateToken =
       WHERE id = ${id}
     `.pipe(Effect.asVoid);
 
+const renameExternalUser =
+  (sql: SqlClient.SqlClient) => (from: string, to: string) =>
+    sql<{ readonly id: string }>`
+      UPDATE payments SET "externalUserId" = ${to}, "updatedAt" = now()
+      WHERE "externalUserId" = ${from}
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length));
+
 export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
-  findActiveByExternalUser: findActiveByExternalUser(sql),
+  findActiveRecurringByExternalUser: findActiveRecurringByExternalUser(sql),
   findById: findById(sql),
   findDue: findDue(sql),
   insert: insert(sql),
@@ -307,4 +338,5 @@ export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   markCancelledLapsed: markCancelledLapsed(sql),
   defer: defer(sql),
   updateToken: updateToken(sql),
+  renameExternalUser: renameExternalUser(sql),
 });
