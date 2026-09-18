@@ -46,10 +46,11 @@ export interface Scenario {
 
 const ADMIN_TOKEN = 'e2e-admin-token';
 const BFF_SECRET = 'e2e-bff-secret';
-// The e2e runner boots the app without W4P env vars → defaults are empty strings.
-// Sign the callback with the same empty-string values the backend will verify.
+// The e2e runner sets a non-empty W4P_SECRET_KEY (run.ts setAppEnv); the hardened
+// callback fail-closes on an empty key, so we sign with the same shared secret.
+// merchantAccount stays empty on both sides (only the secret gates verification).
 const MERCHANT_ACCOUNT = '';
-const MERCHANT_SECRET = '';
+const MERCHANT_SECRET = 'e2e-w4p-secret';
 
 async function loadBffHandler(): Promise<BffHandler> {
   const bffPath = fileURLToPath(
