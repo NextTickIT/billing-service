@@ -223,7 +223,8 @@ const cancelPayment = (
     if (!requested) {
       return yield* Effect.fail(
         new UnprocessableEntity({
-          reason: 'payment is not active (cannot soft-cancel)',
+          reason:
+            'payment cannot be cancelled (already cancelled or cancellation pending)',
         }),
       );
     }

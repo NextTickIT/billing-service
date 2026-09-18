@@ -998,6 +998,124 @@ const findPrefersActiveWhenBothExist: EffectScenario = {
   },
 };
 
+/** A PastDue (mid-retry) payment can now be cancelled: requestCancel flags it, and
+ * the next scheduler tick lapses it instead of retrying the charge (no WFP call). */
+const driveCancelPastDue = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makePaymentRepo(sql);
+  const created = yield* subs.insert({
+    externalUserId: 'sp:pd-cancel',
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: PaymentStatus.PastDue,
+    recurring: true,
+    currentPeriodStart: new Date('2026-06-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2026-07-01T00:00:00Z'),
+    nextPaymentDate: new Date('2026-07-01T00:00:00Z'), // due in the past
+    recurringTokenRef: 'tok',
+    firstFailureAt: new Date('2026-07-01T00:00:00Z'),
+    retryAttempt: 1,
+  });
+  const ok = yield* subs.requestCancel(created.id);
+  if (!ok) {
+    return yield* Effect.die('requestCancel must accept a PastDue payment');
+  }
+  const outbox = yield* Outbox;
+  const pipeline = yield* ChargePipeline;
+  yield* scheduleTick(
+    {
+      subs,
+      client: {
+        charge: () => Effect.die('WFP charge must not run on a cancel lapse'),
+      },
+      ingest: pipeline.ingest,
+      publish: outbox.publish,
+      lapse: (sub) =>
+        enqueue(sql)({
+          messageType: PAYMENT_LAPSE,
+          idemKey: `lapse:${sub.id}`,
+          payload: { paymentId: sub.id, externalUserId: sub.externalUserId },
+        }).pipe(Effect.asVoid),
+      createManualCheckout: () =>
+        Effect.die('manual checkout unused: this payment has a token'),
+    },
+    { intervalSeconds: 60, batchSize: 10 },
+  );
+  yield* runFor(2);
+});
+
+const cancelPastDueLapses: EffectScenario = {
+  name: 'support: cancel a PastDue payment — next tick lapses it, no charge',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveCancelPastDue);
+      await assertLapse(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
+/** A terminal RenewalFailed payment has no future scheduler tick to lapse it, so
+ * cancelling it flips straight to `cancelled` inside requestCancel. */
+const driveCancelRenewalFailed = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makePaymentRepo(sql);
+  const created = yield* subs.insert({
+    externalUserId: 'sp:rf-cancel',
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: PaymentStatus.RenewalFailed,
+    recurring: true,
+    currentPeriodStart: new Date('2026-01-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2026-02-01T00:00:00Z'),
+    nextPaymentDate: new Date('2026-02-08T00:00:00Z'),
+    recurringTokenRef: 'tok',
+    firstFailureAt: new Date('2026-02-01T00:00:00Z'),
+    retryAttempt: 5,
+  });
+  const ok = yield* subs.requestCancel(created.id);
+  if (!ok) {
+    return yield* Effect.die('requestCancel must accept a RenewalFailed payment');
+  }
+});
+
+const assertRenewalFailedCancelled = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT status::text FROM payments`,
+    '3',
+    'a cancelled RenewalFailed flips straight to cancelled (no lapse tick)',
+  );
+  await eq(
+    query,
+    `SELECT ("cancelRequestedAt" IS NOT NULL)::text FROM payments`,
+    'true',
+    'cancelRequestedAt is stamped',
+  );
+};
+
+const cancelRenewalFailedImmediate: EffectScenario = {
+  name: 'support: cancelling a RenewalFailed payment flips it straight to cancelled',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveCancelRenewalFailed);
+      await assertRenewalFailedCancelled(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
   findExtendableMatchesPastDue,
@@ -1008,6 +1126,8 @@ export const effectScenarios: readonly EffectScenario[] = [
   schedulerChargesDue,
   cancelPayment,
   softCancelLapses,
+  cancelPastDueLapses,
+  cancelRenewalFailedImmediate,
   cardChangeOwedRevives,
   cardChangeDeclineLeavesPayment,
 ];

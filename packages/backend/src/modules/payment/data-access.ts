@@ -92,9 +92,10 @@ export interface PaymentRepo {
     filter?: PaymentListFilter,
   ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
   /**
-   * Soft-cancel: flag an active payment for lapse at its due date (docs/23).
-   * Keeps `status = active`; returns false if it was not active or already
-   * flagged, so the route can reject with a 422.
+   * Cancel a payment from any non-terminal state. Active/PastDue soft-cancel
+   * (flagged for lapse at the next due tick, status unchanged); a terminal
+   * RenewalFailed flips straight to `cancelled` (no future tick to lapse it).
+   * Returns false if already cancelled or already flagged, so the route 422s.
    */
   readonly requestCancel: (
     id: string,
@@ -285,10 +286,20 @@ const listAll =
     `;
   };
 
+// Cancel is allowed from any non-terminal state: Active and PastDue soft-cancel —
+// they stay put and lapse at the next scheduler tick (chargeOne sees
+// `cancelRequestedAt` and skips the charge). A terminal RenewalFailed has no future
+// tick to lapse it (findDue selects only Active/PastDue), so it flips straight to
+// Cancelled here. An already-Cancelled or already-pending payment is a no-op.
 const requestCancel = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<{ readonly id: string }>`
-    UPDATE payments SET "cancelRequestedAt" = now(), "updatedAt" = now()
-    WHERE id = ${id} AND status = ${PaymentStatus.Active}
+    UPDATE payments
+    SET "cancelRequestedAt" = now(),
+        status = CASE WHEN status = ${PaymentStatus.RenewalFailed}
+                      THEN ${PaymentStatus.Cancelled} ELSE status END,
+        "updatedAt" = now()
+    WHERE id = ${id}
+      AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue}, ${PaymentStatus.RenewalFailed})
       AND "cancelRequestedAt" IS NULL
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
@@ -296,7 +307,8 @@ const requestCancel = (sql: SqlClient.SqlClient) => (id: string) =>
 const clearCancelRequest = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<{ readonly id: string }>`
     UPDATE payments SET "cancelRequestedAt" = NULL, "updatedAt" = now()
-    WHERE id = ${id} AND status = ${PaymentStatus.Active}
+    WHERE id = ${id}
+      AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
       AND "cancelRequestedAt" IS NOT NULL
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
