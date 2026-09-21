@@ -108,6 +108,14 @@ export interface PaymentRepo {
   readonly markCancelledLapsed: (
     id: string,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /**
+   * Terminal cancel driven by an upstream (SendPulse) signal at charge time: flip
+   * an Active/PastDue payment straight to `cancelled` (no lapse tick needed).
+   * Returns false if it was already terminal.
+   */
+  readonly cancelUpstream: (
+    id: string,
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
   /** Deferral: push the anchor + re-derived next date on an active payment. */
   readonly defer: (
     id: string,
@@ -127,9 +135,7 @@ export interface PaymentRepo {
   ) => Effect.Effect<void, SqlError.SqlError>;
   /** Drop the stored recurring token, so the scheduler prompts a manual (crypto) renewal
    * next cycle instead of autocharging a card (docs/28). Shifts no date. */
-  readonly clearToken: (
-    id: string,
-  ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly clearToken: (id: string) => Effect.Effect<void, SqlError.SqlError>;
   /**
    * Remap every payment of one opaque external user to another (docs/31), returning
    * how many rows moved. Fails with a unique-violation SqlError when both ids hold an
@@ -319,6 +325,16 @@ const markCancelledLapsed = (sql: SqlClient.SqlClient) => (id: string) =>
     WHERE id = ${id} AND "cancelRequestedAt" IS NOT NULL
   `.pipe(Effect.asVoid);
 
+const cancelUpstream = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql<{ readonly id: string }>`
+    UPDATE payments
+    SET status = ${PaymentStatus.Cancelled}, "cancelRequestedAt" = now(),
+        "updatedAt" = now()
+    WHERE id = ${id}
+      AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+    RETURNING id
+  `.pipe(Effect.map((rows) => rows.length > 0));
+
 const defer =
   (sql: SqlClient.SqlClient) =>
   (id: string, newPeriodEnd: Date, newNextPaymentDate: Date) =>
@@ -371,6 +387,7 @@ export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   requestCancel: requestCancel(sql),
   clearCancelRequest: clearCancelRequest(sql),
   markCancelledLapsed: markCancelledLapsed(sql),
+  cancelUpstream: cancelUpstream(sql),
   defer: defer(sql),
   updateToken: updateToken(sql),
   setMethod: setMethod(sql),

@@ -1,5 +1,6 @@
 import type {
   ChargeRetryFailedEvent,
+  PaymentCancelledEvent,
   Payment,
   PaymentManualRequiredEvent,
   RenewalFailedEvent,
@@ -70,6 +71,27 @@ export const renewalFailed = (
 ): RenewalFailedEvent => ({
   id: `evt_sub_${sub.id}_renewal_failed`,
   name: 'renewal_failed',
+  occurredAt: now,
+  correlationId: sub.id,
+  externalUserId: sub.externalUserId,
+  aggregateId: sub.id,
+  payload: { reason },
+});
+
+/**
+ * The contact cancelled/quarantined on the SendPulse side, detected by the
+ * scheduler's pre-charge tag check (docs/23): cancel on our side and never charge.
+ * Same deterministic id as the operator cancel so the two dedupe. Recorded for
+ * audit; intentionally NOT mapped to a SendPulse flow (no echo back to a user who
+ * already cancelled).
+ */
+export const sinkCancelled = (
+  sub: Payment,
+  reason: string,
+  now: Date,
+): PaymentCancelledEvent => ({
+  id: `evt_sub_${sub.id}_cancelled`,
+  name: 'payment_cancelled',
   occurredAt: now,
   correlationId: sub.id,
   externalUserId: sub.externalUserId,

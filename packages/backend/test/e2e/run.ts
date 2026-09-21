@@ -200,7 +200,8 @@ const verifyNoLeaks = (): void => {
   if (remaining !== '0') {
     throw new Error(`leaked ${remaining} test database(s)`);
   }
-  const total = scenarios.length + effectScenarios.length + edgeScenarios.length;
+  const total =
+    scenarios.length + effectScenarios.length + edgeScenarios.length;
   console.log(`e2e: ${total.toString()} scenarios passed; 0 leaked databases`);
 };
 

@@ -135,6 +135,10 @@ export interface SinksConfig {
   readonly sendpulse: {
     readonly apiUrl: string;
     readonly rateLimitRps: number;
+    /** Contact tags that mean "cancelled/quarantined upstream" — the scheduler
+     * skips + cancels a due payment whose contact carries any of these. Lowercased
+     * for case-insensitive matching. */
+    readonly cancelTags: readonly string[];
   };
 }
 
@@ -291,6 +295,15 @@ const loadDatabaseConfig = (): DatabaseConfig => ({
   ssl: loadDbSsl(),
 });
 
+/** Parse the SendPulse "cancelled upstream" tag list (env, comma-separated),
+ * lowercased for case-insensitive matching. Its own loader so `loadConfig` stays
+ * within the complexity budget. */
+const loadSendPulseCancelTags = (): readonly string[] =>
+  (process.env['SENDPULSE_CANCEL_TAGS'] ?? 'карантин,скасували підписку')
+    .split(',')
+    .map((tag) => tag.trim().toLowerCase())
+    .filter((tag) => tag.length > 0);
+
 export const loadConfig = (): AppConfig => ({
   host: process.env['HOST'] ?? '0.0.0.0',
   port: Number(process.env['PORT'] ?? '3000'),
@@ -309,6 +322,7 @@ export const loadConfig = (): AppConfig => ({
         process.env['SENDPULSE_API_URL'] ??
         'https://api.sendpulse.com/telegram',
       rateLimitRps: Number(process.env['SENDPULSE_RATE_LIMIT_RPS'] ?? '5'),
+      cancelTags: loadSendPulseCancelTags(),
     },
   },
   bffSecret: Redacted.make(process.env['BFF_SECRET'] ?? ''),

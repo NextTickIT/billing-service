@@ -18,6 +18,7 @@ import {
 } from '@/modules/charge/contracts.js';
 import { makeChargeRepo } from '@/modules/charge/data-access.js';
 import { ChargePipeline } from '@/modules/charge/domain.js';
+import { sinkCancelled } from '@/modules/billing/events.js';
 import { scheduleTick } from '@/modules/billing/scheduler.js';
 import { normalizeCallback } from '@/modules/wayforpay/callback.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
@@ -461,6 +462,8 @@ const driveScheduler = Effect.gen(function* () {
       ingest: pipeline.ingest,
       publish: outbox.publish,
       lapse: () => Effect.void,
+      upstreamCancelled: () => Effect.succeed(false),
+      cancelUpstream: () => Effect.void,
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
@@ -628,6 +631,8 @@ const driveLapse = Effect.gen(function* () {
           idemKey: `lapse:${sub.id}`,
           payload: { paymentId: sub.id, externalUserId: sub.externalUserId },
         }).pipe(Effect.asVoid),
+      upstreamCancelled: () => Effect.succeed(false),
+      cancelUpstream: () => Effect.void,
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
@@ -1039,6 +1044,8 @@ const driveCancelPastDue = Effect.gen(function* () {
           idemKey: `lapse:${sub.id}`,
           payload: { paymentId: sub.id, externalUserId: sub.externalUserId },
         }).pipe(Effect.asVoid),
+      upstreamCancelled: () => Effect.succeed(false),
+      cancelUpstream: () => Effect.void,
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
@@ -1082,7 +1089,9 @@ const driveCancelRenewalFailed = Effect.gen(function* () {
   });
   const ok = yield* subs.requestCancel(created.id);
   if (!ok) {
-    return yield* Effect.die('requestCancel must accept a RenewalFailed payment');
+    return yield* Effect.die(
+      'requestCancel must accept a RenewalFailed payment',
+    );
   }
 });
 
@@ -1116,6 +1125,103 @@ const cancelRenewalFailedImmediate: EffectScenario = {
   },
 };
 
+/** The scheduler's pre-charge check reports the contact cancelled upstream
+ * (SendPulse): cancel locally via the real cancelUpstream repo + emit
+ * payment_cancelled, and NEVER call the WFP charge client (docs/23). */
+const driveCancelUpstream = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makePaymentRepo(sql);
+  const created = yield* subs.insert({
+    externalUserId: 'sp:upstream-cancel',
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: PaymentStatus.Active,
+    recurring: true,
+    currentPeriodStart: new Date('2026-06-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2026-07-01T00:00:00Z'),
+    nextPaymentDate: new Date('2026-07-01T00:00:00Z'), // due
+    recurringTokenRef: 'tok',
+    firstFailureAt: null,
+    retryAttempt: 0,
+  });
+  void created;
+  const outbox = yield* Outbox;
+  yield* scheduleTick(
+    {
+      subs,
+      client: {
+        charge: () =>
+          Effect.die('WFP charge must not run: contact cancelled upstream'),
+      },
+      ingest: (yield* ChargePipeline).ingest,
+      publish: outbox.publish,
+      lapse: () =>
+        Effect.die('lapse unused: upstream cancel uses cancelUpstream'),
+      upstreamCancelled: () => Effect.succeed(true),
+      cancelUpstream: (sub, now) =>
+        subs
+          .cancelUpstream(sub.id)
+          .pipe(
+            Effect.flatMap((cancelled) =>
+              cancelled
+                ? outbox.publish(sinkCancelled(sub, 'sendpulse_cancelled', now))
+                : Effect.void,
+            ),
+          ),
+      createManualCheckout: () =>
+        Effect.die('manual checkout unused: this payment has a token'),
+    },
+    { intervalSeconds: 60, batchSize: 10 },
+  );
+  yield* runFor(2);
+});
+
+const assertCancelUpstream = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT status::text FROM payments`,
+    '3',
+    'the upstream-cancelled payment is cancelled locally',
+  );
+  await eq(
+    query,
+    `SELECT ("cancelRequestedAt" IS NOT NULL)::text FROM payments`,
+    'true',
+    'cancelRequestedAt is stamped',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM domain_events WHERE name = 'payment_cancelled'
+       AND payload->>'reason' = 'sendpulse_cancelled'`,
+    '1',
+    'payment_cancelled (reason sendpulse_cancelled) emitted',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM charge_fixations`,
+    '0',
+    'no WFP charge was attempted (no fixation)',
+  );
+};
+
+const cancelUpstreamSkipsCharge: EffectScenario = {
+  name: 'scheduler: a contact cancelled upstream is cancelled locally, never charged',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveCancelUpstream);
+      await assertCancelUpstream(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
   findExtendableMatchesPastDue,
@@ -1128,6 +1234,7 @@ export const effectScenarios: readonly EffectScenario[] = [
   softCancelLapses,
   cancelPastDueLapses,
   cancelRenewalFailedImmediate,
+  cancelUpstreamSkipsCharge,
   cardChangeOwedRevives,
   cardChangeDeclineLeavesPayment,
 ];

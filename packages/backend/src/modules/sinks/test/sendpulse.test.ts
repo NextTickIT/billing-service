@@ -6,6 +6,7 @@ import { expect } from 'vitest';
 import type { RateLimiter } from '@/infra/rate-limiter.js';
 import {
   type FetchLike,
+  getContactTags,
   makeSendPulseConnector,
 } from '@/modules/sinks/sendpulse.js';
 
@@ -130,6 +131,53 @@ it.effect('fails SinkError when the body is success:false', () =>
       Effect.flip,
       Effect.map((error) => {
         expect(error._tag).toBe('SinkError');
+      }),
+    ),
+);
+
+it.effect('getContactTags reads and lowercases the contact tags', () => {
+  const calls: Recorded[] = [];
+  return getContactTags(
+    {
+      token: 'sp_apikey_x',
+      apiUrl: 'http://sp/telegram',
+      fetch: recordingFetch(
+        200,
+        {
+          success: true,
+          data: { tags: ['карантин', 'VIP', 'Скасували Підписку'] },
+        },
+        calls,
+      ),
+      rateLimiter: noLimit,
+    },
+    'contact_9',
+  ).pipe(
+    Effect.map((tags) => {
+      expect(calls[0]?.url).toBe(
+        'http://sp/telegram/contacts/get?id=contact_9',
+      );
+      // Lowercased so the scheduler's (already-lowercased) cancel tags match
+      // regardless of the case an operator used in SendPulse.
+      expect(tags).toEqual(['карантин', 'vip', 'скасували підписку']);
+    }),
+  );
+});
+
+it.effect(
+  'getContactTags returns [] when tags is missing or not an array',
+  () =>
+    getContactTags(
+      {
+        token: 'sp_apikey_x',
+        apiUrl: 'http://sp/telegram',
+        fetch: recordingFetch(200, { success: true, data: {} }, []),
+        rateLimiter: noLimit,
+      },
+      'contact_9',
+    ).pipe(
+      Effect.map((tags) => {
+        expect(tags).toEqual([]);
       }),
     ),
 );

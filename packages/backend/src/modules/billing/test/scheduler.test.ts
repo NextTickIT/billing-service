@@ -61,7 +61,50 @@ const manualCheckoutStub =
       };
     });
 
-const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
+interface RepoCalls {
+  advanced: { id: string; anchor: AdvanceAnchor } | null;
+  retry: { id: string; state: RetryState } | null;
+  renewalFailed: boolean;
+}
+
+/** The PaymentRepo mock: the three methods the scheduler drives record into `calls`;
+ * everything else `die`s (unused on the charge path). */
+const makeSubsMock = (sub: Payment, calls: RepoCalls): PaymentRepo => ({
+  findDue: () => Effect.succeed([sub]),
+  advanceAfterSuccess: (id, anchor) =>
+    Effect.sync(() => {
+      calls.advanced = { id, anchor };
+    }),
+  recordRetry: (id, state) =>
+    Effect.sync(() => {
+      calls.retry = { id, state };
+    }),
+  markRenewalFailed: () =>
+    Effect.sync(() => {
+      calls.renewalFailed = true;
+    }),
+  findActiveRecurringByExternalUser: die,
+  findById: die,
+  insert: die,
+  extend: die,
+  findByExternalUser: die,
+  listAll: die,
+  requestCancel: die,
+  clearCancelRequest: die,
+  markCancelledLapsed: die,
+  cancelUpstream: die,
+  defer: die,
+  updateToken: die,
+  setMethod: die,
+  clearToken: die,
+  renameExternalUser: die,
+});
+
+const makeDeps = (
+  sub: Payment,
+  response: W4pChargeResponse,
+  upstreamCancelled = false,
+) => {
   const lapseCalls: LapseCalls = { lapsed: [] };
   const calls = {
     advanced: null as { id: string; anchor: AdvanceAnchor } | null,
@@ -70,39 +113,18 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
     ingested: [] as Charge[],
     published: [] as DomainEvent[],
     manualCheckout: [] as { sub: Payment; now: Date }[],
+    charged: 0,
+    cancelledUpstream: [] as Payment[],
   };
-  const subs: PaymentRepo = {
-    findDue: () => Effect.succeed([sub]),
-    advanceAfterSuccess: (id, anchor) =>
-      Effect.sync(() => {
-        calls.advanced = { id, anchor };
-      }),
-    recordRetry: (id, state) =>
-      Effect.sync(() => {
-        calls.retry = { id, state };
-      }),
-    markRenewalFailed: () =>
-      Effect.sync(() => {
-        calls.renewalFailed = true;
-      }),
-    findActiveRecurringByExternalUser: die,
-    findById: die,
-    insert: die,
-    extend: die,
-    findByExternalUser: die,
-    listAll: die,
-    requestCancel: die,
-    clearCancelRequest: die,
-    markCancelledLapsed: die,
-    defer: die,
-    updateToken: die,
-    setMethod: die,
-    clearToken: die,
-    renameExternalUser: die,
-  };
+  const subs = makeSubsMock(sub, calls);
   const deps: SchedulerDeps = {
     subs,
-    client: { charge: () => Effect.succeed(response) },
+    client: {
+      charge: () =>
+        Effect.sync(() => {
+          calls.charged += 1;
+        }).pipe(Effect.as(response)),
+    },
     ingest: (event) =>
       Effect.sync(() => {
         calls.ingested.push(event);
@@ -115,10 +137,36 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
       Effect.sync(() => {
         lapseCalls.lapsed.push(payment);
       }),
+    upstreamCancelled: () => Effect.succeed(upstreamCancelled),
+    cancelUpstream: (payment) =>
+      Effect.sync(() => {
+        calls.cancelledUpstream.push(payment);
+      }),
     createManualCheckout: manualCheckoutStub(calls),
   };
   return { deps, calls, lapseCalls };
 };
+
+it.effect(
+  'a contact cancelled upstream is cancelled locally and never charged',
+  () =>
+    Effect.gen(function* () {
+      const { deps, calls, lapseCalls } = makeDeps(
+        baseSub,
+        { transactionStatus: 'Approved', createdDate: '1700000000' },
+        true, // upstreamCancelled
+      );
+
+      yield* scheduleTick(deps, config);
+
+      expect(calls.cancelledUpstream.map((s) => s.id)).toEqual(['sub-1']);
+      expect(calls.charged).toBe(0);
+      expect(calls.advanced).toBeNull();
+      expect(calls.retry).toBeNull();
+      expect(calls.renewalFailed).toBe(false);
+      expect(lapseCalls.lapsed).toHaveLength(0);
+    }),
+);
 
 it.effect(
   'an approved charge advances the subscription and records the payment',

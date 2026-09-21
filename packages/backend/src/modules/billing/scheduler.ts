@@ -30,6 +30,16 @@ export interface SchedulerDeps {
     event: DomainEvent,
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly lapse: (sub: Payment) => Effect.Effect<void, SqlError.SqlError>;
+  /** Best-effort check that the contact cancelled/quarantined on the SendPulse side
+   * (by contact tag). Fail-open: the boot wires any SendPulse error to `false` so a
+   * SendPulse outage never stalls real renewals (docs/23). */
+  readonly upstreamCancelled: (sub: Payment) => Effect.Effect<boolean>;
+  /** Cancel locally because the contact cancelled upstream: flip to cancelled +
+   * record payment_cancelled. No charge, no retry ladder. */
+  readonly cancelUpstream: (
+    sub: Payment,
+    now: Date,
+  ) => Effect.Effect<void, SqlError.SqlError>;
   /** Mint OUR internal checkout session for a token-less (crypto) renewal and return its
    * link + live window, so the manual-pay prompt can point the user at it (docs/28). */
   readonly createManualCheckout: (
@@ -105,26 +115,16 @@ const promptManual = (deps: SchedulerDeps, sub: Payment, now: Date) =>
     });
   });
 
-const chargeOne = (deps: SchedulerDeps, sub: Payment, now: Date) =>
+/** Charge the stored card token and settle the outcome: approve → advance from the
+ * anchor + feed the success back through the pipeline; decline → the retry ladder. */
+const chargeCard = (deps: SchedulerDeps, sub: Payment, now: Date) =>
   Effect.gen(function* () {
-    if (sub.cancelRequestedAt !== null) {
-      // A soft-cancelled payment lapses at the due date instead of charging —
-      // no charge, no retry ladder (docs/23). The lapse is enqueued (not published
-      // inline) so the worker-owned outbox emits the terminal event durably.
-      yield* deps.lapse(sub);
-      return;
-    }
-    if (sub.recurringTokenRef === null) {
-      // No reusable token (WhitePay crypto): can't autocharge — prompt the user to pay
-      // again at our internal checkout (docs/28) instead.
-      return yield* promptManual(deps, sub, now);
-    }
     const orderReference = orderReferenceFor(sub);
     const response = yield* deps.client.charge({
       orderReference,
       amount: sub.amount,
       currency: sub.currency,
-      recToken: sub.recurringTokenRef,
+      recToken: sub.recurringTokenRef ?? '',
       orderDate: Math.floor(now.getTime() / 1000),
       productName: `Payment ${sub.period}`,
     });
@@ -141,6 +141,30 @@ const chargeOne = (deps: SchedulerDeps, sub: Payment, now: Date) =>
       return;
     }
     yield* onFailure(deps, sub, response.reason ?? 'charge declined', now);
+  });
+
+const chargeOne = (deps: SchedulerDeps, sub: Payment, now: Date) =>
+  Effect.gen(function* () {
+    if (sub.cancelRequestedAt !== null) {
+      // A soft-cancelled payment lapses at the due date instead of charging —
+      // no charge, no retry ladder (docs/23). The lapse is enqueued (not published
+      // inline) so the worker-owned outbox emits the terminal event durably.
+      yield* deps.lapse(sub);
+      return;
+    }
+    if (yield* deps.upstreamCancelled(sub)) {
+      // The contact cancelled/quarantined on the SendPulse side — cancel on our
+      // side and never attempt the charge (docs/23). Applies to card AND crypto
+      // renewals (checked before the token branch below).
+      yield* deps.cancelUpstream(sub, now);
+      return;
+    }
+    if (sub.recurringTokenRef === null) {
+      // No reusable token (WhitePay crypto): can't autocharge — prompt the user to pay
+      // again at our internal checkout (docs/28) instead.
+      return yield* promptManual(deps, sub, now);
+    }
+    yield* chargeCard(deps, sub, now);
   });
 
 export const scheduleTick = (

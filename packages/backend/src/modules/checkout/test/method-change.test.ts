@@ -50,17 +50,32 @@ const paymentWith = (status: PaymentStatus): Payment => ({
 // ---- planMethodChange: the owed/active × target-method decision matrix ----
 
 it('active → crypto flips server-side (no payment): crypto has no free verify', () => {
-  const plan = planMethodChange(paymentWith(PaymentStatus.Active), CRYPTO, true, 1);
+  const plan = planMethodChange(
+    paymentWith(PaymentStatus.Active),
+    CRYPTO,
+    true,
+    1,
+  );
   expect(plan).toEqual({ action: 'flip' });
 });
 
 it('active → card runs a 0-amount verify when card-verify is enabled', () => {
-  const plan = planMethodChange(paymentWith(PaymentStatus.Active), CARD, true, 1);
+  const plan = planMethodChange(
+    paymentWith(PaymentStatus.Active),
+    CARD,
+    true,
+    1,
+  );
   expect(plan).toEqual({ action: 'checkout', amount: 0 });
 });
 
 it('active → card falls back to a minimal tokenizing charge when verify is off', () => {
-  const plan = planMethodChange(paymentWith(PaymentStatus.Active), CARD, false, 1);
+  const plan = planMethodChange(
+    paymentWith(PaymentStatus.Active),
+    CARD,
+    false,
+    1,
+  );
   expect(plan).toEqual({ action: 'checkout', amount: 1 });
 });
 
@@ -72,7 +87,12 @@ it('owed → crypto bills the arrears amount (never a free flip)', () => {
 });
 
 it('owed → card bills the arrears amount (verify config ignored)', () => {
-  const plan = planMethodChange(paymentWith(PaymentStatus.PastDue), CARD, true, 1);
+  const plan = planMethodChange(
+    paymentWith(PaymentStatus.PastDue),
+    CARD,
+    true,
+    1,
+  );
   expect(plan).toEqual({ action: 'checkout', amount: 30000 });
 });
 
@@ -133,6 +153,7 @@ const recordingRepo = () => {
     requestCancel: die,
     clearCancelRequest: die,
     markCancelledLapsed: die,
+    cancelUpstream: die,
     defer: die,
     updateToken: (_id, token) =>
       Effect.sync(() => {

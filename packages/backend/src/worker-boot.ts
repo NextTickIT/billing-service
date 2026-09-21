@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 
 import { SqlClient } from '@effect/sql';
-import type { Payment } from '@billing-service/shared';
+import { SinkKind, type Payment } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
 import type { AppConfig } from '@/config.js';
@@ -22,7 +22,14 @@ import {
   ChargePipeline,
   type ChargePipelineService,
 } from '@/modules/charge/domain.js';
+import { sinkCancelled } from '@/modules/billing/events.js';
 import { runScheduler } from '@/modules/billing/scheduler.js';
+import { makeSinksRepo } from '@/modules/sinks/data-access.js';
+import {
+  getContactTags,
+  type SendPulseClient,
+} from '@/modules/sinks/sendpulse.js';
+import { makeRateLimiter } from '@/infra/rate-limiter.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
   checkoutPath,
@@ -152,6 +159,55 @@ const manualCheckoutMinter =
         : { checkoutUrl: checkoutPath(baseUrl, id), windowExpiresAt };
     });
 
+/**
+ * Build the scheduler's pre-charge "cancelled upstream?" check from the SendPulse
+ * sink (docs/23). Reads the sink token once at boot; if the sink is disabled or
+ * tokenless the check is OFF (always false → charges proceed as before). Fail-open:
+ * any SendPulse error resolves to false and is logged, so an outage never stalls
+ * renewals — a genuinely-cancelled contact is caught on a later tick.
+ */
+const makeUpstreamCancelledCheck = (
+  sql: SqlClient.SqlClient,
+  config: AppConfig,
+) =>
+  Effect.gen(function* () {
+    const sink = yield* makeSinksRepo(sql).getWithSecret(SinkKind.SendPulse);
+    const token =
+      Option.isSome(sink) && sink.value.enabled ? sink.value.auth.token : '';
+    if (token.length === 0) {
+      yield* Effect.logWarning(
+        'scheduler: SendPulse sink disabled or tokenless — upstream-cancel check OFF',
+      );
+      return (): Effect.Effect<boolean> => Effect.succeed(false);
+    }
+    const rateLimiter = yield* makeRateLimiter(
+      config.sinks.sendpulse.rateLimitRps,
+    );
+    const client: SendPulseClient = {
+      token,
+      apiUrl: config.sinks.sendpulse.apiUrl,
+      fetch: (url, init) => globalThis.fetch(url, init),
+      rateLimiter,
+    };
+    const cancelTags = config.sinks.sendpulse.cancelTags;
+    return (sub: Payment): Effect.Effect<boolean> =>
+      getContactTags(client, sub.externalUserId).pipe(
+        Effect.map((tags) => tags.some((tag) => cancelTags.includes(tag))),
+        Effect.catchAll((error) =>
+          Effect.logError(
+            'scheduler: SendPulse tag check failed — charging anyway (fail-open)',
+          ).pipe(
+            Effect.annotateLogs({
+              paymentId: sub.id,
+              externalUserId: sub.externalUserId,
+              reason: error.reason,
+            }),
+            Effect.as(false),
+          ),
+        ),
+      );
+  });
+
 /** Fork the recurring-charge scheduler (FR-004) if enabled. */
 const startScheduler = (
   config: AppConfig,
@@ -164,10 +220,13 @@ const startScheduler = (
     }
     const client = yield* WayForPay;
     const sql = yield* SqlClient.SqlClient;
+    const subs = makePaymentRepo(sql);
+    // Pre-charge safety net: don't charge a contact who cancelled upstream (SendPulse).
+    const upstreamCancelled = yield* makeUpstreamCancelledCheck(sql, config);
     yield* Effect.forkDaemon(
       runScheduler(
         {
-          subs: makePaymentRepo(sql),
+          subs,
           client,
           ingest,
           publish,
@@ -180,6 +239,19 @@ const startScheduler = (
                 externalUserId: sub.externalUserId,
               },
             }).pipe(Effect.asVoid),
+          upstreamCancelled,
+          // Contact cancelled upstream: flip to cancelled + record payment_cancelled
+          // (unmapped to a flow → no echo back to a user who already cancelled).
+          cancelUpstream: (sub, now) =>
+            subs
+              .cancelUpstream(sub.id)
+              .pipe(
+                Effect.flatMap((cancelled) =>
+                  cancelled
+                    ? publish(sinkCancelled(sub, 'sendpulse_cancelled', now))
+                    : Effect.void,
+                ),
+              ),
           // Token-less (crypto) renewal prompt (docs/28): mint/reuse our internal checkout.
           createManualCheckout: manualCheckoutMinter(sql, config),
         },
