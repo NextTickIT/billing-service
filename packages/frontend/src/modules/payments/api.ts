@@ -11,16 +11,20 @@ import { apiFetch } from '@/infra/apiFetch.js';
 
 export interface ListPaymentsFilter {
   externalUserId?: string;
+  /** Free-text contact search (name/username/email/phone), resolved server-side
+   * via the contacts cache to matching payments. */
+  name?: string;
   statuses?: number[];
   cancelling?: boolean;
 }
 
-export async function listPayments(
-  filter?: ListPaymentsFilter,
-): Promise<Payment[]> {
+function listPaymentsQuery(filter?: ListPaymentsFilter): string {
   const params = new URLSearchParams();
   if (filter?.externalUserId) {
     params.set('externalUserId', filter.externalUserId);
+  }
+  if (filter?.name) {
+    params.set('name', filter.name);
   }
   for (const s of filter?.statuses ?? []) {
     params.append('status', String(s));
@@ -28,7 +32,13 @@ export async function listPayments(
   if (filter?.cancelling === true) {
     params.set('cancelling', 'true');
   }
-  const qs = params.toString();
+  return params.toString();
+}
+
+export async function listPayments(
+  filter?: ListPaymentsFilter,
+): Promise<Payment[]> {
+  const qs = listPaymentsQuery(filter);
   const url = qs ? `/api/payment?${qs}` : '/api/payment';
   const res = await apiFetch(url);
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);

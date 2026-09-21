@@ -25,6 +25,7 @@ const unusedPayments: PaymentRepo = {
   recordRetry: die,
   markRenewalFailed: die,
   findByExternalUser: die,
+  findByContactName: die,
   listAll: die,
   requestCancel: die,
   clearCancelRequest: die,

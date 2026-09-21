@@ -68,7 +68,7 @@ export default {
     type: 'Type',
     recurring: 'Recurring',
     oneTime: 'One-time',
-    contactSearchPlaceholder: 'Search all payments by contact ID',
+    contactSearchPlaceholder: 'Search payments by contact ID or name',
     contactSearchButton: 'Load',
     periodStart: 'Period start',
     periodEnd: 'Period end',

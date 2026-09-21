@@ -67,11 +67,18 @@ function applyFilter(): void {
   }
 }
 
-// Load a single contact's full payment history server-side (empty input resets to all).
+// Search server-side (empty input resets to all). A 24-hex value is a SendPulse
+// contact id → exact lookup; anything else is a free-text name/username/email/phone
+// search resolved via the contacts cache.
 function searchContact(): void {
   activeChip.value = null;
-  const uid = contactQuery.value.trim();
-  void store.loadList(uid.length > 0 ? { externalUserId: uid } : {});
+  const q = contactQuery.value.trim();
+  if (q.length === 0) {
+    void store.loadList({});
+    return;
+  }
+  const isContactId = /^[0-9a-f]{24}$/i.test(q);
+  void store.loadList(isContactId ? { externalUserId: q } : { name: q });
 }
 
 function clearContact(): void {
@@ -174,14 +181,17 @@ async function onCreate(): Promise<void> {
           @click="searchContact"
         />
         <BaseButton
-          v-if="store.filter.externalUserId"
+          v-if="store.filter.externalUserId || store.filter.name"
           variant="ghost"
           :label="t('common.clear')"
           @click="clearContact"
         />
       </div>
 
-      <div v-if="!store.filter.externalUserId" class="filter-bar">
+      <div
+        v-if="!store.filter.externalUserId && !store.filter.name"
+        class="filter-bar"
+      >
         <button
           v-for="chip in [
             PaymentStatus.Active,

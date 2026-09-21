@@ -83,6 +83,11 @@ export interface PaymentRepo {
   readonly findByExternalUser: (
     externalUserId: string,
   ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
+  /** Payments whose cached contact name/username/email/phone matches the query
+   * (case-insensitive substring) — the operator's search-by-name. */
+  readonly findByContactName: (
+    query: string,
+  ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
   /**
    * All payments, newest first — the operator's default table view. An optional
    * filter narrows by status buckets and/or the derived "cancelling" state.
@@ -252,6 +257,19 @@ const findByExternalUser =
       ORDER BY "createdAt" DESC
     `;
 
+const findByContactName = (sql: SqlClient.SqlClient) => (query: string) => {
+  const like = `%${query}%`;
+  return sql<Payment>`
+    SELECT ${sql.unsafe(COLUMNS)} FROM payments
+    WHERE "externalUserId" IN (
+      SELECT "externalUserId" FROM contacts
+      WHERE name ILIKE ${like} OR username ILIKE ${like}
+         OR email ILIKE ${like} OR phone ILIKE ${like}
+    )
+    ORDER BY "createdAt" DESC
+  `;
+};
+
 /**
  * Turn the filter into disjoint status buckets OR'd together. `active` excludes
  * cancel-pending rows (they render as "cancelling"); `cancelling` is that derived
@@ -383,6 +401,7 @@ export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   recordRetry: recordRetry(sql),
   markRenewalFailed: markRenewalFailed(sql),
   findByExternalUser: findByExternalUser(sql),
+  findByContactName: findByContactName(sql),
   listAll: listAll(sql),
   requestCancel: requestCancel(sql),
   clearCancelRequest: clearCancelRequest(sql),

@@ -24,8 +24,11 @@ import {
 } from '@/modules/charge/domain.js';
 import { sinkCancelled } from '@/modules/billing/events.js';
 import { runScheduler } from '@/modules/billing/scheduler.js';
+import { makeContactsRepo } from '@/modules/contacts/data-access.js';
+import { runContactsSync } from '@/modules/contacts/sync.js';
 import { makeSinksRepo } from '@/modules/sinks/data-access.js';
 import {
+  getContactProfile,
   getContactTags,
   type SendPulseClient,
 } from '@/modules/sinks/sendpulse.js';
@@ -264,6 +267,48 @@ const startScheduler = (
     yield* Effect.logInfo('recurring scheduler started');
   });
 
+/** Fork the contacts-cache sync (migration 0019) if enabled and the SendPulse sink
+ * has a token — keeps each payment contact's name searchable for the operator. */
+const startContactsSync = (config: AppConfig) =>
+  Effect.gen(function* () {
+    if (!config.contactsSync.enabled) {
+      return;
+    }
+    const sql = yield* SqlClient.SqlClient;
+    const sink = yield* makeSinksRepo(sql).getWithSecret(SinkKind.SendPulse);
+    const token =
+      Option.isSome(sink) && sink.value.enabled ? sink.value.auth.token : '';
+    if (token.length === 0) {
+      yield* Effect.logWarning(
+        'contacts sync: SendPulse sink disabled or tokenless — sync OFF',
+      );
+      return;
+    }
+    const rateLimiter = yield* makeRateLimiter(
+      config.sinks.sendpulse.rateLimitRps,
+    );
+    const client: SendPulseClient = {
+      token,
+      apiUrl: config.sinks.sendpulse.apiUrl,
+      fetch: (url, init) => globalThis.fetch(url, init),
+      rateLimiter,
+    };
+    yield* Effect.forkDaemon(
+      runContactsSync(
+        {
+          contacts: makeContactsRepo(sql),
+          fetchProfile: (id) => getContactProfile(client, id),
+        },
+        {
+          intervalSeconds: config.contactsSync.intervalSeconds,
+          ttlSeconds: config.contactsSync.ttlSeconds,
+          batchSize: config.contactsSync.batchSize,
+        },
+      ),
+    );
+    yield* Effect.logInfo('contacts sync started');
+  });
+
 /**
  * Register handlers, start the gated sources, then run the queue dispatch loop.
  * The returned effect never completes (the loop runs forever): the standalone
@@ -282,6 +327,7 @@ export const bootWorker = (config: AppConfig) =>
     yield* registerHandlers(registry, outbox, pipeline, sql);
     yield* startPoller(config, pipeline.ingest);
     yield* startScheduler(config, pipeline.ingest, outbox.publish);
+    yield* startContactsSync(config);
     const queue = yield* Queue;
     return yield* queue.run({
       workerId,

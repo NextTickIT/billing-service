@@ -227,3 +227,51 @@ export const getContactTags = (
     Effect.map(asTags),
     Effect.mapError(toSinkError),
   );
+
+/** A contact's searchable profile — the operator payments search resolves a typed
+ * name/username/email/phone to the contact id (= externalUserId). */
+export interface ContactProfile {
+  readonly name: string;
+  readonly username: string;
+  readonly email: string;
+  readonly phone: string;
+}
+
+const str = (x: unknown): string => (typeof x === 'string' ? x : '');
+
+/** Assemble a display name from the Telegram channel_data (first/last/username)
+ * with a `name` variable fallback. */
+const asProfile = (data: unknown): ContactProfile => {
+  const d = data as {
+    channel_data?: {
+      username?: unknown;
+      first_name?: unknown;
+      last_name?: unknown;
+    };
+    variables?: Record<string, unknown>;
+  };
+  const cd = d.channel_data ?? {};
+  const v = d.variables ?? {};
+  const username = str(cd.username);
+  const full = [str(cd.first_name), str(cd.last_name)]
+    .filter((s) => s.length > 0)
+    .join(' ');
+  return {
+    name: full || str(v['name']) || username,
+    username,
+    email: str(v['email']),
+    phone: str(v['phone']),
+  };
+};
+
+/** Read one contact's searchable profile (same endpoint as {@link getContactTags}).
+ * Used by the worker's contacts-cache sync so name search stays server-side. */
+export const getContactProfile = (
+  client: SendPulseClient,
+  contactId: string,
+): Effect.Effect<ContactProfile, SinkError> =>
+  call(client, 'GET', `/contacts/get?id=${encodeURIComponent(contactId)}`).pipe(
+    Effect.flatMap(parseData),
+    Effect.map(asProfile),
+    Effect.mapError(toSinkError),
+  );

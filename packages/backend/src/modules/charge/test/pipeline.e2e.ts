@@ -25,6 +25,7 @@ import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import { cancelNotify, lapseNotify } from '@/modules/payment/cancel.js';
 import { PAYMENT_CANCEL, PAYMENT_LAPSE } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
+import { makeContactsRepo } from '@/modules/contacts/data-access.js';
 import type { W4pTransaction } from '@/modules/wayforpay/contracts.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
 import { pollTick } from '@/modules/wayforpay/poller.js';
@@ -1222,6 +1223,85 @@ const cancelUpstreamSkipsCharge: EffectScenario = {
   },
 };
 
+/** The operator payments search resolves a typed name/username/phone to contact
+ * ids via the contacts cache (migration 0019): findByContactName joins contacts
+ * and ILIKE-matches. Verifies case-insensitivity, phone-fragment match, and that
+ * a decoy contact is not returned. */
+const driveNameSearch = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makePaymentRepo(sql);
+  const contacts = makeContactsRepo(sql);
+  const mk = (externalUserId: string) => ({
+    externalUserId,
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: PaymentStatus.Active,
+    recurring: true,
+    currentPeriodStart: new Date('2026-01-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2026-02-01T00:00:00Z'),
+    nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+    recurringTokenRef: 'tok',
+    firstFailureAt: null,
+    retryAttempt: 0,
+  });
+  yield* subs.insert(mk('sp:match'));
+  yield* subs.insert(mk('sp:decoy'));
+  yield* contacts.upsert('sp:match', {
+    name: 'Олександр Петренко',
+    username: 'alex_p',
+    email: 'a@b.com',
+    phone: '+380631112233',
+  });
+  yield* contacts.upsert('sp:decoy', {
+    name: 'Іван Сидоренко',
+    username: 'ivan',
+    email: '',
+    phone: '',
+  });
+  const only = (rows: readonly { externalUserId: string }[], id: string) =>
+    rows.length === 1 && rows[0]?.externalUserId === id;
+  const bySurname = yield* subs.findByContactName('петренко'); // case-insensitive
+  const byUsername = yield* subs.findByContactName('alex_p');
+  const byPhone = yield* subs.findByContactName('1112233');
+  const byDecoy = yield* subs.findByContactName('сидоренко');
+  if (
+    !only(bySurname, 'sp:match') ||
+    !only(byUsername, 'sp:match') ||
+    !only(byPhone, 'sp:match') ||
+    !only(byDecoy, 'sp:decoy')
+  ) {
+    return yield* Effect.die(
+      'name search did not resolve to the expected contact',
+    );
+  }
+});
+
+const assertNameSearch = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT count(*) FROM contacts`,
+    '2',
+    'both contacts were cached',
+  );
+};
+
+const nameSearchResolvesContact: EffectScenario = {
+  name: 'operator: payments search resolves a typed name/phone to the contact',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveNameSearch);
+      await assertNameSearch(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
   findExtendableMatchesPastDue,
@@ -1235,6 +1315,7 @@ export const effectScenarios: readonly EffectScenario[] = [
   cancelPastDueLapses,
   cancelRenewalFailedImmediate,
   cancelUpstreamSkipsCharge,
+  nameSearchResolvesContact,
   cardChangeOwedRevives,
   cardChangeDeclineLeavesPayment,
 ];

@@ -156,6 +156,14 @@ export interface AppConfig {
   readonly scheduler: SchedulerConfig;
   readonly worker: WorkerConfig;
   readonly sinks: SinksConfig;
+  /** Contacts-cache sync (migration 0019): mirror each payment contact's SendPulse
+   * profile so the operator payments search resolves a name to contact ids. */
+  readonly contactsSync: {
+    readonly enabled: boolean;
+    readonly intervalSeconds: number;
+    readonly ttlSeconds: number;
+    readonly batchSize: number;
+  };
   /**
    * Shared secret the BFF sends on every proxied request (`BFF_SECRET` env).
    * Empty string disables the gate (development / test). When set, the gate
@@ -304,6 +312,15 @@ const loadSendPulseCancelTags = (): readonly string[] =>
     .map((tag) => tag.trim().toLowerCase())
     .filter((tag) => tag.length > 0);
 
+const loadContactsSyncConfig = (): AppConfig['contactsSync'] => ({
+  enabled: process.env['CONTACTS_SYNC_ENABLED'] !== 'false',
+  intervalSeconds: Number(
+    process.env['CONTACTS_SYNC_INTERVAL_SECONDS'] ?? '900',
+  ),
+  ttlSeconds: Number(process.env['CONTACTS_SYNC_TTL_SECONDS'] ?? '21600'),
+  batchSize: Number(process.env['CONTACTS_SYNC_BATCH_SIZE'] ?? '500'),
+});
+
 export const loadConfig = (): AppConfig => ({
   host: process.env['HOST'] ?? '0.0.0.0',
   port: Number(process.env['PORT'] ?? '3000'),
@@ -325,6 +342,7 @@ export const loadConfig = (): AppConfig => ({
       cancelTags: loadSendPulseCancelTags(),
     },
   },
+  contactsSync: loadContactsSyncConfig(),
   bffSecret: Redacted.make(process.env['BFF_SECRET'] ?? ''),
   redirectAllowedHosts: (process.env['REDIRECT_ALLOWED_HOSTS'] ?? '')
     .split(',')

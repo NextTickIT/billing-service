@@ -88,6 +88,7 @@ const makeSubsMock = (sub: Payment, calls: RepoCalls): PaymentRepo => ({
   insert: die,
   extend: die,
   findByExternalUser: die,
+  findByContactName: die,
   listAll: die,
   requestCancel: die,
   clearCancelRequest: die,

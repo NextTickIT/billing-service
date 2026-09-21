@@ -67,6 +67,11 @@ const readId = (request: FastifyRequest): string =>
 const readExternalUser = (request: FastifyRequest): string =>
   (request.query as { readonly externalUserId?: string }).externalUserId ?? '';
 
+/** Free-text contact search (name/username/email/phone) resolved via the contacts
+ * cache — the operator can search the payments table by a person's name. */
+const readName = (request: FastifyRequest): string =>
+  ((request.query as { readonly name?: string }).name ?? '').trim();
+
 interface ListQuery {
   readonly status?: string | readonly string[];
   readonly cancelling?: string;
@@ -93,10 +98,17 @@ const listPayments = (_input: unknown, request: FastifyRequest) =>
     yield* operatorActor(request);
     const sql = yield* SqlClient.SqlClient;
     const externalUserId = readExternalUser(request);
+    const name = readName(request);
     const repo = makePaymentRepo(sql);
-    return externalUserId === ''
-      ? yield* repo.listAll(500, readListFilter(request))
-      : yield* repo.findByExternalUser(externalUserId);
+    // An exact contact id wins; else a typed name resolves via the contacts cache;
+    // else the default table (status-filtered, 500-row window).
+    if (externalUserId !== '') {
+      return yield* repo.findByExternalUser(externalUserId);
+    }
+    if (name !== '') {
+      return yield* repo.findByContactName(name);
+    }
+    return yield* repo.listAll(500, readListFilter(request));
   });
 
 const getPayment = (_input: unknown, request: FastifyRequest) =>

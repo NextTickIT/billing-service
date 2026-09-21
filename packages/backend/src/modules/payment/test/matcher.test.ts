@@ -39,6 +39,7 @@ const repo = (found: Payment | null): PaymentRepo => ({
   recordRetry: die,
   markRenewalFailed: die,
   findByExternalUser: die,
+  findByContactName: die,
   listAll: die,
   requestCancel: die,
   clearCancelRequest: die,

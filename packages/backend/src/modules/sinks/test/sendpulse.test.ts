@@ -6,6 +6,7 @@ import { expect } from 'vitest';
 import type { RateLimiter } from '@/infra/rate-limiter.js';
 import {
   type FetchLike,
+  getContactProfile,
   getContactTags,
   makeSendPulseConnector,
 } from '@/modules/sinks/sendpulse.js';
@@ -180,4 +181,67 @@ it.effect(
         expect(tags).toEqual([]);
       }),
     ),
+);
+
+it.effect(
+  'getContactProfile assembles name from channel_data + variables',
+  () => {
+    const calls: Recorded[] = [];
+    return getContactProfile(
+      {
+        token: 'sp_apikey_x',
+        apiUrl: 'http://sp/telegram',
+        fetch: recordingFetch(
+          200,
+          {
+            success: true,
+            data: {
+              channel_data: {
+                username: 'alex_09',
+                first_name: 'Олександр',
+                last_name: 'П',
+              },
+              variables: { email: 'a@b.com', phone: '+380000000000' },
+            },
+          },
+          calls,
+        ),
+        rateLimiter: noLimit,
+      },
+      'contact_9',
+    ).pipe(
+      Effect.map((p) => {
+        expect(calls[0]?.url).toBe(
+          'http://sp/telegram/contacts/get?id=contact_9',
+        );
+        expect(p).toEqual({
+          name: 'Олександр П',
+          username: 'alex_09',
+          email: 'a@b.com',
+          phone: '+380000000000',
+        });
+      }),
+    );
+  },
+);
+
+it.effect('getContactProfile falls back to username when no name fields', () =>
+  getContactProfile(
+    {
+      token: 'sp_apikey_x',
+      apiUrl: 'http://sp/telegram',
+      fetch: recordingFetch(
+        200,
+        { success: true, data: { channel_data: { username: 'lone' } } },
+        [],
+      ),
+      rateLimiter: noLimit,
+    },
+    'c',
+  ).pipe(
+    Effect.map((p) => {
+      expect(p.name).toBe('lone');
+      expect(p.username).toBe('lone');
+    }),
+  ),
 );

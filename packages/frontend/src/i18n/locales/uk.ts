@@ -68,7 +68,7 @@ export default {
     type: 'Тип',
     recurring: 'Регулярний',
     oneTime: 'Одноразовий',
-    contactSearchPlaceholder: 'Пошук усіх платежів за ID контакту',
+    contactSearchPlaceholder: 'Пошук платежів за ID або іменем контакту',
     contactSearchButton: 'Завантажити',
     periodStart: 'Початок періоду',
     periodEnd: 'Кінець періоду',
