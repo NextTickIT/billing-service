@@ -49,6 +49,10 @@ export default {
     periodLabel: 'Розрахунковий період',
     expiresAt: 'Дійсне до',
     redirecting: 'Перенаправлення на перевірку картки…',
+    legalNote: 'Оплачуючи, ви приймаєте:',
+    legalOffer: 'Оферта',
+    legalPrivacy: 'Конфіденційність',
+    legalConsent: 'Згода на обробку даних',
   },
   session: {
     loginTitle: 'Вхід для операторів',

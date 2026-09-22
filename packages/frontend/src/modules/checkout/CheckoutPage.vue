@@ -125,6 +125,14 @@ watch(
 async function onPay(): Promise<void> {
   await store.pay(id, selectedMethod.value);
 }
+
+// Legal documents (Offer / Privacy / Data consent), hosted on the marketing site,
+// linked below the Pay button so the buyer accepts them at the point of payment.
+const legalLinks = [
+  { key: 'checkout.legalOffer', url: 'https://nexttick.it/offer.html' },
+  { key: 'checkout.legalPrivacy', url: 'https://nexttick.it/privacy.html' },
+  { key: 'checkout.legalConsent', url: 'https://nexttick.it/consent.html' },
+] as const;
 </script>
 
 <template>
@@ -196,6 +204,17 @@ async function onPay(): Promise<void> {
               :loading="store.submitting"
               @click="onPay()"
             />
+          </div>
+          <div class="checkout__legal">
+            <p class="checkout__legal-note">{{ t('checkout.legalNote') }}</p>
+            <p class="checkout__legal-links">
+              <template v-for="(l, i) in legalLinks" :key="l.url">
+                <a :href="l.url" target="_blank" rel="noopener noreferrer">{{
+                  t(l.key)
+                }}</a
+                ><span v-if="i < legalLinks.length - 1"> · </span>
+              </template>
+            </p>
           </div>
         </div>
       </template>
@@ -272,5 +291,26 @@ async function onPay(): Promise<void> {
 /* Keep Pay right-aligned whether or not the method picker is shown. */
 .checkout__paybtn {
   margin-left: auto;
+}
+
+.checkout__legal {
+  margin-top: 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  color: var(--dim);
+}
+.checkout__legal-note {
+  margin: 0;
+}
+.checkout__legal-links {
+  margin: 2px 0 0;
+}
+.checkout__legal a {
+  color: var(--dim);
+  text-decoration: underline;
+}
+.checkout__legal a:hover {
+  color: var(--txt);
 }
 </style>

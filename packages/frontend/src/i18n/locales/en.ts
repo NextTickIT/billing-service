@@ -49,6 +49,10 @@ export default {
     periodLabel: 'Billing period',
     expiresAt: 'Valid until',
     redirecting: 'Redirecting to card verification…',
+    legalNote: 'By paying, you accept:',
+    legalOffer: 'Offer',
+    legalPrivacy: 'Privacy Policy',
+    legalConsent: 'Data Consent',
   },
   session: {
     loginTitle: 'Operator login',

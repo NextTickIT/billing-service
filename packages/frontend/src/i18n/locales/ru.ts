@@ -49,6 +49,10 @@ export default {
     periodLabel: 'Расчётный период',
     expiresAt: 'Действительно до',
     redirecting: 'Перенаправление на проверку карты…',
+    legalNote: 'Оплачивая, вы принимаете:',
+    legalOffer: 'Оферта',
+    legalPrivacy: 'Конфиденциальность',
+    legalConsent: 'Согласие на обработку данных',
   },
   session: {
     loginTitle: 'Вход для операторов',
