@@ -34,6 +34,31 @@ export enum CheckoutSessionKind {
 
 export const CheckoutSessionKindSchema = Schema.Enums(CheckoutSessionKind);
 
+/**
+ * A browser redirect target the caller may attach to a checkout. Constrained to an
+ * http(s) URL at the API boundary so a stored target can never be a `javascript:` (or
+ * other scheme) open-redirect the return page would navigate to. Persisted rows read
+ * back as a plain string — the scheme is enforced on write, not on every read.
+ */
+export const RedirectUrl = Schema.String.pipe(
+  Schema.filter((s) => /^https?:\/\//i.test(s), {
+    message: () => 'must be an http(s) URL',
+  }),
+);
+
+/**
+ * An optional promo attached to a checkout. `additionalFreePeriod` is an ISO-8601
+ * duration in our period format (e.g. `P14D`, `P1M`) granted ON TOP of the paid period
+ * when — and only when — this checkout is paid: it pushes the paid-through anchor (and
+ * the next charge date derived from it) further, exactly once. It is a one-time bonus,
+ * never re-applied on the later recurring renewals the scheduler drives.
+ */
+export const CheckoutPromo = Schema.Struct({
+  additionalFreePeriod: Schema.String,
+});
+
+export type CheckoutPromo = Schema.Schema.Type<typeof CheckoutPromo>;
+
 /** A checkout session at rest. `method` is null until chosen on the page. */
 export const CheckoutSession = Schema.Struct({
   id: Schema.String,
@@ -44,8 +69,24 @@ export const CheckoutSession = Schema.Struct({
   method: Schema.NullOr(PaymentMethodSchema),
   status: CheckoutSessionStatusSchema,
   kind: CheckoutSessionKindSchema,
+  // false for a one-time checkout: its payment is created fresh (not extended), stores
+  // no reusable token, and is never scheduled or renewed. Default true (subscription).
+  recurring: Schema.Boolean,
   // The payment a card-change session re-tokenizes; null for a normal checkout.
   paymentId: Schema.NullOr(Schema.String),
+  // Where the return page sends the browser once the webhook resolves the payment:
+  // `successUrl` on confirmation, `failureUrl` on decline/timeout. Null falls back to
+  // the built-in return-page message. The provider redirect still lands on our return
+  // page first, so state is always reconciled from the webhook, never the redirect.
+  successUrl: Schema.NullOr(Schema.String),
+  failureUrl: Schema.NullOr(Schema.String),
+  // Optional one-time promo; null when the caller attached none. Consumed once, when the
+  // session is paid, to extend the paid-through anchor (see CheckoutPromo).
+  promo: Schema.NullOr(CheckoutPromo),
+  // Opt-in dedup key from the caller's `Idempotency-Key` header (null when absent). A
+  // unique index enforces one session per key, so a retried/parallel create returns the
+  // same session instead of minting a duplicate. Never exposed on the public session.
+  idempotencyKey: Schema.NullOr(Schema.String),
   expiresAt: Schema.Date,
   createdAt: Schema.Date,
 });
@@ -57,22 +98,46 @@ export type CheckoutSession = Schema.Schema.Type<typeof CheckoutSession>;
  * still be inserted without a preselected method (it is then chosen on the page). */
 export const NewCheckoutSession = CheckoutSession.pipe(
   Schema.omit('method', 'status', 'createdAt'),
-  Schema.extend(Schema.Struct({ method: Schema.optional(PaymentMethodSchema) })),
+  Schema.extend(
+    Schema.Struct({ method: Schema.optional(PaymentMethodSchema) }),
+  ),
 );
 
 export type NewCheckoutSession = Schema.Schema.Type<typeof NewCheckoutSession>;
 
+/** The stored `period` for a one-time checkout, which has no renewal cadence. A valid
+ * zero-length ISO-8601 duration: it satisfies the NOT NULL `period` columns and is never
+ * parsed (only recurring renewals call `addPeriod`), so a one-time never reads it back. */
+export const ONE_TIME_PERIOD = 'P0D';
+
 /** POST /api/checkout-sessions body (docs/06): the external system's intent. `method`
  * is the default payment method preselected on the checkout page; optional on the wire
- * and defaulted to Card (PaymentMethod.Card) when the caller omits it. */
+ * and defaulted to Card (PaymentMethod.Card) when the caller omits it. `recurring`
+ * defaults to true (a subscription) — a caller opts a one-time payment in with `false`.
+ * `period` (ISO-8601 duration) is the renewal cadence: required for a recurring checkout,
+ * omitted for a one-time purchase (it never renews). `successUrl`/`failureUrl` are
+ * optional post-payment browser redirects (http(s) only). `promo`, if present, grants a
+ * one-time bonus free period on top of the paid period when this checkout is paid. */
 export const CreateCheckoutSession = CheckoutSession.pipe(
-  Schema.pick('externalUserId', 'amount', 'currency', 'period'),
+  Schema.pick('externalUserId', 'amount', 'currency'),
   Schema.extend(
     Schema.Struct({
+      period: Schema.optional(Schema.String),
       method: Schema.optionalWith(PaymentMethodSchema, {
         default: () => PaymentMethod.Card,
       }),
+      recurring: Schema.optionalWith(Schema.Boolean, { default: () => true }),
+      successUrl: Schema.optional(RedirectUrl),
+      failureUrl: Schema.optional(RedirectUrl),
+      promo: Schema.optional(CheckoutPromo),
     }),
+  ),
+  // A recurring checkout needs its renewal cadence; a one-time purchase never renews, so
+  // `period` may be omitted there (the server stores ONE_TIME_PERIOD instead).
+  Schema.filter(
+    (v) =>
+      !v.recurring || (typeof v.period === 'string' && v.period.length > 0),
+    { message: () => 'period is required for a recurring checkout' },
   ),
 );
 
@@ -108,6 +173,53 @@ export const CardChangeRequest = Schema.Struct({
 export type CardChangeRequest = Schema.Schema.Type<typeof CardChangeRequest>;
 
 /**
+ * POST /api/payment/method-change body: switch the user's ONE recurring subscription to a
+ * target payment method, agnostic to whatever it is now. `method` is the DESTINATION
+ * (0=Card, 1=Crypto); the server resolves the user's recurring payment itself. Card→card
+ * (re-tokenize), crypto→card, and card→crypto are all valid.
+ */
+export const MethodChangeRequest = Schema.Struct({
+  externalUserId: Schema.String,
+  method: PaymentMethodSchema,
+});
+
+export type MethodChangeRequest = Schema.Schema.Type<typeof MethodChangeRequest>;
+
+/**
+ * POST /api/payment/method-change response, discriminated on `kind`:
+ * - `checkout`: the change needs the user to pay/verify at a link — switching TO card
+ *   always (a token can only be captured by the cardholder), and switching TO crypto while
+ *   an amount is owed (the arrears are collected in crypto). Same fields as SessionCreated.
+ * - `applied`: the change took effect server-side with no payment — an up-to-date
+ *   subscription switching TO crypto just drops the stored card token and records crypto,
+ *   so the next renewal becomes a manual crypto prompt (there is no free crypto verify).
+ */
+export const MethodChangeCheckout = Schema.Struct({
+  kind: Schema.Literal('checkout'),
+  // Same payload as SessionCreated (spread so the two can never drift), plus `kind`.
+  ...SessionCreated.fields,
+});
+
+export type MethodChangeCheckout = Schema.Schema.Type<
+  typeof MethodChangeCheckout
+>;
+
+export const MethodChangeApplied = Schema.Struct({
+  kind: Schema.Literal('applied'),
+  // Today only ever Crypto (the sole no-payment flip); typed as a method for future flips.
+  method: PaymentMethodSchema,
+});
+
+export type MethodChangeApplied = Schema.Schema.Type<typeof MethodChangeApplied>;
+
+export const MethodChangeResult = Schema.Union(
+  MethodChangeCheckout,
+  MethodChangeApplied,
+);
+
+export type MethodChangeResult = Schema.Schema.Type<typeof MethodChangeResult>;
+
+/**
  * GET /api/checkout-sessions/:id response (public, BFF-proxied, AC-9):
  * amount/currency/period/status/kind/method/expiresAt only — no externalUserId so
  * subscriber data does not appear on the public checkout page. `kind` lets the checkout
@@ -122,6 +234,8 @@ export const CheckoutSessionPublic = CheckoutSession.pipe(
     'status',
     'kind',
     'method',
+    'successUrl',
+    'failureUrl',
     'expiresAt',
   ),
 );

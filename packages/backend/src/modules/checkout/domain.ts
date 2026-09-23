@@ -2,6 +2,8 @@ import type { SqlError } from '@effect/sql';
 import {
   CheckoutSessionKind,
   CheckoutSessionStatus,
+  type NewCheckoutSession,
+  type Payment,
   PaymentMethod,
   PaymentStatus,
 } from '@billing-service/shared';
@@ -18,9 +20,99 @@ import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import { createOrExtend } from '@/modules/payment/domain.js';
 import { addPeriod } from '@/modules/payment/period.js';
 
-/** The public checkout page URL for a session id (served by the frontend SPA). */
-export const checkoutPath = (sessionId: string): string =>
-  `https://bill.nexttick.it/checkout/${sessionId}`;
+/** The public checkout page URL for a session id (served by the frontend SPA). `baseUrl`
+ * is the environment's `checkoutBaseUrl` config (no trailing slash). */
+export const checkoutPath = (baseUrl: string, sessionId: string): string =>
+  `${baseUrl}/checkout/${sessionId}`;
+
+/**
+ * Build OUR internal checkout session for a token-less (crypto) renewal prompt (docs/28):
+ * a normal RECURRING checkout for the payment's own terms, with the last-used method
+ * preselected. Paying it runs through create-or-extend and extends THIS recurring payment
+ * (keyed on the user); a card pay captures a token and graduates it back to autocharge.
+ */
+export const manualRenewalSession = (
+  sub: Payment,
+  sessionId: string,
+  expiresAt: Date,
+  idempotencyKey: string,
+): NewCheckoutSession => ({
+  id: sessionId,
+  externalUserId: sub.externalUserId,
+  amount: sub.amount,
+  currency: sub.currency,
+  period: sub.period,
+  method: sub.method,
+  kind: CheckoutSessionKind.Checkout,
+  recurring: true,
+  paymentId: null,
+  successUrl: null,
+  failureUrl: null,
+  promo: null,
+  // One session per renewal cycle: re-prompts on the retry ladder reuse the SAME link
+  // (the unique idempotencyKey collapses re-inserts), so a user can never hold several
+  // independently-payable links for one cycle and double-pay.
+  idempotencyKey,
+  expiresAt,
+});
+
+/**
+ * A caller-supplied post-payment redirect must point at an allowed host (docs/30). An
+ * empty allowlist accepts any host (dev/default); otherwise the URL's hostname must be
+ * listed — this stops an open redirect off our own checkout domain. The URL already
+ * passed the http(s) scheme filter, so an unparseable value here is malformed → rejected.
+ */
+export const redirectHostAllowed = (
+  allowedHosts: readonly string[],
+  url: string,
+): boolean => {
+  if (allowedHosts.length === 0) {
+    return true;
+  }
+  try {
+    return allowedHosts.includes(new URL(url).hostname);
+  } catch (err) {
+    if (err instanceof TypeError) {
+      return false;
+    }
+    throw err;
+  }
+};
+
+/** How a method change lands. `flip` mutates the payment server-side (no payment);
+ * `checkout` issues a pay/verify session for `amount` in the target method. */
+export type MethodChangePlan =
+  | { readonly action: 'flip' }
+  | { readonly action: 'checkout'; readonly amount: number };
+
+/**
+ * Decide how a method change takes effect (docs/32), previous-method agnostic:
+ * an up-to-date subscription switching TO crypto flips server-side — crypto has no free
+ * verify (WhitePay minimum), so we just drop the card token and record crypto, and the
+ * next renewal becomes a manual crypto prompt. Every other case issues a checkout in the
+ * target method: an owed subscription (past_due/renewal_failed) pays its arrears and
+ * revives in place; an up-to-date one runs a 0-amount card verify when enabled, else a
+ * minimal tokenizing charge (`cardChangeChargeMinor`). Mirrors the card-change amount rule.
+ */
+export const planMethodChange = (
+  payment: Payment,
+  targetMethod: number,
+  cardVerifyEnabled: boolean,
+  cardChangeChargeMinor: number,
+): MethodChangePlan => {
+  const owed =
+    payment.status === PaymentStatus.PastDue ||
+    payment.status === PaymentStatus.RenewalFailed;
+  if (!owed && targetMethod === PaymentMethod.Crypto) {
+    return { action: 'flip' };
+  }
+  const amount = owed
+    ? payment.amount
+    : cardVerifyEnabled
+      ? 0
+      : cardChangeChargeMinor;
+  return { action: 'checkout', amount };
+};
 
 /**
  * Checkout matcher: an incoming event whose `externalRef` is a known checkout
@@ -61,6 +153,9 @@ export const makeCheckoutMatcher =
         externalUserId: session.externalUserId,
         period: session.period,
         method: session.method ?? PaymentMethod.Card,
+        recurring: session.recurring,
+        // A one-time bonus period the session carried; applied once on the create path.
+        promoBonus: session.promo?.additionalFreePeriod ?? null,
       };
     });
 
@@ -124,10 +219,28 @@ const applyCardChange =
     owed: boolean,
   ): Effect.Effect<AppliedCharge, SqlError.SqlError> =>
     Effect.gen(function* () {
-      const token = recToken(event.payload);
-      if (token !== null) {
-        yield* payments.updateToken(paymentId, token);
+      // Persist the rail the payment ACTUALLY came in on — keyed on the event SOURCE, not on
+      // whether a token came back. This records what the buyer really paid even if they
+      // switched method on the checkout page from what was requested.
+      // → WhitePay (crypto): never a reusable token, so switch to manual crypto renewals —
+      //   drop any stored token and set Crypto (the scheduler's token-less branch prompts).
+      // → WayForPay (card): stay on card. Store the new token if the callback returned one,
+      //   but NEVER clear the existing token — an Approved WayForPay charge CAN omit `recToken`
+      //   (docs/14), and clearing it would silently strip a live card sub to manual. `setMethod`
+      //   keeps the label in step (a crypto→card switch flips it; a card→card is a no-op).
+      if (event.source === 'whitepay_callback') {
+        yield* payments.clearToken(paymentId);
+        yield* payments.setMethod(paymentId, PaymentMethod.Crypto);
+      } else {
+        const token = recToken(event.payload);
+        if (token !== null) {
+          yield* payments.updateToken(paymentId, token);
+        }
+        yield* payments.setMethod(paymentId, PaymentMethod.Card);
       }
+      // The next charge date this change establishes: for an owed change it advances the
+      // anchor (below); otherwise the payment's existing schedule is unchanged.
+      let nextPaymentDate: Date | null = null;
       if (owed) {
         const found = yield* payments.findById(paymentId);
         // Guard the advance on the payment still OWING (past_due/renewal_failed):
@@ -143,10 +256,11 @@ const applyCardChange =
             currentPeriodEnd,
             nextPaymentDate: currentPeriodEnd,
           });
+          nextPaymentDate = currentPeriodEnd;
         }
       }
       yield* checkout.markCompleted(event.externalRef);
-      return { subscriptionId: paymentId, created: false };
+      return { subscriptionId: paymentId, created: false, nextPaymentDate };
     });
 
 /**
@@ -159,6 +273,8 @@ export const makeCheckoutApplier =
   (payments: PaymentRepo, checkout: CheckoutRepo): ChargeApplier =>
   (event, match: Match) => {
     if (match.kind === 'card_change' && match.subscriptionId !== null) {
+      // applyCardChange records the rail from the event SOURCE (WayForPay → card,
+      // WhitePay → crypto), not from the session's requested target.
       return applyCardChange(payments, checkout)(
         event,
         match.subscriptionId,
@@ -166,11 +282,17 @@ export const makeCheckoutApplier =
       );
     }
     if (match.kind === 'recurring' && match.subscriptionId !== null) {
-      const applied: AppliedCharge = {
-        subscriptionId: match.subscriptionId,
-        created: false,
-      };
-      return Effect.succeed(applied);
+      const subscriptionId = match.subscriptionId;
+      // A recurring match already has its payment (the scheduler advanced it before the
+      // incoming event re-entered the pipeline), so read its new next-charge date to
+      // report on the succeeded event.
+      return Effect.gen(function* () {
+        const found = yield* payments.findById(subscriptionId);
+        const nextPaymentDate = Option.isSome(found)
+          ? found.value.nextPaymentDate
+          : null;
+        return { subscriptionId, created: false, nextPaymentDate };
+      });
     }
     return createOrExtend(payments)({
       externalUserId: match.externalUserId,
@@ -178,6 +300,11 @@ export const makeCheckoutApplier =
       currency: event.currency,
       method: match.method,
       period: match.period,
+      // Absent on a recurring/card_change match — those act on an existing recurring
+      // payment; only a checkout match can carry a one-time (false) intent.
+      recurring: match.recurring ?? true,
+      // One-time bonus period from the session; extends the paid-through anchor once.
+      promoBonus: match.promoBonus ?? null,
       recurringTokenRef: recToken(event.payload),
       paidAt: event.occurredAt,
     }).pipe(Effect.tap(() => checkout.markCompleted(event.externalRef)));

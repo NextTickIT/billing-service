@@ -11,7 +11,9 @@ export const DELIVER_EVENT = 'deliver_event';
 export const PAYMENT_CANCEL = 'payment_cancel';
 export const PAYMENT_REACTIVATE = 'payment_reactivate';
 export const PAYMENT_DEFER = 'payment_defer';
+export const PAYMENT_METHOD_CHANGE = 'payment_method_change';
 export const PAYMENT_LAPSE = 'payment_lapse';
+export const EXTERNAL_USER_ID_CHANGE = 'external_user_id_change';
 
 export const MESSAGE_TYPES = [
   PAYMENT_EVENT_RECEIVED,
@@ -20,7 +22,9 @@ export const MESSAGE_TYPES = [
   PAYMENT_CANCEL,
   PAYMENT_REACTIVATE,
   PAYMENT_DEFER,
+  PAYMENT_METHOD_CHANGE,
   PAYMENT_LAPSE,
+  EXTERNAL_USER_ID_CHANGE,
 ] as const;
 
 export const MessageType = Schema.Literal(...MESSAGE_TYPES);

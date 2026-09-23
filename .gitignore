@@ -5,3 +5,6 @@ dist
 *.tsbuildinfo
 coverage
 .env
+worktree/
+.claude/
+.DS_Store

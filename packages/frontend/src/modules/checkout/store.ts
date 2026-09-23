@@ -35,6 +35,11 @@ export const useCheckoutStore = defineStore('checkout', () => {
     id: string,
     method: PaymentMethod = PaymentMethod.Card,
   ): Promise<void> {
+    // Re-entry guard: the single source of truth for "a pay is already in flight". The
+    // button's `:loading` disables it, but reactivity flushes on the next tick, so a
+    // synchronous double-fire (button spam, the verify auto-start racing a click) could
+    // still slip a second request through. Bail here so exactly one /pay is ever sent.
+    if (submitting.value) return;
     submitting.value = true;
     error.value = null;
     try {

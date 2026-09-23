@@ -33,6 +33,7 @@ const baseSub: Payment = {
   method: 0,
   period: 'P1M',
   status: PaymentStatus.Active,
+  recurring: true,
   currentPeriodStart: new Date('2026-01-01T00:00:00Z'),
   currentPeriodEnd: new Date('2026-02-01T00:00:00Z'),
   nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
@@ -46,6 +47,20 @@ const baseSub: Payment = {
 
 const die = () => Effect.die('unused');
 
+/** Records manual-checkout requests and returns a fixed link (keeps makeDeps small). The
+ * returned URL/window are illustrative only — the scheduler doesn't assert them (production
+ * derives the window from the retry ladder ~7d; the base URL from config). */
+const manualCheckoutStub =
+  (calls: { manualCheckout: { sub: Payment; now: Date }[] }) =>
+  (sub: Payment, now: Date) =>
+    Effect.sync(() => {
+      calls.manualCheckout.push({ sub, now });
+      return {
+        checkoutUrl: `https://bill.example/checkout/chk_${sub.id}`,
+        windowExpiresAt: new Date(now.getTime() + 7 * 24 * 3600 * 1000),
+      };
+    });
+
 const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
   const lapseCalls: LapseCalls = { lapsed: [] };
   const calls = {
@@ -54,6 +69,7 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
     renewalFailed: false,
     ingested: [] as Charge[],
     published: [] as DomainEvent[],
+    manualCheckout: [] as { sub: Payment; now: Date }[],
   };
   const subs: PaymentRepo = {
     findDue: () => Effect.succeed([sub]),
@@ -69,7 +85,7 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
       Effect.sync(() => {
         calls.renewalFailed = true;
       }),
-    findActiveByExternalUser: die,
+    findActiveRecurringByExternalUser: die,
     findById: die,
     insert: die,
     extend: die,
@@ -80,6 +96,9 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
     markCancelledLapsed: die,
     defer: die,
     updateToken: die,
+    setMethod: die,
+    clearToken: die,
+    renameExternalUser: die,
   };
   const deps: SchedulerDeps = {
     subs,
@@ -96,6 +115,7 @@ const makeDeps = (sub: Payment, response: W4pChargeResponse) => {
       Effect.sync(() => {
         lapseCalls.lapsed.push(payment);
       }),
+    createManualCheckout: manualCheckoutStub(calls),
   };
   return { deps, calls, lapseCalls };
 };
@@ -260,4 +280,64 @@ it.effect('a normal due payment is charged (lapse branch not taken)', () =>
     expect(calls.advanced?.id).toBe('sub-1');
     expect(calls.ingested).toHaveLength(1);
   }),
+);
+
+it.effect(
+  'a token-less (crypto) due payment prompts manual pay instead of charging',
+  () =>
+    Effect.gen(function* () {
+      const sub: Payment = { ...baseSub, recurringTokenRef: null };
+      const { deps, calls } = makeDeps(sub, {
+        transactionStatus: 'Approved',
+        createdDate: '1700000000',
+      });
+      // A token-less payment must NEVER hit the gateway charge.
+      const guarded: SchedulerDeps = {
+        ...deps,
+        client: {
+          charge: () =>
+            Effect.die('charge must not run for a token-less payment'),
+        },
+      };
+
+      yield* scheduleTick(guarded, config);
+
+      // Our internal checkout link was minted and a manual-pay prompt was emitted.
+      expect(calls.manualCheckout).toHaveLength(1);
+      expect(calls.published).toHaveLength(1);
+      expect(calls.published[0]?.name).toBe('payment_manual_required');
+      expect(
+        (calls.published[0]?.payload as { checkoutUrl?: unknown }).checkoutUrl,
+      ).toContain('/checkout/');
+      // It rides the SAME retry ladder — first prompt schedules the next attempt.
+      expect(calls.retry?.state.retryAttempt).toBe(1);
+      // No autocharge / advance happened.
+      expect(calls.ingested).toHaveLength(0);
+      expect(calls.advanced).toBeNull();
+    }),
+);
+
+it.effect(
+  'a token-less payment past the last attempt emits renewal_failed (no prompt)',
+  () =>
+    Effect.gen(function* () {
+      const sub: Payment = {
+        ...baseSub,
+        recurringTokenRef: null,
+        status: PaymentStatus.PastDue,
+        retryAttempt: 4,
+        firstFailureAt: new Date('2026-02-01T00:00:00Z'),
+      };
+      const { deps, calls } = makeDeps(sub, {
+        transactionStatus: 'Approved',
+        createdDate: '1700000000',
+      });
+
+      yield* scheduleTick(deps, config);
+
+      expect(calls.renewalFailed).toBe(true);
+      expect(calls.published[0]?.name).toBe('renewal_failed');
+      // The giving-up tick must not mint a link or prompt again.
+      expect(calls.manualCheckout).toHaveLength(0);
+    }),
 );

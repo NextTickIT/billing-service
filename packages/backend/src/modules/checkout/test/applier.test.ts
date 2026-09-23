@@ -7,6 +7,7 @@ import { makeCheckoutApplier } from '@/modules/checkout/domain.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import type { Charge, Match } from '@/modules/charge/contracts.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
+import { addPeriod } from '@/modules/payment/period.js';
 
 const event: Charge = {
   source: 'wayforpay_callback',
@@ -22,7 +23,7 @@ const event: Charge = {
 
 /** A repo whose every method fails the test if called (the recurring path). */
 const unusedSubs: PaymentRepo = {
-  findActiveByExternalUser: () => Effect.die('unused'),
+  findActiveRecurringByExternalUser: () => Effect.die('unused'),
   findById: () => Effect.die('unused'),
   findDue: () => Effect.die('unused'),
   insert: () => Effect.die('unused'),
@@ -37,12 +38,18 @@ const unusedSubs: PaymentRepo = {
   markCancelledLapsed: () => Effect.die('unused'),
   defer: () => Effect.die('unused'),
   updateToken: () => Effect.die('unused'),
+  setMethod: () => Effect.die('unused'),
+  clearToken: () => Effect.die('unused'),
+  renameExternalUser: () => Effect.die('unused'),
 };
 const unusedCheckout: CheckoutRepo = {
   findById: () => Effect.die('unused'),
+  findByIdempotencyKey: () => Effect.die('unused'),
   insert: () => Effect.die('unused'),
-  setPending: () => Effect.die('unused'),
+  claimForPayment: () => Effect.die('unused'),
+  releasePending: () => Effect.die('unused'),
   markCompleted: () => Effect.die('unused'),
+  renameOpenSessionsExternalUser: () => Effect.die('unused'),
 };
 
 it.effect(
@@ -53,7 +60,7 @@ it.effect(
       let completed = false;
       const subs: PaymentRepo = {
         ...unusedSubs,
-        findActiveByExternalUser: () => Effect.succeed(Option.none()),
+        findActiveRecurringByExternalUser: () => Effect.succeed(Option.none()),
         insert: (input) =>
           Effect.sync(() => {
             insertedToken = input.recurringTokenRef;
@@ -84,16 +91,97 @@ it.effect(
 
       const result = yield* makeCheckoutApplier(subs, checkout)(event, match);
 
-      expect(result).toEqual({ subscriptionId: 'sub_1', created: true });
+      expect(result).toEqual({
+        subscriptionId: 'sub_1',
+        created: true,
+        nextPaymentDate: addPeriod(event.occurredAt, 'P1M'),
+      });
       expect(insertedToken).toBe('tok');
       expect(completed).toBe(true);
     }),
 );
 
 it.effect(
-  'a recurring match reports the existing subscription, touching nothing',
+  'a one-time checkout inserts a fresh payment, never extending, storing no token',
   () =>
-    makeCheckoutApplier(unusedSubs, unusedCheckout)(event, {
+    Effect.gen(function* () {
+      let insertedRecurring: boolean | null = null;
+      let insertedToken: string | null = 'unset';
+      // findActiveRecurringByExternalUser stays `Effect.die('unused')` (via unusedSubs):
+      // a one-time payment must be inserted outright, never looked up to extend.
+      const subs: PaymentRepo = {
+        ...unusedSubs,
+        insert: (input) =>
+          Effect.sync(() => {
+            insertedRecurring = input.recurring;
+            insertedToken = input.recurringTokenRef;
+            return {
+              ...input,
+              id: 'pay_ot',
+              cancelRequestedAt: null,
+              createdAt: new Date(0),
+              updatedAt: new Date(0),
+            };
+          }),
+      };
+      const checkout: CheckoutRepo = {
+        ...unusedCheckout,
+        markCompleted: () => Effect.void,
+      };
+      const match: Match = {
+        matched: true,
+        kind: 'checkout',
+        subscriptionId: null,
+        externalUserId: 'sp:1',
+        period: 'P1M',
+        method: 0,
+        recurring: false,
+      };
+
+      const result = yield* makeCheckoutApplier(subs, checkout)(event, match);
+
+      // The applier still surfaces the paid-through anchor; the one-time event builder is
+      // what nulls it (a one-time never renews) — the applier result itself carries it.
+      expect(result).toEqual({
+        subscriptionId: 'pay_ot',
+        created: true,
+        nextPaymentDate: addPeriod(event.occurredAt, 'P1M'),
+      });
+      expect(insertedRecurring).toBe(false);
+      // The provider returned a recToken; a one-time payment must not store it.
+      expect(insertedToken).toBe(null);
+    }),
+);
+
+it.effect(
+  'a recurring match reports the existing subscription and its next charge date, writing nothing',
+  () => {
+    // The recurring branch READS the payment (for its next-charge date) but writes nothing —
+    // the scheduler already advanced it before the incoming event re-entered the pipeline.
+    const recurringPayment: Payment = {
+      id: 'sub_x',
+      externalUserId: 'sp:1',
+      amount: 30000,
+      currency: 0,
+      method: 0,
+      period: 'P1M',
+      status: PaymentStatus.Active,
+      recurring: true,
+      currentPeriodStart: new Date('2026-02-01T00:00:00Z'),
+      currentPeriodEnd: new Date('2026-03-01T00:00:00Z'),
+      nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+      recurringTokenRef: 'tok',
+      firstFailureAt: null,
+      retryAttempt: 0,
+      cancelRequestedAt: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    };
+    const subs: PaymentRepo = {
+      ...unusedSubs,
+      findById: () => Effect.succeed(Option.some(recurringPayment)),
+    };
+    return makeCheckoutApplier(subs, unusedCheckout)(event, {
       matched: true,
       kind: 'recurring',
       subscriptionId: 'sub_x',
@@ -102,9 +190,14 @@ it.effect(
       method: 0,
     }).pipe(
       Effect.map((result) => {
-        expect(result).toEqual({ subscriptionId: 'sub_x', created: false });
+        expect(result).toEqual({
+          subscriptionId: 'sub_x',
+          created: false,
+          nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+        });
       }),
-    ),
+    );
+  },
 );
 
 /** A past_due payment the owed card-change advances (only the read status matters). */
@@ -116,6 +209,7 @@ const owingPayment: Payment = {
   method: 0,
   period: 'P1M',
   status: PaymentStatus.PastDue,
+  recurring: true,
   currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
   currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
   nextPaymentDate: new Date('2026-01-01T00:00:00Z'),
@@ -152,6 +246,8 @@ it.effect(
           Effect.sync(() => {
             tokenUpdated = token;
           }),
+        // A card change now also records the destination method (Card); a no-op here.
+        setMethod: () => Effect.void,
         findById: () =>
           Effect.succeed(Option.some({ ...owingPayment, status })),
         advanceAfterSuccess: () =>

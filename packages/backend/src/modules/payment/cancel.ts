@@ -1,6 +1,7 @@
 import type { SqlError } from '@effect/sql';
 import type {
   DomainEvent,
+  MethodChangedEvent,
   PaymentCancelledEvent,
   PaymentDeferredEvent,
   PaymentReactivatedEvent,
@@ -13,9 +14,11 @@ import {
   CancelNotify,
   DeferNotify,
   LapseNotify,
+  MethodChangeNotify,
   PAYMENT_CANCEL,
   PAYMENT_DEFER,
   PAYMENT_LAPSE,
+  PAYMENT_METHOD_CHANGE,
   PAYMENT_REACTIVATE,
   ReactivateNotify,
 } from '@/modules/payment/contracts.js';
@@ -67,6 +70,20 @@ export const paymentDeferred = (
   externalUserId: notify.externalUserId,
   aggregateId: notify.paymentId,
   payload: { newPeriodEnd: notify.newPeriodEnd, days: notify.days },
+});
+
+/** method_changed envelope: the no-payment flip recorded the new method. */
+export const methodChanged = (
+  notify: MethodChangeNotify,
+  now: Date,
+): MethodChangedEvent => ({
+  id: `evt_${notify.paymentId}_method_changed_${notify.at.toString()}`,
+  name: 'method_changed',
+  occurredAt: now,
+  correlationId: notify.paymentId,
+  externalUserId: notify.externalUserId,
+  aggregateId: notify.paymentId,
+  payload: { method: notify.method },
 });
 
 /**
@@ -135,6 +152,21 @@ export const deferNotify =
       ),
       Effect.catchTag('ParseError', (error) =>
         Effect.die(`invalid ${PAYMENT_DEFER} payload: ${error.message}`),
+      ),
+    );
+
+/** The `payment_method_change` handler: decode the payload, then emit the event. */
+export const methodChangeNotify =
+  (publish: (event: DomainEvent) => Effect.Effect<void, SqlError.SqlError>) =>
+  (payload: unknown): Effect.Effect<void, SqlError.SqlError> =>
+    Schema.decodeUnknown(MethodChangeNotify)(payload).pipe(
+      Effect.flatMap((notify) =>
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((ms) => publish(methodChanged(notify, new Date(ms)))),
+        ),
+      ),
+      Effect.catchTag('ParseError', (error) =>
+        Effect.die(`invalid ${PAYMENT_METHOD_CHANGE} payload: ${error.message}`),
       ),
     );
 

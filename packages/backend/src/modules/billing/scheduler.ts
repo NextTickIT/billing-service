@@ -11,6 +11,8 @@ import type { WayForPayClient } from '@/modules/wayforpay/client.js';
 import {
   chargeIncomingEvent,
   chargeRetryFailed,
+  type ManualCheckout,
+  paymentManualRequired,
   renewalFailed,
 } from '@/modules/billing/events.js';
 
@@ -28,6 +30,12 @@ export interface SchedulerDeps {
     event: DomainEvent,
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly lapse: (sub: Payment) => Effect.Effect<void, SqlError.SqlError>;
+  /** Mint OUR internal checkout session for a token-less (crypto) renewal and return its
+   * link + live window, so the manual-pay prompt can point the user at it (docs/28). */
+  readonly createManualCheckout: (
+    sub: Payment,
+    now: Date,
+  ) => Effect.Effect<ManualCheckout, SqlError.SqlError>;
 }
 
 export interface SchedulerConfig {
@@ -67,6 +75,36 @@ const onFailure = (
     );
   });
 
+/**
+ * A token-less (crypto) renewal came due (docs/28): we cannot autocharge, so we prompt the
+ * user to pay again at OUR internal checkout. The attempt rides the SAME retry ladder as a
+ * card failure — re-prompting on each scheduled date — and the exhausted ladder lapses to
+ * `renewal_failed`. Paying the session extends the payment (and a card pay captures a token,
+ * graduating it back to autocharge next cycle). We check the ladder BEFORE prompting so the
+ * giving-up tick emits only `renewal_failed`, never a fresh prompt.
+ */
+const promptManual = (deps: SchedulerDeps, sub: Payment, now: Date) =>
+  Effect.gen(function* () {
+    const firstFailureAt = sub.firstFailureAt ?? now;
+    const plan = planRetry(sub.retryAttempt, firstFailureAt);
+    if (plan.final || plan.nextPaymentDate === null) {
+      yield* deps.subs.markRenewalFailed(sub.id);
+      yield* deps.publish(
+        renewalFailed(sub, 'manual payment not completed', now),
+      );
+      return;
+    }
+    // Still within the ladder: mint our checkout link and prompt. Publish BEFORE
+    // recordRetry so the event carries this attempt's due date (recordRetry moves it).
+    const checkout = yield* deps.createManualCheckout(sub, now);
+    yield* deps.publish(paymentManualRequired(sub, checkout, now));
+    yield* deps.subs.recordRetry(sub.id, {
+      firstFailureAt,
+      retryAttempt: plan.attempt,
+      nextPaymentDate: plan.nextPaymentDate,
+    });
+  });
+
 const chargeOne = (deps: SchedulerDeps, sub: Payment, now: Date) =>
   Effect.gen(function* () {
     if (sub.cancelRequestedAt !== null) {
@@ -77,7 +115,9 @@ const chargeOne = (deps: SchedulerDeps, sub: Payment, now: Date) =>
       return;
     }
     if (sub.recurringTokenRef === null) {
-      return; // no token on file — nothing to charge (findDue filters these out)
+      // No reusable token (WhitePay crypto): can't autocharge — prompt the user to pay
+      // again at our internal checkout (docs/28) instead.
+      return yield* promptManual(deps, sub, now);
     }
     const orderReference = orderReferenceFor(sub);
     const response = yield* deps.client.charge({

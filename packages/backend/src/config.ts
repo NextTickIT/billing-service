@@ -104,6 +104,14 @@ export interface SchedulerConfig {
   readonly enabled: boolean;
   readonly intervalSeconds: number;
   readonly batchSize: number;
+  /**
+   * How long a manual-pay checkout link stays live for a token-less (crypto) renewal
+   * prompt (docs/28), measured from the cycle anchor. Reported as `windowExpiresAt` on
+   * the event AND enforced at `/pay`. Default 7d so it spans the retry ladder (re-prompts
+   * at day 0/1/3/5, terminal at day 7) — i.e. the link is valid until the renewal
+   * ultimately fails, not a misleading shorter window.
+   */
+  readonly manualPaymentWindowSeconds: number;
 }
 
 /**
@@ -150,6 +158,19 @@ export interface AppConfig {
    * rejects any request to the BFF-proxied surface that lacks the header.
    */
   readonly bffSecret: Redacted.Redacted;
+  /**
+   * Allowed hostnames for a checkout's post-payment redirect (`successUrl`/`failureUrl`,
+   * env `REDIRECT_ALLOWED_HOSTS`, comma-separated). Empty (default) accepts any http(s)
+   * host; set it in production to prevent an open redirect off `bill.nexttick.it`.
+   */
+  readonly redirectAllowedHosts: readonly string[];
+  /**
+   * Base URL of the hosted checkout page (env `CHECKOUT_BASE_URL`, no trailing slash).
+   * Used to build the `checkoutUrl` returned to callers and — now that a crypto
+   * manual-renewal prompt DELIVERS this link to the user — carried on the
+   * `payment_manual_required` event, so it must be correct per environment.
+   */
+  readonly checkoutBaseUrl: string;
 }
 
 /** Queue tuning is its own loader so `loadConfig` stays simple (one concern each). */
@@ -204,10 +225,28 @@ const loadWhitePayConfig = (): WhitePayConfig => ({
   rateLimitRps: Number(process.env['WHITEPAY_RATE_LIMIT_RPS'] ?? '2'),
 });
 
+/** Parse a seconds env var to a finite positive number, else the fallback. Guards a bad
+ * value from producing NaN → an `Invalid Date` window/expiry downstream. */
+const positiveSeconds = (raw: string | undefined, fallback: number): number => {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+
+/** The checkout page base URL (env `CHECKOUT_BASE_URL`), trailing slashes trimmed. */
+const loadCheckoutBaseUrl = (): string =>
+  (process.env['CHECKOUT_BASE_URL'] ?? 'https://bill.nexttick.it').replace(
+    /\/+$/,
+    '',
+  );
+
 const loadSchedulerConfig = (): SchedulerConfig => ({
   enabled: process.env['SCHEDULER_ENABLED'] === 'true',
   intervalSeconds: Number(process.env['SCHEDULER_INTERVAL_SECONDS'] ?? '300'),
   batchSize: Number(process.env['SCHEDULER_BATCH_SIZE'] ?? '100'),
+  manualPaymentWindowSeconds: positiveSeconds(
+    process.env['SCHEDULER_MANUAL_PAYMENT_WINDOW_SECONDS'],
+    604800,
+  ),
 });
 
 const loadWayForPayConfig = (): WayForPayConfig => ({
@@ -273,4 +312,9 @@ export const loadConfig = (): AppConfig => ({
     },
   },
   bffSecret: Redacted.make(process.env['BFF_SECRET'] ?? ''),
+  redirectAllowedHosts: (process.env['REDIRECT_ALLOWED_HOSTS'] ?? '')
+    .split(',')
+    .map((h) => h.trim())
+    .filter((h) => h.length > 0),
+  checkoutBaseUrl: loadCheckoutBaseUrl(),
 });

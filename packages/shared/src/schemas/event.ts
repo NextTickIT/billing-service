@@ -16,13 +16,17 @@ export const SINK_DELIVERY_SLA_SECONDS = 60;
 export const EVENT_NAMES = [
   'initial_payment_succeeded',
   'recurring_payment_succeeded',
+  'one_time_purchase_succeeded',
   'initial_payment_failed',
   'charge_retry_failed',
   'renewal_failed',
+  'payment_manual_required',
   'payment_created',
   'payment_cancelled',
   'payment_reactivated',
   'payment_deferred',
+  'method_changed',
+  'external_user_id_changed',
   'card_change_succeeded',
   'card_change_failed',
   'unknown_payment_quarantined',
@@ -46,10 +50,12 @@ const envelope = {
 };
 
 /**
- * A successful payment, split by scenario so downstream flows can differ: an
- * INITIAL checkout payment vs a RECURRING renewal charge. Both carry the same
- * facts; the pipeline picks the variant from the match kind ('checkout' vs
- * 'recurring'). A matched incoming event or an operator bind produces one of these.
+ * A successful payment, split by scenario so downstream flows can differ: an INITIAL
+ * (recurring) checkout payment, a RECURRING renewal charge, or a ONE-TIME purchase (a
+ * checkout the caller marked non-recurring — a single buy, never renewed). All three
+ * carry the same facts; the pipeline picks the variant from the match kind ('checkout'
+ * vs 'recurring') and, for checkout, the session's `recurring` flag. A matched incoming
+ * event or an operator bind produces one of these.
  */
 const succeededPayload = {
   amount: Schema.Int,
@@ -57,6 +63,10 @@ const succeededPayload = {
   method: Schema.Int,
   period: Schema.String,
   source: Schema.String,
+  // ISO-8601 date of the next scheduled charge; null for a one-time purchase (never
+  // renews). A string (not Schema.Date) to match the payload-date convention used by
+  // `payment_deferred.newPeriodEnd` / `charge_retry_failed.nextRetryDate`.
+  nextPaymentDate: Schema.NullOr(Schema.String),
 };
 
 export const InitialPaymentSucceededEvent = Schema.Struct({
@@ -79,6 +89,17 @@ export const RecurringPaymentSucceededEvent = Schema.Struct({
 
 export type RecurringPaymentSucceededEvent = Schema.Schema.Type<
   typeof RecurringPaymentSucceededEvent
+>;
+
+export const OneTimePurchaseSucceededEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('one_time_purchase_succeeded'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct(succeededPayload),
+});
+
+export type OneTimePurchaseSucceededEvent = Schema.Schema.Type<
+  typeof OneTimePurchaseSucceededEvent
 >;
 
 /**
@@ -147,6 +168,32 @@ export const RenewalFailedEvent = Schema.Struct({
 
 export type RenewalFailedEvent = Schema.Schema.Type<typeof RenewalFailedEvent>;
 
+/**
+ * A recurring charge came due for a payment WITHOUT a usable token — WhitePay crypto has
+ * no reusable token, so it can't be auto-charged (docs/28). Instead of charging, we mint
+ * OUR internal checkout session and fire this event so the user can pay again (crypto or
+ * card) at `checkoutUrl`. Recurring cycles only — the initial payment is already a manual
+ * checkout. `dueDate`/`windowExpiresAt` are ISO-8601 strings (payload-date convention).
+ */
+export const PaymentManualRequiredEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('payment_manual_required'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({
+    amount: Schema.Int,
+    currency: CurrencySchema,
+    method: Schema.Int,
+    paymentId: Schema.String,
+    checkoutUrl: Schema.String,
+    dueDate: Schema.String,
+    windowExpiresAt: Schema.String,
+  }),
+});
+
+export type PaymentManualRequiredEvent = Schema.Schema.Type<
+  typeof PaymentManualRequiredEvent
+>;
+
 /** A payment cancelled by an operator or a provider event (FR-012). */
 export const PaymentCancelledEvent = Schema.Struct({
   ...envelope,
@@ -193,6 +240,21 @@ export const PaymentDeferredEvent = Schema.Struct({
 export type PaymentDeferredEvent = Schema.Schema.Type<
   typeof PaymentDeferredEvent
 >;
+
+/**
+ * A subscription's payment method changed WITHOUT a payment (docs/32): the
+ * no-payment flip of an up-to-date subscription to crypto (card token dropped, crypto
+ * recorded). The paid method-change paths already emit a payment event; this fills the
+ * one branch that mutates the payment but takes no money. `method` is the new method.
+ */
+export const MethodChangedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('method_changed'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({ method: Schema.Int }),
+});
+
+export type MethodChangedEvent = Schema.Schema.Type<typeof MethodChangedEvent>;
 
 /**
  * A SendPulse-initiated card change tokenized (verify) or collected (owed) the
@@ -250,16 +312,42 @@ export type UnknownPaymentQuarantinedEvent = Schema.Schema.Type<
  * `name`. `externalUserId` is carried verbatim from the calling system (AC9) and is
  * null only for a quarantined unknown payment.
  */
+/**
+ * A service action remapped a user's opaque external id (docs/31). Emitted ONLY when
+ * the rename opts in (`refireEvents`), so a sink can react to the change; the default
+ * rename is silent. `externalUserId` is the NEW id (the go-forward contact); the payload
+ * carries the old id and the moved-record counts. Payment events are NOT re-emitted.
+ */
+export const ExternalUserIdChangedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('external_user_id_changed'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({
+    from: Schema.String,
+    to: Schema.String,
+    movedPayments: Schema.Int,
+    movedSessions: Schema.Int,
+  }),
+});
+
+export type ExternalUserIdChangedEvent = Schema.Schema.Type<
+  typeof ExternalUserIdChangedEvent
+>;
+
 export const DomainEvent = Schema.Union(
   InitialPaymentSucceededEvent,
   RecurringPaymentSucceededEvent,
+  OneTimePurchaseSucceededEvent,
   InitialPaymentFailedEvent,
   PaymentCreatedEvent,
   ChargeRetryFailedEvent,
   RenewalFailedEvent,
+  PaymentManualRequiredEvent,
   PaymentCancelledEvent,
   PaymentReactivatedEvent,
   PaymentDeferredEvent,
+  MethodChangedEvent,
+  ExternalUserIdChangedEvent,
   CardChangeSucceededEvent,
   CardChangeFailedEvent,
   UnknownPaymentQuarantinedEvent,

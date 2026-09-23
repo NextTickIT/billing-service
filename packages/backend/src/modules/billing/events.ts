@@ -1,6 +1,7 @@
 import type {
   ChargeRetryFailedEvent,
   Payment,
+  PaymentManualRequiredEvent,
   RenewalFailedEvent,
 } from '@billing-service/shared';
 
@@ -74,4 +75,38 @@ export const renewalFailed = (
   externalUserId: sub.externalUserId,
   aggregateId: sub.id,
   payload: { reason },
+});
+
+/** The internal checkout link a manual-pay prompt points the user at, and how long it
+ * stays live (docs/28). Built by the composition root (it owns the checkout repo + TTL). */
+export interface ManualCheckout {
+  readonly checkoutUrl: string;
+  readonly windowExpiresAt: Date;
+}
+
+/**
+ * A due recurring charge with no usable token (WhitePay crypto) → prompt the user to pay
+ * again at our internal checkout (docs/28). The id keys on the due date so an at-least-once
+ * redelivery of the same attempt dedupes; a later attempt (a new due date) is its own event.
+ */
+export const paymentManualRequired = (
+  sub: Payment,
+  checkout: ManualCheckout,
+  now: Date,
+): PaymentManualRequiredEvent => ({
+  id: `evt_sub_${sub.id}_manual_${sub.nextPaymentDate.getTime().toString()}`,
+  name: 'payment_manual_required',
+  occurredAt: now,
+  correlationId: sub.id,
+  externalUserId: sub.externalUserId,
+  aggregateId: sub.id,
+  payload: {
+    amount: sub.amount,
+    currency: sub.currency,
+    method: sub.method,
+    paymentId: sub.id,
+    checkoutUrl: checkout.checkoutUrl,
+    dueDate: sub.nextPaymentDate.toISOString(),
+    windowExpiresAt: checkout.windowExpiresAt.toISOString(),
+  },
 });

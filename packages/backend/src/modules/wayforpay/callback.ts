@@ -1,3 +1,5 @@
+import { timingSafeEqual } from 'node:crypto';
+
 import { Redacted } from 'effect';
 
 import type { Charge } from '@/modules/charge/contracts.js';
@@ -31,10 +33,24 @@ const field = (payload: CallbackPayload, key: string): string => {
   return typeof value === 'number' ? String(value) : '';
 };
 
+/** Constant-time compare of two hex strings (length-checked first) — no early-exit
+ * timing side-channel on the signature check. */
+const safeEqual = (a: string, b: string): boolean => {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+};
+
 export const verifyCallback = (
   config: W4pConfigService,
   payload: CallbackPayload,
 ): boolean => {
+  const secret = Redacted.value(config.merchantSecretKey);
+  // Never accept a callback when the merchant secret is unset — an empty key would
+  // otherwise validate a signature computed against "" (fail-closed, matches WhitePay).
+  if (secret.length === 0) {
+    return false;
+  }
   const expected = hmacMd5Hex(
     callbackSignatureBase({
       merchantAccount: field(payload, 'merchantAccount'),
@@ -46,9 +62,9 @@ export const verifyCallback = (
       transactionStatus: field(payload, 'transactionStatus'),
       reasonCode: field(payload, 'reasonCode'),
     }),
-    Redacted.value(config.merchantSecretKey),
+    secret,
   );
-  return expected === field(payload, 'merchantSignature');
+  return safeEqual(expected, field(payload, 'merchantSignature'));
 };
 
 /**

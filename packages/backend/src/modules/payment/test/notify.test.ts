@@ -1,15 +1,19 @@
 import { it } from '@effect/vitest';
+import type { DomainEvent } from '@billing-service/shared';
 import { Effect } from 'effect';
 import { expect } from 'vitest';
 
 import {
   cancelLapsed,
+  methodChanged,
+  methodChangeNotify,
   paymentDeferred,
   paymentReactivated,
 } from '@/modules/payment/cancel.js';
 import type {
   DeferNotify,
   LapseNotify,
+  MethodChangeNotify,
   ReactivateNotify,
 } from '@/modules/payment/contracts.js';
 
@@ -32,6 +36,22 @@ const deferNotify: DeferNotify = {
 const lapseNotify: LapseNotify = {
   paymentId: 'pay_abc',
   externalUserId: 'sp:42',
+};
+
+const methodChangeNotifyPayload: MethodChangeNotify = {
+  paymentId: 'pay_abc',
+  externalUserId: 'sp:42',
+  method: 1,
+  at: 1700000002,
+};
+
+const recordingPublish = () => {
+  const events: DomainEvent[] = [];
+  const publish = (event: DomainEvent): Effect.Effect<void> =>
+    Effect.sync(() => {
+      events.push(event);
+    });
+  return { events, publish };
 };
 
 it.effect('paymentReactivated: produces correct name and payload', () =>
@@ -103,5 +123,42 @@ it.effect('cancelLapsed: id is deterministic (one lapse per payment)', () =>
 
     expect(e1.id).toBe(e2.id);
     expect(e1.id).toBe('evt_pay_abc_cancel_lapsed');
+  }),
+);
+
+it.effect('methodChanged: produces correct name and payload', () =>
+  Effect.sync(() => {
+    const event = methodChanged(methodChangeNotifyPayload, now);
+
+    expect(event.name).toBe('method_changed');
+    expect(event.externalUserId).toBe('sp:42');
+    expect(event.aggregateId).toBe('pay_abc');
+    expect(event.correlationId).toBe('pay_abc');
+    expect(event.payload).toEqual({ method: 1 });
+    expect(event.occurredAt).toBe(now);
+  }),
+);
+
+it.effect('methodChanged: id is deterministic from paymentId and at', () =>
+  Effect.sync(() => {
+    const e1 = methodChanged(methodChangeNotifyPayload, now);
+    const e2 = methodChanged(methodChangeNotifyPayload, new Date('2026-01-01'));
+
+    expect(e1.id).toBe(e2.id);
+    expect(e1.id).toBe(
+      `evt_pay_abc_method_changed_${methodChangeNotifyPayload.at.toString()}`,
+    );
+  }),
+);
+
+it.effect('methodChangeNotify decodes the payload and publishes the event', () =>
+  Effect.gen(function* () {
+    const pub = recordingPublish();
+
+    yield* methodChangeNotify(pub.publish)(methodChangeNotifyPayload);
+
+    expect(pub.events).toHaveLength(1);
+    expect(pub.events[0]?.name).toBe('method_changed');
+    expect(pub.events[0]?.externalUserId).toBe('sp:42');
   }),
 );

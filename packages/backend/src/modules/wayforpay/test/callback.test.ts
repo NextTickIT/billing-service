@@ -53,6 +53,19 @@ describe('verifyCallback', () => {
       verifyCallback(config, { ...signed, merchantSignature: 'bad' }),
     ).toBe(false);
   });
+
+  test('rejects when the merchant secret is unset (fail-closed)', () => {
+    const noSecret: W4pConfigService = {
+      ...config,
+      merchantSecretKey: Redacted.make(''),
+    };
+    // Even a signature computed against the empty key must not validate.
+    const forged = {
+      ...base,
+      merchantSignature: hmacMd5Hex(callbackSignatureBase(base), ''),
+    };
+    expect(verifyCallback(noSecret, forged)).toBe(false);
+  });
 });
 
 describe('normalizeCallback', () => {

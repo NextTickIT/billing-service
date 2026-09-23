@@ -6,6 +6,7 @@ import type {
   DomainEvent,
   InitialPaymentFailedEvent,
   InitialPaymentSucceededEvent,
+  OneTimePurchaseSucceededEvent,
   PaymentCreatedEvent,
   RecurringPaymentSucceededEvent,
   UnknownPaymentQuarantinedEvent,
@@ -41,13 +42,20 @@ import { Outbox } from '@/modules/outbox/domain.js';
 const eventId = (idemKey: string, suffix: string): string =>
   `evt_${idemKey}:${suffix}`;
 
-/** Shared success payload for the initial/recurring variants (docs/07). */
-const succeededPayload = (event: Charge, match: Match) => ({
+/** Shared success payload for the initial/recurring variants (docs/07). `nextPaymentDate`
+ * is the next scheduled charge (null for a one-time purchase), serialized ISO-8601 to match
+ * the payload-date convention (`payment_deferred.newPeriodEnd`, `charge_retry_failed`). */
+const succeededPayload = (
+  event: Charge,
+  match: Match,
+  nextPaymentDate: Date | null,
+) => ({
   amount: event.amount,
   currency: event.currency,
   method: match.method,
   period: match.period,
   source: event.source,
+  nextPaymentDate: nextPaymentDate?.toISOString() ?? null,
 });
 
 /** initial_payment_succeeded — a first checkout payment (match kind 'checkout'). */
@@ -55,6 +63,7 @@ export const initialPaymentSucceeded = (
   event: Charge,
   match: Match,
   subscriptionId: string,
+  nextPaymentDate: Date | null,
 ): InitialPaymentSucceededEvent => ({
   id: eventId(event.idemKey, 'succeeded'),
   name: 'initial_payment_succeeded',
@@ -62,7 +71,7 @@ export const initialPaymentSucceeded = (
   correlationId: event.idemKey,
   externalUserId: match.externalUserId,
   aggregateId: subscriptionId,
-  payload: succeededPayload(event, match),
+  payload: succeededPayload(event, match, nextPaymentDate),
 });
 
 /** recurring_payment_succeeded — a renewal charge (match kind 'recurring'). */
@@ -70,6 +79,7 @@ export const recurringPaymentSucceeded = (
   event: Charge,
   match: Match,
   subscriptionId: string,
+  nextPaymentDate: Date | null,
 ): RecurringPaymentSucceededEvent => ({
   id: eventId(event.idemKey, 'succeeded'),
   name: 'recurring_payment_succeeded',
@@ -77,18 +87,52 @@ export const recurringPaymentSucceeded = (
   correlationId: event.idemKey,
   externalUserId: match.externalUserId,
   aggregateId: subscriptionId,
-  payload: succeededPayload(event, match),
+  payload: succeededPayload(event, match, nextPaymentDate),
 });
 
-/** Pick the success variant from the match kind (checkout = initial, else recurring). */
+/** one_time_purchase_succeeded — a checkout the caller marked non-recurring (a single
+ * buy that is never renewed). Same facts as the other success variants. */
+export const oneTimePurchaseSucceeded = (
+  event: Charge,
+  match: Match,
+  subscriptionId: string,
+): OneTimePurchaseSucceededEvent => ({
+  id: eventId(event.idemKey, 'succeeded'),
+  name: 'one_time_purchase_succeeded',
+  occurredAt: event.occurredAt,
+  correlationId: event.idemKey,
+  externalUserId: match.externalUserId,
+  aggregateId: subscriptionId,
+  // A one-time purchase never renews, so it has no next charge date.
+  payload: succeededPayload(event, match, null),
+});
+
+/**
+ * Pick the success variant: a recurring renewal (non-checkout match) → recurring; a
+ * checkout the caller opted out of recurrence (`match.recurring === false`) → one-time
+ * purchase; any other checkout → the initial (subscription) success.
+ */
 const paymentSucceeded = (
   event: Charge,
   match: Match,
   subscriptionId: string,
-): InitialPaymentSucceededEvent | RecurringPaymentSucceededEvent =>
-  match.kind === 'checkout'
-    ? initialPaymentSucceeded(event, match, subscriptionId)
-    : recurringPaymentSucceeded(event, match, subscriptionId);
+  nextPaymentDate: Date | null,
+):
+  | InitialPaymentSucceededEvent
+  | RecurringPaymentSucceededEvent
+  | OneTimePurchaseSucceededEvent => {
+  if (match.kind !== 'checkout') {
+    return recurringPaymentSucceeded(
+      event,
+      match,
+      subscriptionId,
+      nextPaymentDate,
+    );
+  }
+  return match.recurring === false
+    ? oneTimePurchaseSucceeded(event, match, subscriptionId)
+    : initialPaymentSucceeded(event, match, subscriptionId, nextPaymentDate);
+};
 
 /** The provider decline reason for a failed charge (raw payload; string or code). */
 const declineReason = (payload: Record<string, unknown>): string => {
@@ -183,6 +227,8 @@ export const boundPaymentSucceeded = (
     method: bind.method,
     period: bind.period,
     source: event.source,
+    // A bind reconciles a legacy/unknown payment; no scheduled next charge is known.
+    nextPaymentDate: null,
   },
 });
 
@@ -263,7 +309,14 @@ const recordMatchedSuccess = (
     if (applied.created) {
       yield* deps.publish(paymentCreated(event, match, applied.subscriptionId));
     }
-    yield* deps.publish(paymentSucceeded(event, match, applied.subscriptionId));
+    yield* deps.publish(
+      paymentSucceeded(
+        event,
+        match,
+        applied.subscriptionId,
+        applied.nextPaymentDate,
+      ),
+    );
   });
 
 /**
@@ -298,7 +351,12 @@ const recordCardChange = (
         occurredAt: event.occurredAt,
       });
       yield* deps.publish(
-        recurringPaymentSucceeded(event, match, applied.subscriptionId),
+        recurringPaymentSucceeded(
+          event,
+          match,
+          applied.subscriptionId,
+          applied.nextPaymentDate,
+        ),
       );
     }
     yield* deps.publish(cardChangeSucceeded(event, match));
