@@ -271,10 +271,11 @@ const findByContactName = (sql: SqlClient.SqlClient) => (query: string) => {
 };
 
 /**
- * Turn the filter into disjoint status buckets OR'd together. `active` excludes
- * cancel-pending rows (they render as "cancelling"); `cancelling` is that derived
- * bucket. `sql.or` of equality fragments — not `sql.in`, whose pg quirk drops the
- * `IN` keyword (CLAUDE.md §5).
+ * Turn the filter into disjoint status buckets OR'd together. The `active` and
+ * `past_due` buckets exclude cancel-pending rows (those render under the derived
+ * `cancelling` bucket) — a soft-cancel can now sit on either an Active or a PastDue
+ * payment (docs/24). Raw `IN (…)` — not `sql.in`, whose pg quirk drops the `IN`
+ * keyword (CLAUDE.md §5).
  */
 const listFilterConditions = (
   sql: SqlClient.SqlClient,
@@ -283,14 +284,15 @@ const listFilterConditions = (
   const conditions: Statement.Fragment[] = [];
   for (const status of filter.statuses ?? []) {
     conditions.push(
-      status === PaymentStatus.Active
-        ? sql`(status = ${PaymentStatus.Active} AND "cancelRequestedAt" IS NULL)`
+      status === PaymentStatus.Active || status === PaymentStatus.PastDue
+        ? sql`(status = ${status} AND "cancelRequestedAt" IS NULL)`
         : sql`status = ${status}`,
     );
   }
   if (filter.cancelling === true) {
     conditions.push(
-      sql`(status = ${PaymentStatus.Active} AND "cancelRequestedAt" IS NOT NULL)`,
+      sql`(status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+           AND "cancelRequestedAt" IS NOT NULL)`,
     );
   }
   return conditions;

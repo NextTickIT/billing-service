@@ -92,7 +92,12 @@ onMounted(() => {
 });
 
 function isCancelling(p: Payment): boolean {
-  return p.status === PaymentStatus.Active && p.cancelRequestedAt !== null;
+  // A soft-cancel sits on an Active OR a PastDue payment (it lapses at the next
+  // scheduler tick); either shows as "Cancelling…", not plain Active/PastDue.
+  return (
+    (p.status === PaymentStatus.Active || p.status === PaymentStatus.PastDue) &&
+    p.cancelRequestedAt !== null
+  );
 }
 
 function statusLabel(p: Payment): string {

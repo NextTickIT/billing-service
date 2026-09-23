@@ -29,9 +29,10 @@ onMounted(() => {
 
 const isCancelling = computed((): boolean => {
   const p = store.current;
+  // A soft-cancel sits on an Active OR PastDue payment (it lapses at the next tick).
   return (
     p !== null &&
-    p.status === PaymentStatus.Active &&
+    (p.status === PaymentStatus.Active || p.status === PaymentStatus.PastDue) &&
     p.cancelRequestedAt !== null
   );
 });
@@ -39,6 +40,20 @@ const isCancelling = computed((): boolean => {
 const isActive = computed(
   (): boolean => store.current?.status === PaymentStatus.Active,
 );
+
+// A NEW cancel only succeeds on a non-terminal payment that is not already
+// cancel-pending (matches the backend `requestCancel` guard) — so we only show the
+// Cancel form then, and never let the operator re-click into a 422.
+const canCancel = computed((): boolean => {
+  const p = store.current;
+  return (
+    p !== null &&
+    p.cancelRequestedAt === null &&
+    (p.status === PaymentStatus.Active ||
+      p.status === PaymentStatus.PastDue ||
+      p.status === PaymentStatus.RenewalFailed)
+  );
+});
 
 function statusLabel(s: number): string {
   return t(`payments.statuses.${s}`);
@@ -135,7 +150,7 @@ async function handleDefer(): Promise<void> {
       <div v-if="isCancelling" class="notice notice--cancelling">
         {{
           t('payments.cancellingNotice', {
-            date: formatDateTime(store.current.currentPeriodEnd, locale),
+            date: formatDateTime(store.current.nextPaymentDate, locale),
           })
         }}
       </div>
@@ -199,7 +214,7 @@ async function handleDefer(): Promise<void> {
         </tbody>
       </table>
 
-      <div class="cancel-section">
+      <div v-if="canCancel" class="cancel-section">
         <h2 class="section-title">{{ t('payments.cancelTitle') }}</h2>
         <div class="cancel-row">
           <BaseInput

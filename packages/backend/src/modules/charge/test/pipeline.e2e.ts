@@ -1302,6 +1302,90 @@ const nameSearchResolvesContact: EffectScenario = {
   },
 };
 
+/** Payment factory for the cancelling-filter scenario. */
+const filterPayment = (
+  externalUserId: string,
+  status: PaymentStatus,
+  firstFailureAt: Date | null,
+  retryAttempt: number,
+) => ({
+  externalUserId,
+  amount: 30000,
+  currency: 0,
+  method: 0,
+  period: 'P1M',
+  status,
+  recurring: true,
+  currentPeriodStart: new Date('2026-06-01T00:00:00Z'),
+  currentPeriodEnd: new Date('2026-07-01T00:00:00Z'),
+  nextPaymentDate: new Date('2026-07-01T00:00:00Z'),
+  recurringTokenRef: 'tok',
+  firstFailureAt,
+  retryAttempt,
+});
+
+/** The operator "cancelling" bucket now covers a soft-cancel on an Active OR a
+ * PastDue payment (docs/24); those rows also drop out of the plain PastDue bucket. */
+const driveCancellingFilter = Effect.gen(function* () {
+  const subs = makePaymentRepo(yield* SqlClient.SqlClient);
+  const failedAt = new Date('2026-07-01T00:00:00Z');
+  const a = yield* subs.insert(
+    filterPayment('sp:cf-active', PaymentStatus.Active, null, 0),
+  );
+  const pd = yield* subs.insert(
+    filterPayment('sp:cf-pastdue', PaymentStatus.PastDue, failedAt, 1),
+  );
+  const pd2 = yield* subs.insert(
+    filterPayment('sp:cf-pastdue2', PaymentStatus.PastDue, failedAt, 1),
+  );
+  yield* subs.requestCancel(a.id); // Active soft-cancel
+  yield* subs.requestCancel(pd.id); // PastDue soft-cancel; pd2 stays a plain PastDue
+  const inCancelling = (
+    yield* subs.listAll(500, { statuses: [], cancelling: true })
+  ).map((p) => p.id);
+  const inPastDue = (
+    yield* subs.listAll(500, {
+      statuses: [PaymentStatus.PastDue],
+      cancelling: false,
+    })
+  ).map((p) => p.id);
+  const ok =
+    inCancelling.includes(a.id) &&
+    inCancelling.includes(pd.id) &&
+    !inCancelling.includes(pd2.id) &&
+    inPastDue.includes(pd2.id) &&
+    !inPastDue.includes(pd.id);
+  if (!ok) {
+    return yield* Effect.die(
+      'cancelling bucket must include Active+PastDue soft-cancels and exclude them from the PastDue bucket',
+    );
+  }
+});
+
+const assertCancellingFilter = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT count(*) FROM payments WHERE "cancelRequestedAt" IS NOT NULL`,
+    '2',
+    'two soft-cancels seeded (one Active, one PastDue)',
+  );
+};
+
+const cancellingBucketIncludesPastDue: EffectScenario = {
+  name: 'operator: the cancelling bucket includes soft-cancelled PastDue subs',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveCancellingFilter);
+      await assertCancellingFilter(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
   findExtendableMatchesPastDue,
@@ -1315,6 +1399,7 @@ export const effectScenarios: readonly EffectScenario[] = [
   cancelPastDueLapses,
   cancelRenewalFailedImmediate,
   cancelUpstreamSkipsCharge,
+  cancellingBucketIncludesPastDue,
   nameSearchResolvesContact,
   cardChangeOwedRevives,
   cardChangeDeclineLeavesPayment,
