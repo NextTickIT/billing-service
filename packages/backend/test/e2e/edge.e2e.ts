@@ -141,8 +141,9 @@ async function seedAndCheckout(baseUrl: string): Promise<{
   return { sessionId, bff };
 }
 
-/** Steps 3–5: public checkout read, /pay, and provider callback. */
-async function checkoutFlow(
+/** Step 3: the public read the payment page loads — every field it renders, and
+ * nothing that would leak the subscriber (AC-9). */
+async function assertPublicRead(
   bff: (req: Request) => Promise<Response>,
   baseUrl: string,
   sessionId: string,
@@ -155,7 +156,19 @@ async function checkoutFlow(
   assert.equal(getBody['amount'], 30000, 'correct amount');
   assert.equal(getBody['currency'], 0, 'correct currency');
   assert.equal(getBody['period'], 'P1M', 'correct period');
+  // The page discloses subscription vs one-time from this flag, so the public read must
+  // carry it — a missing `recurring` would silently render every checkout as one-time.
+  assert.equal(getBody['recurring'], true, 'correct recurring flag');
   assert.equal('externalUserId' in getBody, false, 'no externalUserId (AC9)');
+}
+
+/** Steps 3–5: public checkout read, /pay, and provider callback. */
+async function checkoutFlow(
+  bff: (req: Request) => Promise<Response>,
+  baseUrl: string,
+  sessionId: string,
+): Promise<void> {
+  await assertPublicRead(bff, baseUrl, sessionId);
 
   const payRes = await bff(
     new Request(`${baseUrl}/api/checkout-sessions/${sessionId}/pay`, {
