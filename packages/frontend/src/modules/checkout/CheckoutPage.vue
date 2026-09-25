@@ -9,6 +9,7 @@ import {
 } from '@billing-service/shared';
 import { useCheckoutStore } from './store.js';
 import { formatDate } from '@/app/datetime.js';
+import { formatPeriod } from '@/app/period.js';
 import { useMoney } from '@/app/money.js';
 import BaseSpinner from '@/components/BaseSpinner.vue';
 import BasePanel from '@/components/BasePanel.vue';
@@ -170,18 +171,32 @@ const legalLinks = [
         </div>
 
         <div v-else class="checkout__content">
+          <p class="checkout__kind">
+            {{
+              store.session.recurring
+                ? t('checkout.typeSubscription')
+                : t('checkout.typeOneTime')
+            }}
+          </p>
           <div class="checkout__row">
             <span class="checkout__label">{{ t('common.amount') }}</span>
             <span class="checkout__value">
               {{ formatAmount(store.session.amount, store.session.currency) }}
             </span>
           </div>
-          <div class="checkout__row">
-            <span class="checkout__label">{{ t('checkout.expiresAt') }}</span>
+          <div v-if="store.session.recurring" class="checkout__row">
+            <span class="checkout__label">{{ t('checkout.periodLabel') }}</span>
             <span class="checkout__value">
-              {{ formatDate(store.session.expiresAt, locale) }}
+              {{ formatPeriod(store.session.period, locale) }}
             </span>
           </div>
+          <p class="checkout__expiry">
+            {{
+              t('checkout.linkValidUntil', {
+                date: formatDate(store.session.expiresAt, locale),
+              })
+            }}
+          </p>
           <div class="checkout__pay">
             <div
               v-if="methods.length > 1"
@@ -262,6 +277,14 @@ const legalLinks = [
   gap: 10px;
 }
 
+/* What is being sold, above the figures that quantify it — a caption, not a row:
+   it has no counterpart value to align against. */
+.checkout__kind {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
 .checkout__row {
   display: flex;
   justify-content: space-between;
@@ -274,6 +297,14 @@ const legalLinks = [
 }
 .checkout__value {
   color: var(--txt);
+}
+
+/* The link's own TTL is checkout housekeeping, not a term of the purchase: smaller and
+   dimmer than the figures above it so it never reads as another product fact. */
+.checkout__expiry {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--dim);
 }
 
 .checkout__pay {

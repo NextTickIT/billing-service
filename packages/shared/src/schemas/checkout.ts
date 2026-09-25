@@ -221,16 +221,20 @@ export type MethodChangeResult = Schema.Schema.Type<typeof MethodChangeResult>;
 
 /**
  * GET /api/checkout-sessions/:id response (public, BFF-proxied, AC-9):
- * amount/currency/period/status/kind/method/expiresAt only — no externalUserId so
- * subscriber data does not appear on the public checkout page. `kind` lets the checkout
- * page tell a 0-amount card-change (verify widget) from a priced Purchase; `method` is
- * the default the page preselects in its method picker.
+ * amount/currency/period/recurring/status/kind/method/expiresAt only — no
+ * externalUserId so subscriber data does not appear on the public checkout page. `kind`
+ * lets the checkout page tell a 0-amount card-change (verify widget) from a priced
+ * Purchase; `method` is the default the page preselects in its method picker.
+ * `recurring` is what the page tells the payer they are buying — a subscription that
+ * renews every `period`, or a single charge — so a recurring authorisation is never
+ * taken without disclosing it; `period` is a renewal cadence only when it is true.
  */
 export const CheckoutSessionPublic = CheckoutSession.pipe(
   Schema.pick(
     'amount',
     'currency',
     'period',
+    'recurring',
     'status',
     'kind',
     'method',
