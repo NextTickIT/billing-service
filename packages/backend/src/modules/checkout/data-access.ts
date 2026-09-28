@@ -119,18 +119,30 @@ const reissueLapsed =
         // see "no live session" and both mint, leaving two payable provider orders for
         // one intent — with no rootId linking them, nothing downstream would notice.
         yield* sql`SELECT pg_advisory_xact_lock(hashtext(${input.externalUserId}))`;
+        // `Pending` counts as live, not just `Created`. The caller claims whatever this
+        // returns, which flips it to Pending immediately — so matching `Created` alone
+        // would never see the session handed out moments earlier, and every repeat click
+        // would mint another payable order. Reset it to Created in the same transaction
+        // so the caller's claim still wins; the buyer gets the SAME orderReference back.
+        // `paymentId IS NULL` keeps card-change sessions out: those belong to their own
+        // endpoint and must never be handed to a plain checkout.
         const live = yield* sql<{ readonly id: string }>`
-          SELECT id FROM checkout_sessions
-          WHERE "externalUserId" = ${input.externalUserId}
-            AND status = ${CheckoutSessionStatus.Created}
-            AND "expiresAt" > now()
-            AND kind = ${CheckoutSessionKind.Checkout}
-            AND recurring = ${input.recurring}
-            AND amount = ${input.amount}
-            AND currency = ${input.currency}
-            AND period = ${input.period}
-          ORDER BY "createdAt" DESC
-          LIMIT 1
+          UPDATE checkout_sessions SET status = ${CheckoutSessionStatus.Created}
+          WHERE id = (
+            SELECT id FROM checkout_sessions
+            WHERE "externalUserId" = ${input.externalUserId}
+              AND status IN (${CheckoutSessionStatus.Created}, ${CheckoutSessionStatus.Pending})
+              AND "paymentId" IS NULL
+              AND "expiresAt" > now()
+              AND kind = ${CheckoutSessionKind.Checkout}
+              AND recurring = ${input.recurring}
+              AND amount = ${input.amount}
+              AND currency = ${input.currency}
+              AND period = ${input.period}
+            ORDER BY "createdAt" DESC
+            LIMIT 1
+          )
+          RETURNING id
         `;
         const existing = live[0]?.id;
         if (existing !== undefined) {
