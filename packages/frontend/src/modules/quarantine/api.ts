@@ -10,7 +10,10 @@ export async function listQuarantine(): Promise<QuarantineView[]> {
   return res.json() as Promise<QuarantineView[]>;
 }
 
-export async function bindQuarantine(id: string, paymentId: string): Promise<void> {
+export async function bindQuarantine(
+  id: string,
+  paymentId: string,
+): Promise<void> {
   const res = await apiFetch(`/api/quarantine/${id}/bind`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

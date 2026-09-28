@@ -1340,15 +1340,14 @@ const driveCancellingFilter = Effect.gen(function* () {
   );
   yield* subs.requestCancel(a.id); // Active soft-cancel
   yield* subs.requestCancel(pd.id); // PastDue soft-cancel; pd2 stays a plain PastDue
-  const inCancelling = (
-    yield* subs.listAll(500, { statuses: [], cancelling: true })
-  ).map((p) => p.id);
-  const inPastDue = (
-    yield* subs.listAll(500, {
-      statuses: [PaymentStatus.PastDue],
-      cancelling: false,
-    })
-  ).map((p) => p.id);
+  const inCancelling = (yield* subs.listAll(500, {
+    statuses: [],
+    cancelling: true,
+  })).map((p) => p.id);
+  const inPastDue = (yield* subs.listAll(500, {
+    statuses: [PaymentStatus.PastDue],
+    cancelling: false,
+  })).map((p) => p.id);
   const ok =
     inCancelling.includes(a.id) &&
     inCancelling.includes(pd.id) &&

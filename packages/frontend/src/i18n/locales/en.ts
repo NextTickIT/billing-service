@@ -47,6 +47,8 @@ export default {
     confirmLater: 'We will confirm shortly.',
     declined: 'Payment declined. Please try again.',
     errors: {
+      alreadySubscribed:
+        'You already have an active subscription — no need to pay again.',
       notFound: 'Payment link not found.',
       unusable:
         'This payment link is no longer valid. Please request a new one.',

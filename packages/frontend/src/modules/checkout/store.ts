@@ -17,6 +17,10 @@ import {
  */
 const errorKeyFor = (e: unknown): string => {
   if (e instanceof CheckoutApiError) {
+    // Checked before the status: this is a 409, but telling a paying customer their
+    // link is invalid reads as us being broken.
+    if (e.code === 'already_subscribed')
+      return 'checkout.errors.alreadySubscribed';
     if (e.status === 404) return 'checkout.errors.notFound';
     if (e.status === 409 || e.status === 410) return 'checkout.errors.unusable';
     if (e.status === 422) return 'checkout.errors.rejected';

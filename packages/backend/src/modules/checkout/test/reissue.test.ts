@@ -169,7 +169,32 @@ describe('guards on re-issue', () => {
     expect(minted).toHaveLength(0);
   });
 
-  test('a Pending row is never re-issued — its provider order may still be live', () => {
+  test('a live Pending row is released so the buyer can press Pay again', () => {
+    // Pressed Pay, wandered off at the provider, came back inside the TTL. Without the
+    // release, claimForPayment's Created-only guard 409s them for the rest of the TTL —
+    // a full day now. Released, the SAME orderReference is re-handed: one order.
+    const released: string[] = [];
+    const { repo, minted } = repoWith(
+      session({
+        status: CheckoutSessionStatus.Pending,
+        expiresAt: new Date(NOW + HOUR),
+      }),
+    );
+    const withRelease = {
+      ...repo,
+      releasePending: (rid: string) => {
+        released.push(rid);
+        return Effect.void;
+      },
+    } as unknown as CheckoutRepo;
+    const result = run(withRelease, noSubscription);
+
+    expect(result._tag === 'Right' && result.right).toBe('chk_old');
+    expect(released).toEqual(['chk_old']);
+    expect(minted).toHaveLength(0);
+  });
+
+  test('a lapsed Pending row is never re-issued — its provider order may still be live', () => {
     // The form WAS handed out for a Pending row, so an order may exist at the provider
     // with no orderTimeout bounding it. Minting beside it would leave two payable
     // orders for one intent: both would match, both would book, neither would

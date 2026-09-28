@@ -166,7 +166,9 @@ export const methodChangeNotify =
         ),
       ),
       Effect.catchTag('ParseError', (error) =>
-        Effect.die(`invalid ${PAYMENT_METHOD_CHANGE} payload: ${error.message}`),
+        Effect.die(
+          `invalid ${PAYMENT_METHOD_CHANGE} payload: ${error.message}`,
+        ),
       ),
     );
 

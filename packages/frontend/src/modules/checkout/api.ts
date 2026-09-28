@@ -16,12 +16,19 @@ export type { CheckoutSessionPublic, PayInstruction };
 export class CheckoutApiError extends Error {
   readonly status: number;
   readonly serverMessage: string | null;
+  /** Machine-readable discriminator where the status alone is too coarse. */
+  readonly code: string | null;
 
-  constructor(status: number, serverMessage: string | null) {
+  constructor(
+    status: number,
+    serverMessage: string | null,
+    code: string | null = null,
+  ) {
     super(`HTTP ${String(status)}`);
     this.name = 'CheckoutApiError';
     this.status = status;
     this.serverMessage = serverMessage;
+    this.code = code;
   }
 }
 

@@ -26,6 +26,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
 import {
+  AlreadySubscribed,
   ChangeUnavailable,
   Conflict,
   NotFound,
@@ -384,6 +385,18 @@ export const resolvePayableSessionId = (
       session.status === CheckoutSessionStatus.Expired ||
       session.expiresAt.getTime() <= nowMillis;
     if (!lapsed) {
+      // A live link the buyer already pressed Pay on. `claimForPayment` only moves
+      // Created → Pending, so without this the second press 409s and the buyer is shut
+      // out for the rest of the TTL — 24 hours now that the TTL is a day. Release it and
+      // let the normal claim re-hand the SAME orderReference: one order, not two, so
+      // this cannot produce the double capture that re-issuing a Pending row would.
+      // `paymentId` non-null means a card-change session, which its own endpoint owns.
+      if (
+        session.status === CheckoutSessionStatus.Pending &&
+        session.paymentId === null
+      ) {
+        yield* repo.releasePending(id);
+      }
       return id;
     }
     if (!isReissuable(session.status)) {
@@ -402,7 +415,9 @@ export const resolvePayableSessionId = (
     }
     const live = yield* findActiveRecurring(session.externalUserId);
     if (Option.isSome(live) && live.value.status === PaymentStatus.Active) {
-      return yield* Effect.fail(new Conflict({ field: 'active subscription' }));
+      return yield* Effect.fail(
+        new AlreadySubscribed({ externalUserId: session.externalUserId }),
+      );
     }
     // Reuses the user's live session on these terms when one already exists, so a buyer
     // clicking the same stale link repeatedly (their URL still carries the OLD id) gets

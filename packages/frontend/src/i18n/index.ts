@@ -20,4 +20,3 @@ export const i18n = createI18n({
   missingWarn: false,
   fallbackWarn: false,
 });
-

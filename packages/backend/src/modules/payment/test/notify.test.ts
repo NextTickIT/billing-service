@@ -151,14 +151,16 @@ it.effect('methodChanged: id is deterministic from paymentId and at', () =>
   }),
 );
 
-it.effect('methodChangeNotify decodes the payload and publishes the event', () =>
-  Effect.gen(function* () {
-    const pub = recordingPublish();
+it.effect(
+  'methodChangeNotify decodes the payload and publishes the event',
+  () =>
+    Effect.gen(function* () {
+      const pub = recordingPublish();
 
-    yield* methodChangeNotify(pub.publish)(methodChangeNotifyPayload);
+      yield* methodChangeNotify(pub.publish)(methodChangeNotifyPayload);
 
-    expect(pub.events).toHaveLength(1);
-    expect(pub.events[0]?.name).toBe('method_changed');
-    expect(pub.events[0]?.externalUserId).toBe('sp:42');
-  }),
+      expect(pub.events).toHaveLength(1);
+      expect(pub.events[0]?.name).toBe('method_changed');
+      expect(pub.events[0]?.externalUserId).toBe('sp:42');
+    }),
 );

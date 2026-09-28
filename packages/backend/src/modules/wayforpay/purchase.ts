@@ -24,8 +24,10 @@ const MIN_ORDER_TIMEOUT_SECONDS = 300;
  * `purchaseSignatureBase`), so sending it is purely additive.
  *
  * Derived from what is LEFT of our session TTL, never the full TTL, so the two clocks
- * cannot drift apart: an order never outlives the link that minted it, and a link that
- * still looks payable never hands back an order the provider already expired. Sending
+ * track each other instead of drifting: a link that still looks payable never hands back
+ * an order the provider already expired. The floor is the one deliberate exception — an
+ * order minted in the link's last moments outlives it by up to five minutes, which is
+ * preferable to handing out a form that is dead on arrival. Sending
  * nothing (as we used to) inherits WayForPay's own default, which is unrelated to our
  * TTL — that gap is what leaves a buyer staring at a live Pay button on a dead order.
  */
