@@ -46,6 +46,15 @@ export default {
     returnHint: 'You can now return to the payment page or bot.',
     confirmLater: 'We will confirm shortly.',
     declined: 'Payment declined. Please try again.',
+    errors: {
+      notFound: 'Payment link not found.',
+      unusable:
+        'This payment link is no longer valid. Please request a new one.',
+      rejected: 'Payment was rejected.',
+      unavailable:
+        'This payment method is temporarily unavailable. Please try again shortly.',
+      generic: 'Something went wrong. Please try again.',
+    },
     periodLabel: 'Billing period',
     expiresAt: 'Valid until',
     redirecting: 'Redirecting to card verification…',

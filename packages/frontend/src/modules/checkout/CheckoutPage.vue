@@ -147,7 +147,10 @@ const legalLinks = [
       </div>
 
       <div v-else-if="store.error" class="checkout__msg checkout__msg--error">
-        {{ store.error }}
+        {{ t(store.error) }}
+        <span v-if="store.errorDetail" class="checkout__msg-detail">
+          {{ store.errorDetail }}
+        </span>
       </div>
 
       <template v-else-if="store.session">
@@ -248,6 +251,13 @@ const legalLinks = [
 
 .checkout__msg--error {
   color: var(--red);
+}
+/* Provider-written detail (422 only) — secondary to the translated line above it. */
+.checkout__msg-detail {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.875em;
+  opacity: 0.8;
 }
 .checkout__msg--warn {
   color: var(--amber);
