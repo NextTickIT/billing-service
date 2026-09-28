@@ -112,6 +112,7 @@ const insertedFor = (promo: CheckoutPromo | null) =>
     const checkout: CheckoutRepo = {
       findById: () => Effect.succeed(Option.some(sessionWith(promo))),
       findByIdempotencyKey: () => Effect.succeed(Option.none()),
+      countRecentByExternalUser: () => Effect.succeed(0),
       insert: () => Effect.succeed(true),
       claimForPayment: () => Effect.succeed(false),
       releasePending: () => Effect.void,
@@ -144,30 +145,38 @@ it('accepts "P0D" at the API gate and rejects an empty value', () => {
   expect(isValidPeriod('P')).toBe(false); // rejected (422)
 });
 
-it.effect('a "P0D" promo adds zero days — paid-through is the plain period end', () =>
-  Effect.gen(function* () {
-    const inserted = yield* insertedFor({ additionalFreePeriod: 'P0D' });
-    // Zero bonus: the paid-through anchor is exactly paidAt + period, no extra days.
-    expect(inserted?.currentPeriodEnd).toEqual(PAID_THROUGH);
-    expect(inserted?.nextPaymentDate).toEqual(PAID_THROUGH);
-    expect(inserted?.currentPeriodStart).toEqual(PAID_AT);
-  }),
+it.effect(
+  'a "P0D" promo adds zero days — paid-through is the plain period end',
+  () =>
+    Effect.gen(function* () {
+      const inserted = yield* insertedFor({ additionalFreePeriod: 'P0D' });
+      // Zero bonus: the paid-through anchor is exactly paidAt + period, no extra days.
+      expect(inserted?.currentPeriodEnd).toEqual(PAID_THROUGH);
+      expect(inserted?.nextPaymentDate).toEqual(PAID_THROUGH);
+      expect(inserted?.currentPeriodStart).toEqual(PAID_AT);
+    }),
 );
 
-it.effect('"P0D" is the same billing outcome as attaching no promo at all', () =>
-  Effect.gen(function* () {
-    const withP0D = yield* insertedFor({ additionalFreePeriod: 'P0D' });
-    const withNone = yield* insertedFor(null);
-    expect(withP0D?.currentPeriodEnd).toEqual(withNone?.currentPeriodEnd);
-    expect(withP0D?.nextPaymentDate).toEqual(withNone?.nextPaymentDate);
-  }),
+it.effect(
+  '"P0D" is the same billing outcome as attaching no promo at all',
+  () =>
+    Effect.gen(function* () {
+      const withP0D = yield* insertedFor({ additionalFreePeriod: 'P0D' });
+      const withNone = yield* insertedFor(null);
+      expect(withP0D?.currentPeriodEnd).toEqual(withNone?.currentPeriodEnd);
+      expect(withP0D?.nextPaymentDate).toEqual(withNone?.nextPaymentDate);
+    }),
 );
 
-it.effect('control: a real "P7D" bonus DOES move the anchor (P0D is a no-op, not dead code)', () =>
-  Effect.gen(function* () {
-    const inserted = yield* insertedFor({ additionalFreePeriod: 'P7D' });
-    // 7 free days ON TOP of the paid month → anchor pushed a week past paid-through.
-    expect(inserted?.currentPeriodEnd).toEqual(addPeriod(PAID_THROUGH, 'P7D'));
-    expect(inserted?.currentPeriodEnd).not.toEqual(PAID_THROUGH);
-  }),
+it.effect(
+  'control: a real "P7D" bonus DOES move the anchor (P0D is a no-op, not dead code)',
+  () =>
+    Effect.gen(function* () {
+      const inserted = yield* insertedFor({ additionalFreePeriod: 'P7D' });
+      // 7 free days ON TOP of the paid month → anchor pushed a week past paid-through.
+      expect(inserted?.currentPeriodEnd).toEqual(
+        addPeriod(PAID_THROUGH, 'P7D'),
+      );
+      expect(inserted?.currentPeriodEnd).not.toEqual(PAID_THROUGH);
+    }),
 );

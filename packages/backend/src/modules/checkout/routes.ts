@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { SqlClient } from '@effect/sql';
+import { SqlClient, type SqlError } from '@effect/sql';
 import {
   CardChangeRequest,
   type CheckoutSession,
@@ -20,7 +20,7 @@ import {
   SelectMethod,
   SessionCreated,
 } from '@billing-service/shared';
-import { Clock, Effect, Redacted, Schema } from 'effect';
+import { Clock, Effect, Option, Redacted, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
@@ -330,13 +330,114 @@ const claimPayableSession = (
     } satisfies CheckoutSession;
   });
 
+/** How far back the re-issue allowance is counted, and how many it allows. */
+const REISSUE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const REISSUE_MAX_PER_WINDOW = 5;
+
+/**
+ * Resolve the session id we should actually charge, re-issuing when the one in the link
+ * has lapsed.
+ *
+ * A lapsed link used to be a dead end: `/pay` returned 409 and the buyer — who still had
+ * the message, still wanted to pay, and had no subscription — had no way forward. Now an
+ * expired session MINTS A FRESH ONE on the same terms and charges that instead.
+ *
+ * The clone gets a new id, which is also the `orderReference` we hand WayForPay, so this
+ * never re-POSTs a reference the provider has already seen: whatever state the old order
+ * is in, it cannot collide with the new one. The old row is left exactly as it is, so a
+ * late callback for it still matches and books.
+ *
+ * Guards, in order: a completed session is never re-issued (that is a paid checkout); a
+ * user with a live subscription is refused (`Active` only — `PastDue` and
+ * `RenewalFailed` owe money and must be allowed to pay); one-time and card-change
+ * sessions keep the old behaviour; and re-issues are capped per user per day, since each
+ * one mints a real provider order.
+ */
+export const resolvePayableSessionId = (
+  repo: CheckoutRepo,
+  findActiveRecurring: (
+    externalUserId: string,
+  ) => Effect.Effect<Option.Option<Payment>, SqlError.SqlError>,
+  id: string,
+  nowMillis: number,
+  ttlSeconds: number,
+) =>
+  Effect.gen(function* () {
+    const found = yield* repo.findById(id);
+    if (found._tag === 'None') {
+      return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
+    }
+    const session = found.value;
+    const lapsed =
+      session.status === CheckoutSessionStatus.Expired ||
+      session.expiresAt.getTime() <= nowMillis;
+    if (!lapsed) {
+      return id;
+    }
+    if (session.status === CheckoutSessionStatus.Completed) {
+      return yield* Effect.fail(
+        new Conflict({ field: 'checkout session (completed)' }),
+      );
+    }
+    // Only a plain recurring checkout is re-issuable. A one-time purchase has no
+    // subscription to check against, so an immortal link would be unlimited repeat
+    // charges; a card-change session acts on an existing payment and is minted by its
+    // own endpoint.
+    if (!session.recurring || session.kind !== CheckoutSessionKind.Checkout) {
+      return yield* Effect.fail(
+        new Conflict({ field: 'checkout session (expired)' }),
+      );
+    }
+    const live = yield* findActiveRecurring(session.externalUserId);
+    if (Option.isSome(live) && live.value.status === PaymentStatus.Active) {
+      return yield* Effect.fail(new Conflict({ field: 'active subscription' }));
+    }
+    const issued = yield* repo.countRecentByExternalUser(
+      session.externalUserId,
+      new Date(nowMillis - REISSUE_WINDOW_MS),
+    );
+    if (issued >= REISSUE_MAX_PER_WINDOW) {
+      return yield* Effect.fail(
+        new Conflict({ field: 'checkout re-issue (too many today)' }),
+      );
+    }
+    const freshId = `chk_${randomUUID()}`;
+    yield* repo.insert({
+      id: freshId,
+      externalUserId: session.externalUserId,
+      amount: session.amount,
+      currency: session.currency,
+      period: session.period,
+      method: session.method ?? undefined,
+      kind: CheckoutSessionKind.Checkout,
+      recurring: session.recurring,
+      paymentId: null,
+      successUrl: session.successUrl,
+      failureUrl: session.failureUrl,
+      // The promo rode on the original intent and is still unspent — this checkout was
+      // never paid — so it carries over rather than being silently dropped.
+      promo: session.promo,
+      // Never copied: the key is unique across live rows, and the clone is a new
+      // checkout, not a replay of the caller's original request.
+      idempotencyKey: null,
+      expiresAt: new Date(nowMillis + ttlSeconds * 1000),
+    });
+    return freshId;
+  });
+
 const pay = (input: SelectMethod, request: FastifyRequest) =>
   Effect.gen(function* () {
     assertBffSecret(request);
     const sql = yield* SqlClient.SqlClient;
     const repo = makeCheckoutRepo(sql);
-    const id = readId(request);
     const nowMillis = yield* Clock.currentTimeMillis;
+    const id = yield* resolvePayableSessionId(
+      repo,
+      makePaymentRepo(sql).findActiveRecurringByExternalUser,
+      readId(request),
+      nowMillis,
+      request.server.appConfig.wayforpay.sessionTtlSeconds,
+    );
     const session = yield* claimPayableSession(
       repo,
       id,
