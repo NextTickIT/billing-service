@@ -34,7 +34,7 @@ const repoWith = (found: CheckoutSession | null): CheckoutRepo => ({
   findById: () =>
     Effect.succeed(found === null ? Option.none() : Option.some(found)),
   findByIdempotencyKey: () => Effect.succeed(Option.none()),
-  countRecentByExternalUser: () => Effect.succeed(0),
+  reissueLapsed: () => Effect.die('unexpected reissueLapsed'),
   insert: () => Effect.succeed(true),
   claimForPayment: () => Effect.succeed(false),
   releasePending: () => Effect.void,

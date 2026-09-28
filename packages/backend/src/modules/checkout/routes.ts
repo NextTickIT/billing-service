@@ -330,9 +330,21 @@ const claimPayableSession = (
     } satisfies CheckoutSession;
   });
 
-/** How far back the re-issue allowance is counted, and how many it allows. */
-const REISSUE_WINDOW_MS = 24 * 60 * 60 * 1000;
-const REISSUE_MAX_PER_WINDOW = 5;
+/**
+ * Re-issue applies only to a session that was never handed to the provider.
+ *
+ * `Created` means the Pay button was never pressed, so `buildPurchase` never ran and no
+ * `orderReference` ever reached WayForPay — there is no old order that could still be
+ * paid alongside the new one. A `Pending` row is the opposite: the form WAS handed out,
+ * its provider-side lifetime is whatever WayForPay defaulted to (every row predating
+ * `orderTimeout` in this branch), and re-issuing beside it would leave two payable
+ * orders for one intent. Both would match, both would book, and neither would
+ * quarantine — the buyer pays twice and receives one period. So `Pending` keeps the old
+ * refusal until it can be released deliberately.
+ */
+const isReissuable = (status: CheckoutSessionStatus): boolean =>
+  status === CheckoutSessionStatus.Created ||
+  status === CheckoutSessionStatus.Expired;
 
 /**
  * Resolve the session id we should actually charge, re-issuing when the one in the link
@@ -374,9 +386,9 @@ export const resolvePayableSessionId = (
     if (!lapsed) {
       return id;
     }
-    if (session.status === CheckoutSessionStatus.Completed) {
+    if (!isReissuable(session.status)) {
       return yield* Effect.fail(
-        new Conflict({ field: 'checkout session (completed)' }),
+        new Conflict({ field: 'checkout session (not re-issuable)' }),
       );
     }
     // Only a plain recurring checkout is re-issuable. A one-time purchase has no
@@ -392,18 +404,12 @@ export const resolvePayableSessionId = (
     if (Option.isSome(live) && live.value.status === PaymentStatus.Active) {
       return yield* Effect.fail(new Conflict({ field: 'active subscription' }));
     }
-    const issued = yield* repo.countRecentByExternalUser(
-      session.externalUserId,
-      new Date(nowMillis - REISSUE_WINDOW_MS),
-    );
-    if (issued >= REISSUE_MAX_PER_WINDOW) {
-      return yield* Effect.fail(
-        new Conflict({ field: 'checkout re-issue (too many today)' }),
-      );
-    }
-    const freshId = `chk_${randomUUID()}`;
-    yield* repo.insert({
-      id: freshId,
+    // Reuses the user's live session on these terms when one already exists, so a buyer
+    // clicking the same stale link repeatedly (their URL still carries the OLD id) gets
+    // one order, not one per click. That reuse is also the rate bound: a user can hold
+    // at most one live session at a time, so at most one provider order per TTL window.
+    return yield* repo.reissueLapsed({
+      id: `chk_${randomUUID()}`,
       externalUserId: session.externalUserId,
       amount: session.amount,
       currency: session.currency,
@@ -422,7 +428,6 @@ export const resolvePayableSessionId = (
       idempotencyKey: null,
       expiresAt: new Date(nowMillis + ttlSeconds * 1000),
     });
-    return freshId;
   });
 
 const pay = (input: SelectMethod, request: FastifyRequest) =>

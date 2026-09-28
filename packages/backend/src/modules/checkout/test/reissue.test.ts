@@ -41,17 +41,20 @@ const session = (over: Partial<CheckoutSession> = {}): CheckoutSession => ({
 /** Captures what, if anything, was minted. */
 const repoWith = (
   found: CheckoutSession | null,
-  issuedInWindow = 0,
+  reusesLiveId: string | null = null,
 ): { repo: CheckoutRepo; minted: NewCheckoutSession[] } => {
   const minted: NewCheckoutSession[] = [];
   const repo = {
     findById: () => Effect.succeed(Option.fromNullable(found)),
     findByIdempotencyKey: die,
-    countRecentByExternalUser: () => Effect.succeed(issuedInWindow),
-    insert: (input: NewCheckoutSession) => {
+    // Mirrors the real method: hand back the user's live session on these terms when
+    // there is one, otherwise take the clone.
+    reissueLapsed: (input: NewCheckoutSession) => {
+      if (reusesLiveId !== null) return Effect.succeed(reusesLiveId);
       minted.push(input);
-      return Effect.succeed(true);
+      return Effect.succeed(input.id);
     },
+    insert: die,
     claimForPayment: die,
     releasePending: die,
     markCompleted: die,
@@ -166,19 +169,27 @@ describe('guards on re-issue', () => {
     expect(minted).toHaveLength(0);
   });
 
-  test('caps re-issues per user per day, since each mints a real provider order', () => {
-    const { repo, minted } = repoWith(session(), 5);
+  test('a Pending row is never re-issued — its provider order may still be live', () => {
+    // The form WAS handed out for a Pending row, so an order may exist at the provider
+    // with no orderTimeout bounding it. Minting beside it would leave two payable
+    // orders for one intent: both would match, both would book, neither would
+    // quarantine, and the buyer would pay twice for one period.
+    const { repo, minted } = repoWith(
+      session({ status: CheckoutSessionStatus.Pending }),
+    );
     const result = run(repo, noSubscription);
 
     expect(result._tag).toBe('Left');
     expect(minted).toHaveLength(0);
   });
 
-  test('still allowed one below the cap', () => {
-    const { repo, minted } = repoWith(session(), 4);
+  test('reuses the live session instead of minting another one', () => {
+    // The buyer's URL still carries the OLD id, so every further click lands here. The
+    // repo hands back the session already minted rather than opening a second order.
+    const { repo, minted } = repoWith(session(), 'chk_already_live');
     const result = run(repo, noSubscription);
 
-    expect(result._tag).toBe('Right');
-    expect(minted).toHaveLength(1);
+    expect(result._tag === 'Right' && result.right).toBe('chk_already_live');
+    expect(minted).toHaveLength(0);
   });
 });

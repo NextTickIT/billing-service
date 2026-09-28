@@ -2,6 +2,7 @@ import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
 import {
   CheckoutSession,
+  CheckoutSessionKind,
   CheckoutSessionStatus,
   type NewCheckoutSession,
 } from '@billing-service/shared';
@@ -27,15 +28,20 @@ export interface CheckoutRepo {
     key: string,
   ) => Effect.Effect<Option.Option<CheckoutSession>, SqlError.SqlError>;
   /**
-   * How many sessions this user has been issued since `since`. Bounds automatic
-   * re-issue: every re-issue mints a real provider order, so without a ceiling whoever
-   * holds a link could mint them indefinitely. Counted per user rather than per session
-   * so holding two links cannot double the allowance.
+   * Re-issue a lapsed checkout: return the id of the user's existing live session on
+   * these exact terms, or insert `input` and return its id.
+   *
+   * Serialized per user by an advisory lock, and reusing a live session rather than
+   * minting beside it, because every mint here becomes a real provider order. Without
+   * both, the buyer's link still carries the OLD id, so every further Pay click — and
+   * every extra tab — would mint another payable order for the same intent.
+   *
+   * Terms are matched, not just liveness: handing back a session at a different amount
+   * or period would silently charge something other than what this link promised.
    */
-  readonly countRecentByExternalUser: (
-    externalUserId: string,
-    since: Date,
-  ) => Effect.Effect<number, SqlError.SqlError>;
+  readonly reissueLapsed: (
+    input: NewCheckoutSession,
+  ) => Effect.Effect<string, SqlError.SqlError>;
   /**
    * Atomically claim a payable session for payment: record the chosen method and move
    * it to `pending`, but ONLY from `created`. The session id is the idempotency key —
@@ -105,12 +111,35 @@ const findByIdempotencyKey = (sql: SqlClient.SqlClient) => (key: string) =>
     WHERE "idempotencyKey" = ${key}
   `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
-const countRecentByExternalUser =
-  (sql: SqlClient.SqlClient) => (externalUserId: string, since: Date) =>
-    sql<{ readonly count: number }>`
-      SELECT count(*)::int AS count FROM checkout_sessions
-      WHERE "externalUserId" = ${externalUserId} AND "createdAt" >= ${since}
-    `.pipe(Effect.map((rows) => Number(rows[0]?.count ?? 0)));
+const reissueLapsed =
+  (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) =>
+    sql.withTransaction(
+      Effect.gen(function* () {
+        // Serialize per user for the read-then-insert below. Without it two tabs both
+        // see "no live session" and both mint, leaving two payable provider orders for
+        // one intent — with no rootId linking them, nothing downstream would notice.
+        yield* sql`SELECT pg_advisory_xact_lock(hashtext(${input.externalUserId}))`;
+        const live = yield* sql<{ readonly id: string }>`
+          SELECT id FROM checkout_sessions
+          WHERE "externalUserId" = ${input.externalUserId}
+            AND status = ${CheckoutSessionStatus.Created}
+            AND "expiresAt" > now()
+            AND kind = ${CheckoutSessionKind.Checkout}
+            AND recurring = ${input.recurring}
+            AND amount = ${input.amount}
+            AND currency = ${input.currency}
+            AND period = ${input.period}
+          ORDER BY "createdAt" DESC
+          LIMIT 1
+        `;
+        const existing = live[0]?.id;
+        if (existing !== undefined) {
+          return existing;
+        }
+        yield* insert(sql)(input);
+        return input.id;
+      }),
+    );
 
 const claimForPayment =
   (sql: SqlClient.SqlClient) => (id: string, method: number) =>
@@ -146,7 +175,7 @@ export const makeCheckoutRepo = (sql: SqlClient.SqlClient): CheckoutRepo => ({
   insert: insert(sql),
   findById: findById(sql),
   findByIdempotencyKey: findByIdempotencyKey(sql),
-  countRecentByExternalUser: countRecentByExternalUser(sql),
+  reissueLapsed: reissueLapsed(sql),
   claimForPayment: claimForPayment(sql),
   releasePending: releasePending(sql),
   markCompleted: markCompleted(sql),

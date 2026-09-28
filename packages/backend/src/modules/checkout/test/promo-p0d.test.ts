@@ -112,7 +112,7 @@ const insertedFor = (promo: CheckoutPromo | null) =>
     const checkout: CheckoutRepo = {
       findById: () => Effect.succeed(Option.some(sessionWith(promo))),
       findByIdempotencyKey: () => Effect.succeed(Option.none()),
-      countRecentByExternalUser: () => Effect.succeed(0),
+      reissueLapsed: () => Effect.die('unexpected reissueLapsed'),
       insert: () => Effect.succeed(true),
       claimForPayment: () => Effect.succeed(false),
       releasePending: () => Effect.void,
