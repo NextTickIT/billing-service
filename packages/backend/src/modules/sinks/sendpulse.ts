@@ -8,6 +8,7 @@ import { Effect } from 'effect';
 import { isTransientStatus, retryTransient } from '@/infra/http/retry.js';
 import type { RateLimiter } from '@/infra/rate-limiter.js';
 import { SinkError, type SinkConnector } from '@/infra/sinks.js';
+import { formattedFields } from '@/modules/sinks/formatted.js';
 
 /**
  * SendPulse Telegram connector (docs/21, conv.12 — provider code lives here). Runs a
@@ -126,6 +127,9 @@ export const makeSendPulseConnector = (
         // branch/dedupe on which one fired; our keys win over any payload collision.
         external_data: {
           ...event.payload,
+          // Human-readable twins (DD.MM.YYYY, "1 месяц") for the flow to drop straight
+          // into a message. Added here, never stored on the event — see formatted.ts.
+          ...formattedFields(event.payload),
           event: event.name,
           event_id: event.id,
         },

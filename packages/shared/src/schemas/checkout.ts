@@ -183,7 +183,9 @@ export const MethodChangeRequest = Schema.Struct({
   method: PaymentMethodSchema,
 });
 
-export type MethodChangeRequest = Schema.Schema.Type<typeof MethodChangeRequest>;
+export type MethodChangeRequest = Schema.Schema.Type<
+  typeof MethodChangeRequest
+>;
 
 /**
  * POST /api/payment/method-change response, discriminated on `kind`:
@@ -210,7 +212,9 @@ export const MethodChangeApplied = Schema.Struct({
   method: PaymentMethodSchema,
 });
 
-export type MethodChangeApplied = Schema.Schema.Type<typeof MethodChangeApplied>;
+export type MethodChangeApplied = Schema.Schema.Type<
+  typeof MethodChangeApplied
+>;
 
 export const MethodChangeResult = Schema.Union(
   MethodChangeCheckout,

@@ -1,9 +1,13 @@
 // Renders a stored billing period (`P1M`, `P30D`, `P1Y`) the way a payer reads it —
-// "1 місяць", "30 days" — in the viewer's language. Unit plurals come from Intl/CLDR
-// because uk/ru need three forms ("1 місяць" / "2 місяці" / "5 місяців") and a
+// "1 місяць", "1 месяц", "30 days" — in the given language. Unit plurals come from
+// Intl/CLDR because uk/ru need three forms ("1 месяц" / "2 месяца" / "5 месяцев") and a
 // hand-written rule table is how a payment page starts lying about what it charges.
 // Display only: the canonical duration arithmetic stays in the backend's `addPeriod`,
 // so a rendering gap here can never move a billing date.
+//
+// Lives in `shared` because two surfaces render it — the checkout page and the SendPulse
+// sink's `period_formatted` — and two copies would eventually disagree about what the
+// customer is being told they bought.
 const DURATION = /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?$/;
 
 // Capture-group order in DURATION — the index carries the unit, so the two must match.
@@ -34,4 +38,14 @@ export function formatPeriod(period: string, locale: string): string {
     return count === 0 ? [] : [formatUnit(count, unit, locale)];
   });
   return parts.length === 0 ? period : parts.join(' ');
+}
+
+/**
+ * True when {@link formatPeriod} would only echo its input back — an unparseable
+ * duration, or the all-zero `P0D` a one-time purchase stores. Callers that render into
+ * someone else's system (the SendPulse sink) use this to omit the field entirely rather
+ * than ship a raw `P0D` into a customer-facing message.
+ */
+export function isRenderablePeriod(period: string): boolean {
+  return formatPeriod(period, 'en') !== period;
 }

@@ -5,11 +5,11 @@ import { useI18n } from 'vue-i18n';
 import {
   CheckoutSessionKind,
   CheckoutSessionStatus,
+  formatPeriod,
   PaymentMethod,
 } from '@billing-service/shared';
 import { useCheckoutStore } from './store.js';
 import { formatDate } from '@/app/datetime.js';
-import { formatPeriod } from '@/app/period.js';
 import { useMoney } from '@/app/money.js';
 import BaseSpinner from '@/components/BaseSpinner.vue';
 import BasePanel from '@/components/BasePanel.vue';
