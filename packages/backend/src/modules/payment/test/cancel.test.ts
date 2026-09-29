@@ -8,7 +8,12 @@ import { cancelNotify, paymentCancelled } from '@/modules/payment/cancel.js';
 describe('paymentCancelled', () => {
   test('carries the reason and the external user (docs/07)', () => {
     const event = paymentCancelled(
-      { subscriptionId: 'sub_1', externalUserId: 'sp:1', reason: 'operator' },
+      {
+        subscriptionId: 'sub_1',
+        externalUserId: 'sp:1',
+        cancelRequestedAt: '2026-01-01T00:00:00.000Z',
+        reason: 'operator',
+      },
       new Date(0),
     );
     expect(event.name).toBe('payment_cancelled');
@@ -35,9 +40,15 @@ it.effect('cancelNotify decodes the payload and publishes the event', () =>
       subscriptionId: 'sub_1',
       externalUserId: 'sp:1',
       reason: 'operator',
+      cancelRequestedAt: '2026-01-01T00:00:00.000Z',
     });
 
     expect(pub.events).toHaveLength(1);
     expect(pub.events[0]?.name).toBe('payment_cancelled');
+    // The occurrence, not just the payment — a second cancellation after a
+    // reactivation must not dedupe against this one.
+    expect(pub.events[0]?.id).toBe(
+      'evt_sub_sub_1_cancelled_2026-01-01T00:00:00.000Z',
+    );
   }),
 );

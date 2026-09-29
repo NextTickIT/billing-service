@@ -30,12 +30,17 @@ import {
  * worker runtime, so these run there — the operator/scheduler side only enqueues.
  */
 
-/** payment_cancelled envelope (docs/07); deterministic id so replays dedupe. */
+/**
+ * payment_cancelled envelope (docs/07). The id carries `cancelRequestedAt`, so a
+ * redelivery of one cancellation dedupes while a genuine cancel → reactivate → cancel
+ * produces a distinct event. A constant id here silently dropped every cancellation
+ * after the first.
+ */
 export const paymentCancelled = (
   notify: CancelNotify,
   now: Date,
 ): PaymentCancelledEvent => ({
-  id: `evt_sub_${notify.subscriptionId}_cancelled`,
+  id: `evt_sub_${notify.subscriptionId}_cancelled_${notify.cancelRequestedAt}`,
   name: 'payment_cancelled',
   occurredAt: now,
   correlationId: notify.subscriptionId,
@@ -89,13 +94,15 @@ export const methodChanged = (
 /**
  * The soft-cancel due-date lapse reuses the terminal `renewal_failed` (reason
  * `cancelled`) — SendPulse already treats it as a lapse, so no new sink flow is
- * needed (docs/23). One event id per payment: the lapse fires exactly once.
+ * needed (docs/23). Keyed on the cancellation being lapsed, not the payment: one event
+ * per cancellation, so a payment cancelled, reactivated and cancelled again lapses twice
+ * and both lapses are reported.
  */
 export const cancelLapsed = (
   notify: LapseNotify,
   now: Date,
 ): RenewalFailedEvent => ({
-  id: `evt_${notify.paymentId}_cancel_lapsed`,
+  id: `evt_${notify.paymentId}_cancel_lapsed_${notify.cancelRequestedAt}`,
   name: 'renewal_failed',
   occurredAt: now,
   correlationId: notify.paymentId,
