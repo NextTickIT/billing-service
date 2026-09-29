@@ -449,7 +449,12 @@ const markCancelledLapsed =
 const cancelUpstream = (sql: SqlClient.SqlClient) => (id: string, now: Date) =>
   sql<{ readonly cancelRequestedAt: Date }>`
     UPDATE payments
-    SET status = ${PaymentStatus.Cancelled}, "cancelRequestedAt" = now(),
+    SET status = ${PaymentStatus.Cancelled},
+        -- COALESCE, not now(): an operator soft-cancel has already stamped this, and
+        -- overwriting it would emit a SECOND payment_cancelled under a different key
+        -- for what is one cancellation. Keeping the first stamp preserves the
+        -- deliberate collapse between the operator and upstream paths.
+        "cancelRequestedAt" = COALESCE("cancelRequestedAt", now()),
         "updatedAt" = now()
     WHERE id = ${id}
       AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})

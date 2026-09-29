@@ -40,7 +40,10 @@ export const paymentCancelled = (
   notify: CancelNotify,
   now: Date,
 ): PaymentCancelledEvent => ({
-  id: `evt_sub_${notify.subscriptionId}_cancelled_${notify.cancelRequestedAt}`,
+  id:
+    notify.cancelRequestedAt === ''
+      ? `evt_sub_${notify.subscriptionId}_cancelled`
+      : `evt_sub_${notify.subscriptionId}_cancelled_${notify.cancelRequestedAt}`,
   name: 'payment_cancelled',
   occurredAt: now,
   correlationId: notify.subscriptionId,
@@ -102,7 +105,10 @@ export const cancelLapsed = (
   notify: LapseNotify,
   now: Date,
 ): RenewalFailedEvent => ({
-  id: `evt_${notify.paymentId}_cancel_lapsed_${notify.cancelRequestedAt}`,
+  id:
+    notify.cancelRequestedAt === ''
+      ? `evt_${notify.paymentId}_cancel_lapsed`
+      : `evt_${notify.paymentId}_cancel_lapsed_${notify.cancelRequestedAt}`,
   name: 'renewal_failed',
   occurredAt: now,
   correlationId: notify.paymentId,

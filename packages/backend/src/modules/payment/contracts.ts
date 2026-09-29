@@ -26,8 +26,15 @@ export const CancelNotify = Schema.Struct({
    * cancel yields distinct keys while a redelivery of one cancellation does not.
    * Declared here because `Schema.Struct` drops undeclared keys silently — an
    * unadded field would vanish between enqueue and handler with no error.
+   *
+   * Optional for ONE release: a message enqueued by the previous image has no such
+   * field, and a required one would fail `decodeUnknown`, die, retry five times and
+   * dead-letter — destroying a real cancellation at deploy, which is the exact loss
+   * this work exists to stop. Empty means "legacy", and the event id falls back to the
+   * old constant form so it still dedupes against anything already emitted. Make it
+   * required again once no old-shape messages can remain.
    */
-  cancelRequestedAt: Schema.String,
+  cancelRequestedAt: Schema.optionalWith(Schema.String, { default: () => '' }),
 });
 
 export type CancelNotify = Schema.Schema.Type<typeof CancelNotify>;
@@ -74,8 +81,10 @@ export const LapseNotify = Schema.Struct({
    * WHICH cancellation: a reactivation between enqueue and handler followed by a fresh
    * cancel in the same period keeps `dueAt` but must not reuse the spent key. It also
    * keys the event, so a second cancellation's lapse is reported as its own.
+   *
+   * Optional for one release, same reason as `CancelNotify` — see there.
    */
-  cancelRequestedAt: Schema.String,
+  cancelRequestedAt: Schema.optionalWith(Schema.String, { default: () => '' }),
 });
 
 export type LapseNotify = Schema.Schema.Type<typeof LapseNotify>;

@@ -52,3 +52,24 @@ it.effect('cancelNotify decodes the payload and publishes the event', () =>
     );
   }),
 );
+
+it.effect('a payload from the previous image still produces its event', () =>
+  Effect.gen(function* () {
+    // The deploy case. A `payment_cancel` enqueued by the old image carries no
+    // `cancelRequestedAt`; a required field would fail decode, die, retry five times
+    // and dead-letter — destroying a real cancellation at deploy, which is exactly the
+    // loss this work exists to stop.
+    const pub = recordingPublish();
+
+    yield* cancelNotify(pub.publish)({
+      subscriptionId: 'sub_legacy',
+      externalUserId: 'sp:1',
+      reason: 'operator',
+    });
+
+    expect(pub.events).toHaveLength(1);
+    // Falls back to the OLD id, so it still dedupes against anything already emitted
+    // for this cancellation by the previous image.
+    expect(pub.events[0]?.id).toBe('evt_sub_sub_legacy_cancelled');
+  }),
+);
