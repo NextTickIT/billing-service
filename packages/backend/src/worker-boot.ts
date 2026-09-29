@@ -275,18 +275,31 @@ const startScheduler = (
           client,
           ingest,
           publish,
-          // Keyed on the due date it lapses: a lapse made stale by a defer is a no-op,
-          // and the real one at the moved due date gets a key of its own.
-          lapse: (sub) =>
-            enqueue(sql)({
+          // Keyed on the due date it lapses AND the cancellation it lapses, never the
+          // tick's clock: the row keeps coming back from `findDue` until
+          // `markCancelledLapsed` commits, so a time-based key would enqueue one message
+          // per tick. The due date makes a lapse made stale by a defer a no-op while the
+          // real one at the moved date gets its own key; the cancellation stamp gives a
+          // fresh cancel after a mid-flight reactivation its own key in the same period.
+          // A null `cancelRequestedAt` cannot reach here (the scheduler only lapses
+          // cancel-pending rows), so the epoch fallback is unreachable and exists only to
+          // keep the key a total function.
+          lapse: (sub) => {
+            const cancelRequestedAt = (
+              sub.cancelRequestedAt ?? new Date(0)
+            ).toISOString();
+            const dueAt = sub.nextPaymentDate.getTime();
+            return enqueue(sql)({
               messageType: PAYMENT_LAPSE,
-              idemKey: `lapse:${sub.id}:${sub.nextPaymentDate.getTime().toString()}`,
+              idemKey: `lapse:${sub.id}:${dueAt.toString()}:${cancelRequestedAt}`,
               payload: {
                 paymentId: sub.id,
                 externalUserId: sub.externalUserId,
-                dueAt: sub.nextPaymentDate.getTime(),
+                dueAt,
+                cancelRequestedAt,
               },
-            }).pipe(Effect.asVoid),
+            }).pipe(Effect.asVoid);
+          },
           upstreamCancelled,
           // Contact cancelled upstream: flip to cancelled + record payment_cancelled
           // (unmapped to a flow → no echo back to a user who already cancelled).
@@ -294,15 +307,22 @@ const startScheduler = (
           // the terminal event can never be lost after the flip commits.
           cancelUpstream: (sub, now) =>
             subs.transaction(
-              subs
-                .cancelUpstream(sub.id, now)
-                .pipe(
-                  Effect.flatMap((cancelled) =>
-                    cancelled
-                      ? publish(sinkCancelled(sub, 'sendpulse_cancelled', now))
-                      : Effect.void,
-                  ),
+              subs.cancelUpstream(sub.id, now).pipe(
+                Effect.flatMap(
+                  Option.match({
+                    onNone: () => Effect.void,
+                    onSome: (cancelRequestedAt) =>
+                      publish(
+                        sinkCancelled(
+                          sub,
+                          'sendpulse_cancelled',
+                          now,
+                          cancelRequestedAt,
+                        ),
+                      ),
+                  }),
                 ),
+              ),
             ),
           // Token-less (crypto) renewal prompt (docs/28): mint/reuse our internal checkout.
           createManualCheckout: manualCheckoutMinter(sql, config),
