@@ -237,12 +237,16 @@ const startScheduler = (
           // coming back from `findDue` until `markCancelledLapsed` commits, so a
           // time-based key would enqueue one message — and emit one event, and message
           // one customer — per tick until then. A null `cancelRequestedAt` cannot reach
-          // here (the scheduler only lapses cancel-pending rows), so the epoch fallback
-          // is unreachable and exists only to keep the key a total function.
+          // here: the scheduler only lapses cancel-pending rows. Dying is deliberate —
+          // an epoch fallback would make the key CONSTANT again and silently restore
+          // the very bug this fixes, so a loud defect beats a quiet regression.
           lapse: (sub) => {
-            const cancelRequestedAt = (
-              sub.cancelRequestedAt ?? new Date(0)
-            ).toISOString();
+            if (sub.cancelRequestedAt === null) {
+              return Effect.die(
+                `lapse requested for ${sub.id} with no cancelRequestedAt`,
+              );
+            }
+            const cancelRequestedAt = sub.cancelRequestedAt.toISOString();
             return enqueue(sql)({
               messageType: PAYMENT_LAPSE,
               idemKey: `lapse:${sub.id}:${cancelRequestedAt}`,

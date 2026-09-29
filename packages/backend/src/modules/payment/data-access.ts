@@ -132,10 +132,14 @@ export interface PaymentRepo {
   readonly clearCancelRequest: (
     id: string,
   ) => Effect.Effect<boolean, SqlError.SqlError>;
-  /** At the due date, flip a cancel-pending payment to `cancelled` (idempotent). */
+  /**
+   * At the due date, flip a cancel-pending payment to `cancelled` (idempotent).
+   * Returns false when the row was no longer cancel-pending — a reactivation landed
+   * first — so the caller can skip announcing a lapse that did not happen.
+   */
   readonly markCancelledLapsed: (
     id: string,
-  ) => Effect.Effect<void, SqlError.SqlError>;
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
   /**
    * Terminal cancel driven by an upstream (SendPulse) signal at charge time: flip
    * an Active/PastDue payment straight to `cancelled` (no lapse tick needed).
@@ -382,11 +386,17 @@ const clearCancelRequest = (sql: SqlClient.SqlClient) => (id: string) =>
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
 
+// Returns whether it actually lapsed the row. The caller must not announce a lapse it
+// did not perform: a buyer who reactivates inside the grace window clears
+// `cancelRequestedAt` between the scheduler's enqueue and this handler, so the UPDATE
+// matches nothing — and publishing anyway told SendPulse a live subscriber had lapsed,
+// which tags the contact and makes the pre-charge tag check refuse to bill them.
 const markCancelledLapsed = (sql: SqlClient.SqlClient) => (id: string) =>
-  sql`
+  sql<{ readonly id: string }>`
     UPDATE payments SET status = ${PaymentStatus.Cancelled}, "updatedAt" = now()
     WHERE id = ${id} AND "cancelRequestedAt" IS NOT NULL
-  `.pipe(Effect.asVoid);
+    RETURNING id
+  `.pipe(Effect.map((rows) => rows.length > 0));
 
 // Returns its stamp for the same reason as `requestCancel`: `payment_cancelled` from
 // this path keys on `cancelRequestedAt`, so an upstream cancel and an operator cancel of
@@ -395,7 +405,12 @@ const markCancelledLapsed = (sql: SqlClient.SqlClient) => (id: string) =>
 const cancelUpstream = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<{ readonly cancelRequestedAt: Date }>`
     UPDATE payments
-    SET status = ${PaymentStatus.Cancelled}, "cancelRequestedAt" = now(),
+    SET status = ${PaymentStatus.Cancelled},
+        -- COALESCE, not now(): an operator soft-cancel has already stamped this, and
+        -- overwriting it would emit a SECOND payment_cancelled under a different key
+        -- for what is one cancellation. Keeping the first stamp preserves the
+        -- deliberate collapse between the operator and upstream paths.
+        "cancelRequestedAt" = COALESCE("cancelRequestedAt", now()),
         "updatedAt" = now()
     WHERE id = ${id}
       AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})

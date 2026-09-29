@@ -40,7 +40,10 @@ export const paymentCancelled = (
   notify: CancelNotify,
   now: Date,
 ): PaymentCancelledEvent => ({
-  id: `evt_sub_${notify.subscriptionId}_cancelled_${notify.cancelRequestedAt}`,
+  id:
+    notify.cancelRequestedAt === ''
+      ? `evt_sub_${notify.subscriptionId}_cancelled`
+      : `evt_sub_${notify.subscriptionId}_cancelled_${notify.cancelRequestedAt}`,
   name: 'payment_cancelled',
   occurredAt: now,
   correlationId: notify.subscriptionId,
@@ -102,7 +105,10 @@ export const cancelLapsed = (
   notify: LapseNotify,
   now: Date,
 ): RenewalFailedEvent => ({
-  id: `evt_${notify.paymentId}_cancel_lapsed_${notify.cancelRequestedAt}`,
+  id:
+    notify.cancelRequestedAt === ''
+      ? `evt_${notify.paymentId}_cancel_lapsed`
+      : `evt_${notify.paymentId}_cancel_lapsed_${notify.cancelRequestedAt}`,
   name: 'renewal_failed',
   occurredAt: now,
   correlationId: notify.paymentId,
@@ -193,8 +199,19 @@ export const lapseNotify =
     Schema.decodeUnknown(LapseNotify)(payload).pipe(
       Effect.flatMap((notify) =>
         repo.markCancelledLapsed(notify.paymentId).pipe(
-          Effect.andThen(Clock.currentTimeMillis),
-          Effect.flatMap((ms) => publish(cancelLapsed(notify, new Date(ms)))),
+          Effect.flatMap((lapsed) =>
+            // Announce only what actually happened. A reactivation inside the grace
+            // window clears `cancelRequestedAt` between enqueue and here, so the row
+            // is no longer cancel-pending — publishing then told SendPulse a live
+            // subscriber had lapsed, and the pre-charge tag check stopped billing them.
+            lapsed
+              ? Clock.currentTimeMillis.pipe(
+                  Effect.flatMap((ms) =>
+                    publish(cancelLapsed(notify, new Date(ms))),
+                  ),
+                )
+              : Effect.void,
+          ),
         ),
       ),
       Effect.catchTag('ParseError', (error) =>
