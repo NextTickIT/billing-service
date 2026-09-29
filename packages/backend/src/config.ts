@@ -112,6 +112,12 @@ export interface SchedulerConfig {
    * ultimately fails, not a misleading shorter window.
    */
   readonly manualPaymentWindowSeconds: number;
+  /**
+   * Days before a scheduled charge to send an advance notice, e.g. `[3, 1]`. Empty
+   * disables the sweep entirely — and even when set, nothing reaches a customer until
+   * `upcoming_charge` is mapped to a SendPulse flow, so enabling this alone is safe.
+   */
+  readonly upcomingChargeNoticeDays: readonly number[];
 }
 
 /**
@@ -251,6 +257,21 @@ const loadCheckoutBaseUrl = (): string =>
     '',
   );
 
+/**
+ * Parse `UPCOMING_CHARGE_NOTICE_DAYS` ("3,1") into offsets. Junk entries are dropped
+ * rather than defaulted: a typo silently becoming "0" would notify people the morning
+ * of the charge. Sorted descending so the earliest warning is sent first, and
+ * de-duplicated so "3,3" cannot double-send.
+ */
+const noticeDays = (raw: string | undefined): readonly number[] => {
+  if (raw === undefined || raw.trim().length === 0) return [];
+  const parsed = raw
+    .split(',')
+    .map((part) => Number(part.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  return [...new Set(parsed)].sort((a, b) => b - a);
+};
+
 const loadSchedulerConfig = (): SchedulerConfig => ({
   enabled: process.env['SCHEDULER_ENABLED'] === 'true',
   intervalSeconds: Number(process.env['SCHEDULER_INTERVAL_SECONDS'] ?? '300'),
@@ -258,6 +279,9 @@ const loadSchedulerConfig = (): SchedulerConfig => ({
   manualPaymentWindowSeconds: positiveSeconds(
     process.env['SCHEDULER_MANUAL_PAYMENT_WINDOW_SECONDS'],
     604800,
+  ),
+  upcomingChargeNoticeDays: noticeDays(
+    process.env['UPCOMING_CHARGE_NOTICE_DAYS'],
   ),
 });
 

@@ -468,7 +468,7 @@ const driveScheduler = Effect.gen(function* () {
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10 },
+    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
   yield* runFor(2);
 });
@@ -637,7 +637,7 @@ const driveLapse = Effect.gen(function* () {
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10 },
+    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
   yield* runFor(2);
 });
@@ -1050,7 +1050,7 @@ const driveCancelPastDue = Effect.gen(function* () {
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10 },
+    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
   yield* runFor(2);
 });
@@ -1175,7 +1175,7 @@ const driveCancelUpstream = Effect.gen(function* () {
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10 },
+    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
   yield* runFor(2);
 });

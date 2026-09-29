@@ -69,6 +69,7 @@ const deadPayments: PaymentRepo = {
   findActiveRecurringByExternalUser: () => Effect.die('unused'),
   findById: () => Effect.die('unused'),
   findDue: () => Effect.die('unused'),
+  findUpcomingForNotice: () => Effect.succeed([]),
   insert: () => Effect.die('unused'),
   extend: () => Effect.die('unused'),
   advanceAfterSuccess: () => Effect.die('unused'),

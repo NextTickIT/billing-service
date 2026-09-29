@@ -23,7 +23,11 @@ interface LapseCalls {
   lapsed: Payment[];
 }
 
-const config = { intervalSeconds: 60, batchSize: 10 };
+const config = {
+  intervalSeconds: 60,
+  batchSize: 10,
+  upcomingChargeNoticeDays: [],
+};
 
 const baseSub: Payment = {
   id: 'sub-1',
@@ -71,6 +75,7 @@ interface RepoCalls {
  * everything else `die`s (unused on the charge path). */
 const makeSubsMock = (sub: Payment, calls: RepoCalls): PaymentRepo => ({
   findDue: () => Effect.succeed([sub]),
+  findUpcomingForNotice: () => Effect.succeed([]),
   advanceAfterSuccess: (id, anchor) =>
     Effect.sync(() => {
       calls.advanced = { id, anchor };

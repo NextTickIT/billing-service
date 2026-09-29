@@ -3,6 +3,7 @@ import type {
   PaymentCancelledEvent,
   Payment,
   PaymentManualRequiredEvent,
+  UpcomingChargeEvent,
   RenewalFailedEvent,
 } from '@billing-service/shared';
 
@@ -130,5 +131,32 @@ export const paymentManualRequired = (
     checkoutUrl: checkout.checkoutUrl,
     dueDate: sub.nextPaymentDate.toISOString(),
     windowExpiresAt: checkout.windowExpiresAt.toISOString(),
+  },
+});
+
+/**
+ * Advance notice of a scheduled charge. The id pins the payment, the exact due date and
+ * the offset, so the scheduler can re-run this sweep every tick and the outbox's
+ * `ON CONFLICT (id) DO NOTHING` makes it fire exactly once per (payment, date, offset).
+ * If the due date later moves, the id changes and a fresh notice correctly goes out.
+ */
+export const upcomingCharge = (
+  sub: Payment,
+  noticeDays: number,
+  now: Date,
+): UpcomingChargeEvent => ({
+  id: `evt_sub_${sub.id}_upcoming_${sub.nextPaymentDate.getTime().toString()}_${noticeDays.toString()}`,
+  name: 'upcoming_charge',
+  occurredAt: now,
+  correlationId: sub.id,
+  externalUserId: sub.externalUserId,
+  aggregateId: sub.id,
+  payload: {
+    paymentId: sub.id,
+    amount: sub.amount,
+    currency: sub.currency,
+    period: sub.period,
+    chargeDate: sub.nextPaymentDate.toISOString(),
+    noticeDays,
   },
 });

@@ -51,6 +51,22 @@ export interface PaymentRepo {
    * is terminal (docs/28 D4) and excluded — a post-failure checkout starts a fresh row;
    * one-time and Cancelled are excluded too.
    */
+  /**
+   * Payments whose next charge falls on the Kyiv calendar day `noticeDays` from now —
+   * the population an advance notice targets.
+   *
+   * Kyiv, not UTC: "3 days before" is a human statement about a calendar, and a charge
+   * at 21:30 UTC already belongs to the next local day. Deliberately includes
+   * token-less (crypto) payments, which get a manual-pay prompt rather than an
+   * autocharge and so need the warning at least as much. Deliberately excludes anything
+   * mid-retry (`status` past Active, or a ladder in progress) — a retry is a failure
+   * being worked through, not a scheduled charge — and anything with a cancellation
+   * pending, where the scheduler will never charge and the notice would be a lie.
+   */
+  readonly findUpcomingForNotice: (
+    noticeDays: number,
+    limit: number,
+  ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
   readonly findActiveRecurringByExternalUser: (
     externalUserId: string,
   ) => Effect.Effect<Option.Option<Payment>, SqlError.SqlError>;
@@ -164,6 +180,21 @@ export interface PaymentListFilter {
 }
 
 const COLUMNS = columnList(Payment.fields);
+
+const findUpcomingForNotice =
+  (sql: SqlClient.SqlClient) => (noticeDays: number, limit: number) =>
+    sql<Payment>`
+      SELECT ${sql.unsafe(COLUMNS)} FROM payments
+      WHERE recurring = true
+        AND status = ${PaymentStatus.Active}
+        AND "cancelRequestedAt" IS NULL
+        AND "firstFailureAt" IS NULL
+        AND "retryAttempt" = 0
+        AND ("nextPaymentDate" AT TIME ZONE 'Europe/Kyiv')::date
+            = ((now() AT TIME ZONE 'Europe/Kyiv')::date + ${noticeDays})
+      ORDER BY "nextPaymentDate"
+      LIMIT ${limit}
+    `;
 
 const findActiveRecurringByExternalUser =
   (sql: SqlClient.SqlClient) => (externalUserId: string) =>
@@ -395,6 +426,7 @@ const renameExternalUser =
 
 export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   findActiveRecurringByExternalUser: findActiveRecurringByExternalUser(sql),
+  findUpcomingForNotice: findUpcomingForNotice(sql),
   findById: findById(sql),
   findDue: findDue(sql),
   insert: insert(sql),

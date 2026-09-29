@@ -13,6 +13,7 @@ import {
   chargeRetryFailed,
   type ManualCheckout,
   paymentManualRequired,
+  upcomingCharge,
   renewalFailed,
 } from '@/modules/billing/events.js';
 
@@ -51,6 +52,8 @@ export interface SchedulerDeps {
 export interface SchedulerConfig {
   readonly intervalSeconds: number;
   readonly batchSize: number;
+  /** Days before a charge to announce it; empty disables the notice sweep. */
+  readonly upcomingChargeNoticeDays: readonly number[];
 }
 
 /** Deterministic per attempt: the timestamp changes only when the schedule moves. */
@@ -167,6 +170,45 @@ const chargeOne = (deps: SchedulerDeps, sub: Payment, now: Date) =>
     yield* chargeCard(deps, sub, now);
   });
 
+/**
+ * Send advance notices for charges coming up on each configured offset.
+ *
+ * Runs on the same tick as the charge sweep but is strictly read-then-publish: it never
+ * charges and never moves a date, so a failure here can only cost a notice, never money.
+ * Exactly-once comes from the event id, which pins (payment, due date, offset) — the
+ * outbox's `ON CONFLICT (id) DO NOTHING` absorbs every re-run, so a 5-minute tick does
+ * not mean a notice every 5 minutes.
+ */
+const noticeSweep = (deps: SchedulerDeps, config: SchedulerConfig, now: Date) =>
+  Effect.forEach(
+    config.upcomingChargeNoticeDays,
+    (days) =>
+      Effect.gen(function* () {
+        const upcoming = yield* deps.subs.findUpcomingForNotice(
+          days,
+          config.batchSize,
+        );
+        // Isolate each notice: one bad row must not cost the rest their warning.
+        yield* Effect.forEach(
+          upcoming,
+          (sub) =>
+            deps.publish(upcomingCharge(sub, days, now)).pipe(
+              Effect.catchAllCause((cause) =>
+                Effect.logError('scheduler: notice failed').pipe(
+                  Effect.annotateLogs({
+                    paymentId: sub.id,
+                    noticeDays: days,
+                    cause: Cause.pretty(cause),
+                  }),
+                ),
+              ),
+            ),
+          { discard: true },
+        );
+      }),
+    { discard: true },
+  );
+
 export const scheduleTick = (
   deps: SchedulerDeps,
   config: SchedulerConfig,
@@ -189,6 +231,15 @@ export const scheduleTick = (
           ),
         ),
       { discard: true },
+    );
+    // After charging: a payment charged on this very tick has had its next date moved
+    // forward, so it cannot also be announced as "coming up" in the same pass.
+    yield* noticeSweep(deps, config, now).pipe(
+      Effect.catchAllCause((cause) =>
+        Effect.logError('scheduler: notice sweep failed').pipe(
+          Effect.annotateLogs('cause', Cause.pretty(cause)),
+        ),
+      ),
     );
     return due.length;
   });

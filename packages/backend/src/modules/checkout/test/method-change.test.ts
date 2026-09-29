@@ -140,6 +140,7 @@ const recordingRepo = () => {
     findById: () =>
       Effect.succeed(Option.some(paymentWith(PaymentStatus.PastDue))),
     findDue: die,
+    findUpcomingForNotice: die,
     insert: die,
     extend: die,
     advanceAfterSuccess: () =>

@@ -33,6 +33,7 @@ const repo = (found: Payment | null): PaymentRepo => ({
     Effect.succeed(found === null ? Option.none() : Option.some(found)),
   findActiveRecurringByExternalUser: die,
   findDue: die,
+  findUpcomingForNotice: die,
   insert: die,
   extend: die,
   advanceAfterSuccess: die,

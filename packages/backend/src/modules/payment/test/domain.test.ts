@@ -66,6 +66,7 @@ const makeFakeRepo = (existing: Payment | null) => {
       }),
     findById: () => Effect.die('unused'),
     findDue: () => Effect.die('unused'),
+    findUpcomingForNotice: () => Effect.succeed([]),
     advanceAfterSuccess: () => Effect.die('unused'),
     recordRetry: () => Effect.die('unused'),
     markRenewalFailed: () => Effect.die('unused'),

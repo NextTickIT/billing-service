@@ -19,6 +19,7 @@ const unusedPayments: PaymentRepo = {
   findActiveRecurringByExternalUser: die,
   findById: die,
   findDue: die,
+  findUpcomingForNotice: die,
   insert: die,
   extend: die,
   advanceAfterSuccess: die,

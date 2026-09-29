@@ -261,6 +261,7 @@ const startScheduler = (
         {
           intervalSeconds: config.scheduler.intervalSeconds,
           batchSize: config.scheduler.batchSize,
+          upcomingChargeNoticeDays: config.scheduler.upcomingChargeNoticeDays,
         },
       ),
     );

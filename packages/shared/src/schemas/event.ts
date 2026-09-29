@@ -21,6 +21,7 @@ export const EVENT_NAMES = [
   'charge_retry_failed',
   'renewal_failed',
   'payment_manual_required',
+  'upcoming_charge',
   'payment_created',
   'payment_cancelled',
   'payment_reactivated',
@@ -194,6 +195,36 @@ export type PaymentManualRequiredEvent = Schema.Schema.Type<
   typeof PaymentManualRequiredEvent
 >;
 
+/**
+ * A scheduled charge is coming up, fired once per notice offset (e.g. 3 days and 1 day
+ * before) so the customer is told before money moves rather than after.
+ *
+ * Advance notice only — it never charges and never moves a date. Retry attempts are
+ * deliberately NOT announced: a retry is a failure being worked through, and telling
+ * someone "we will charge you tomorrow" mid-ladder is both noise and, if the ladder
+ * gives up first, a lie. `chargeDate` is an ISO-8601 string (payload-date convention);
+ * the SendPulse sink renders `chargeDate_formatted` / `period_formatted` for the
+ * message itself.
+ */
+export const UpcomingChargeEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('upcoming_charge'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({
+    paymentId: Schema.String,
+    amount: Schema.Int,
+    currency: CurrencySchema,
+    period: Schema.String,
+    chargeDate: Schema.String,
+    /** How many days before `chargeDate` this notice is for — lets a flow branch. */
+    noticeDays: Schema.Int,
+  }),
+});
+
+export type UpcomingChargeEvent = Schema.Schema.Type<
+  typeof UpcomingChargeEvent
+>;
+
 /** A payment cancelled by an operator or a provider event (FR-012). */
 export const PaymentCancelledEvent = Schema.Struct({
   ...envelope,
@@ -343,6 +374,7 @@ export const DomainEvent = Schema.Union(
   ChargeRetryFailedEvent,
   RenewalFailedEvent,
   PaymentManualRequiredEvent,
+  UpcomingChargeEvent,
   PaymentCancelledEvent,
   PaymentReactivatedEvent,
   PaymentDeferredEvent,
