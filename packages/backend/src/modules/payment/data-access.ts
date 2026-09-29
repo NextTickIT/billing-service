@@ -62,6 +62,10 @@ export interface PaymentRepo {
    * mid-retry (`status` past Active, or a ladder in progress) — a retry is a failure
    * being worked through, not a scheduled charge — and anything with a cancellation
    * pending, where the scheduler will never charge and the notice would be a lie.
+   *
+   * `noticeDays` is cast explicitly: a bound parameter reaches Postgres untyped, and
+   * `date + unknown` is ambiguous (42725), so without the cast this whole sweep fails
+   * at runtime while every unit test against a fake repo still passes.
    */
   readonly findUpcomingForNotice: (
     noticeDays: number,
@@ -191,7 +195,7 @@ const findUpcomingForNotice =
         AND "firstFailureAt" IS NULL
         AND "retryAttempt" = 0
         AND ("nextPaymentDate" AT TIME ZONE 'Europe/Kyiv')::date
-            = ((now() AT TIME ZONE 'Europe/Kyiv')::date + ${noticeDays})
+            = ((now() AT TIME ZONE 'Europe/Kyiv')::date + ${noticeDays}::int)
       ORDER BY "nextPaymentDate"
       LIMIT ${limit}
     `;

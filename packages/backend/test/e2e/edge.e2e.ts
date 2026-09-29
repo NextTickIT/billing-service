@@ -182,20 +182,30 @@ async function checkoutFlow(
   assert.ok(typeof payBody['action'] === 'string', 'response has action url');
   assert.ok(typeof payBody['fields'] === 'object', 'response has form fields');
 
-  // The session id is the idempotency key: a repeat /pay must not mint a second provider
-  // order — the now-pending session loses the created→pending claim and gets a 409.
+  // A repeat /pay must not mint a SECOND provider order. It used to be refused outright
+  // (409), which also locked out a buyer who simply came back from the provider page
+  // without paying — for the whole TTL, a full day. Now the live session is released and
+  // the same form re-handed, so the invariant is asserted where it actually lives: the
+  // orderReference, which is what WayForPay dedupes on. Same reference ⇒ one order.
+  const repeatRes = await bff(
+    new Request(`${baseUrl}/api/checkout-sessions/${sessionId}/pay`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 0 }),
+    }),
+  );
   assert.equal(
-    (
-      await bff(
-        new Request(`${baseUrl}/api/checkout-sessions/${sessionId}/pay`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ method: 0 }),
-        }),
-      )
-    ).status,
-    409,
-    'repeat POST /pay → 409 (idempotent on session id)',
+    repeatRes.status,
+    200,
+    'repeat POST /pay → 200 (buyer can retry)',
+  );
+  const repeatBody = (await repeatRes.json()) as {
+    fields?: Record<string, unknown>;
+  };
+  assert.equal(
+    repeatBody.fields?.['orderReference'],
+    (payBody['fields'] as Record<string, unknown>)['orderReference'],
+    'repeat POST /pay re-hands the SAME orderReference — never a second provider order',
   );
 
   const cbRes = await postJson(

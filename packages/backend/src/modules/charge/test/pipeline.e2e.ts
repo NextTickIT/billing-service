@@ -1385,6 +1385,88 @@ const cancellingBucketIncludesPastDue: EffectScenario = {
   },
 };
 
+const noticeSweepSelectsUpcoming: EffectScenario = {
+  name: 'notice sweep: the upcoming-charge query runs and picks only the right payments',
+  run: async ({ config }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const subs = makePaymentRepo(sql);
+          // Kyiv "3 days from now", mid-morning so the local date is unambiguous.
+          const inDays = (n: number): Date => {
+            const at = new Date();
+            at.setUTCDate(at.getUTCDate() + n);
+            at.setUTCHours(9, 0, 0, 0);
+            return at;
+          };
+          const base = {
+            amount: 5000,
+            currency: 1 as const,
+            method: 0,
+            period: 'P1M',
+            recurring: true,
+            currentPeriodStart: new Date(),
+            currentPeriodEnd: inDays(3),
+            nextPaymentDate: inDays(3),
+            recurringTokenRef: 'tok',
+            firstFailureAt: null,
+            retryAttempt: 0,
+          };
+          const wanted = yield* subs.insert({
+            ...base,
+            externalUserId: 'sp:notice-due',
+            status: PaymentStatus.Active,
+          });
+          // Token-less crypto: must STILL be notified — it gets a manual-pay prompt.
+          const tokenless = yield* subs.insert({
+            ...base,
+            externalUserId: 'sp:notice-crypto',
+            status: PaymentStatus.Active,
+            recurringTokenRef: null,
+          });
+          // Mid-retry: must NOT be notified.
+          yield* subs.insert({
+            ...base,
+            externalUserId: 'sp:notice-retry',
+            status: PaymentStatus.PastDue,
+            firstFailureAt: new Date(),
+            retryAttempt: 1,
+          });
+          // Wrong day: must NOT be notified.
+          yield* subs.insert({
+            ...base,
+            externalUserId: 'sp:notice-later',
+            status: PaymentStatus.Active,
+            nextPaymentDate: inDays(5),
+          });
+
+          // The query itself is the thing under test: a bound parameter reaches
+          // Postgres untyped, and `date + unknown` is ambiguous — a fake repo cannot
+          // catch that, only a real database can.
+          const found = yield* subs.findUpcomingForNotice(3, 100);
+          const ids = found.map((p) => p.id).sort();
+          assert.deepEqual(
+            ids,
+            [wanted.id, tokenless.id].sort(),
+            'exactly the Active payments due in 3 days, token or not, and nothing mid-retry',
+          );
+
+          const none = yield* subs.findUpcomingForNotice(4, 100);
+          assert.equal(
+            none.length,
+            0,
+            'an offset with nothing due returns nothing',
+          );
+        }),
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
   findExtendableMatchesPastDue,
@@ -1402,4 +1484,5 @@ export const effectScenarios: readonly EffectScenario[] = [
   nameSearchResolvesContact,
   cardChangeOwedRevives,
   cardChangeDeclineLeavesPayment,
+  noticeSweepSelectsUpcoming,
 ];
