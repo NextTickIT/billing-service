@@ -271,13 +271,17 @@ const startScheduler = (
           // per tick. The due date makes a lapse made stale by a defer a no-op while the
           // real one at the moved date gets its own key; the cancellation stamp gives a
           // fresh cancel after a mid-flight reactivation its own key in the same period.
-          // A null `cancelRequestedAt` cannot reach here (the scheduler only lapses
-          // cancel-pending rows), so the epoch fallback is unreachable and exists only to
-          // keep the key a total function.
+          // A null `cancelRequestedAt` cannot reach here: the scheduler only lapses
+          // cancel-pending rows. Dying is deliberate — an epoch fallback would make the
+          // key constant per due date again and silently restore the very bug this
+          // fixes, so a loud defect beats a quiet regression.
           lapse: (sub) => {
-            const cancelRequestedAt = (
-              sub.cancelRequestedAt ?? new Date(0)
-            ).toISOString();
+            if (sub.cancelRequestedAt === null) {
+              return Effect.die(
+                `lapse requested for ${sub.id} with no cancelRequestedAt`,
+              );
+            }
+            const cancelRequestedAt = sub.cancelRequestedAt.toISOString();
             const dueAt = sub.nextPaymentDate.getTime();
             return enqueue(sql)({
               messageType: PAYMENT_LAPSE,

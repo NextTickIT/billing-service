@@ -1153,23 +1153,27 @@ const driveCancelUpstream = Effect.gen(function* () {
       lapse: () =>
         Effect.die('lapse unused: upstream cancel uses cancelUpstream'),
       upstreamCancelled: () => Effect.succeed(true),
+      // Mirrors worker-boot: `Option.match`, not a truthiness test — `Option.none()` is
+      // a truthy object, so `cancelled ? … : …` would publish unconditionally and stop
+      // testing the guard entirely. The stamp is threaded from the repo rather than
+      // hardcoded, so the cross-path dedupe is actually exercised.
       cancelUpstream: (sub, now) =>
-        subs
-          .cancelUpstream(sub.id, now)
-          .pipe(
-            Effect.flatMap((cancelled) =>
-              cancelled
-                ? outbox.publish(
-                    sinkCancelled(
-                      sub,
-                      'sendpulse_cancelled',
-                      now,
-                      new Date('2026-01-01T00:00:00.000Z'),
-                    ),
-                  )
-                : Effect.void,
-            ),
+        subs.cancelUpstream(sub.id, now).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.void,
+              onSome: (cancelRequestedAt) =>
+                outbox.publish(
+                  sinkCancelled(
+                    sub,
+                    'sendpulse_cancelled',
+                    now,
+                    cancelRequestedAt,
+                  ),
+                ),
+            }),
           ),
+        ),
       claimAdvance: ledgerClaimAdvance(sql),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
