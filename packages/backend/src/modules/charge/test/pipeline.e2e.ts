@@ -536,14 +536,18 @@ const driveCancel = Effect.gen(function* () {
     firstFailureAt: null,
     retryAttempt: 0,
   });
-  yield* subs.requestCancel(created.id);
+  // Take the discriminator from the UPDATE that stamped it, exactly as the route does —
+  // a hand-written payload here would not exercise the contract the route relies on.
+  const stamped = yield* subs.requestCancel(created.id);
+  const cancelRequestedAt = Option.getOrThrow(stamped).toISOString();
   yield* enqueue(sql)({
     messageType: PAYMENT_CANCEL,
-    idemKey: `cancel:${created.id}`,
+    idemKey: `cancel:${created.id}:${cancelRequestedAt}`,
     payload: {
       subscriptionId: created.id,
       externalUserId: 'sp:cancel',
       reason: 'operator',
+      cancelRequestedAt,
     },
   });
   yield* runFor(2);
@@ -626,12 +630,22 @@ const driveLapse = Effect.gen(function* () {
       },
       ingest: pipeline.ingest,
       publish: outbox.publish,
-      lapse: (sub) =>
-        enqueue(sql)({
+      // Mirrors worker-boot's wiring: keyed on the cancellation being lapsed, never the
+      // tick, so the ticks between enqueue and commit collapse to one message.
+      lapse: (sub) => {
+        const cancelRequestedAt = (
+          sub.cancelRequestedAt ?? new Date(0)
+        ).toISOString();
+        return enqueue(sql)({
           messageType: PAYMENT_LAPSE,
-          idemKey: `lapse:${sub.id}`,
-          payload: { paymentId: sub.id, externalUserId: sub.externalUserId },
-        }).pipe(Effect.asVoid),
+          idemKey: `lapse:${sub.id}:${cancelRequestedAt}`,
+          payload: {
+            paymentId: sub.id,
+            externalUserId: sub.externalUserId,
+            cancelRequestedAt,
+          },
+        }).pipe(Effect.asVoid);
+      },
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       createManualCheckout: () =>
@@ -1039,12 +1053,22 @@ const driveCancelPastDue = Effect.gen(function* () {
       },
       ingest: pipeline.ingest,
       publish: outbox.publish,
-      lapse: (sub) =>
-        enqueue(sql)({
+      // Mirrors worker-boot's wiring: keyed on the cancellation being lapsed, never the
+      // tick, so the ticks between enqueue and commit collapse to one message.
+      lapse: (sub) => {
+        const cancelRequestedAt = (
+          sub.cancelRequestedAt ?? new Date(0)
+        ).toISOString();
+        return enqueue(sql)({
           messageType: PAYMENT_LAPSE,
-          idemKey: `lapse:${sub.id}`,
-          payload: { paymentId: sub.id, externalUserId: sub.externalUserId },
-        }).pipe(Effect.asVoid),
+          idemKey: `lapse:${sub.id}:${cancelRequestedAt}`,
+          payload: {
+            paymentId: sub.id,
+            externalUserId: sub.externalUserId,
+            cancelRequestedAt,
+          },
+        }).pipe(Effect.asVoid);
+      },
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       createManualCheckout: () =>
@@ -1168,7 +1192,14 @@ const driveCancelUpstream = Effect.gen(function* () {
           .pipe(
             Effect.flatMap((cancelled) =>
               cancelled
-                ? outbox.publish(sinkCancelled(sub, 'sendpulse_cancelled', now))
+                ? outbox.publish(
+                    sinkCancelled(
+                      sub,
+                      'sendpulse_cancelled',
+                      now,
+                      new Date('2026-01-01T00:00:00.000Z'),
+                    ),
+                  )
                 : Effect.void,
             ),
           ),

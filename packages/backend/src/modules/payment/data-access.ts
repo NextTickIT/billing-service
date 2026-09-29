@@ -120,11 +120,14 @@ export interface PaymentRepo {
    * Cancel a payment from any non-terminal state. Active/PastDue soft-cancel
    * (flagged for lapse at the next due tick, status unchanged); a terminal
    * RenewalFailed flips straight to `cancelled` (no future tick to lapse it).
-   * Returns false if already cancelled or already flagged, so the route 422s.
+   * Returns the stamped `cancelRequestedAt` on success, `None` when already cancelled
+   * or already flagged (the route 422s). The timestamp is the occurrence discriminator:
+   * the queue idemKey and the event key both derive from it, so every layer agrees on
+   * one value and a repeat of the SAME cancellation cannot look like a new one.
    */
   readonly requestCancel: (
     id: string,
-  ) => Effect.Effect<boolean, SqlError.SqlError>;
+  ) => Effect.Effect<Option.Option<Date>, SqlError.SqlError>;
   /** Reverse a pending cancel within the grace window; false if none pending. */
   readonly clearCancelRequest: (
     id: string,
@@ -140,7 +143,7 @@ export interface PaymentRepo {
    */
   readonly cancelUpstream: (
     id: string,
-  ) => Effect.Effect<boolean, SqlError.SqlError>;
+  ) => Effect.Effect<Option.Option<Date>, SqlError.SqlError>;
   /** Deferral: push the anchor + re-derived next date on an active payment. */
   readonly defer: (
     id: string,
@@ -352,8 +355,13 @@ const listAll =
 // `cancelRequestedAt` and skips the charge). A terminal RenewalFailed has no future
 // tick to lapse it (findDue selects only Active/PastDue), so it flips straight to
 // Cancelled here. An already-Cancelled or already-pending payment is a no-op.
+// Returns the stamped `cancelRequestedAt` rather than a bare boolean: it is the
+// discriminator that makes THIS cancellation distinguishable from the next one, and
+// both the queue key and the event key derive from it. Taking it from `RETURNING`
+// rather than a second `now()` keeps every layer on one value — a wall-clock capture
+// at enqueue would make a double-clicked cancel look like two occurrences.
 const requestCancel = (sql: SqlClient.SqlClient) => (id: string) =>
-  sql<{ readonly id: string }>`
+  sql<{ readonly cancelRequestedAt: Date }>`
     UPDATE payments
     SET "cancelRequestedAt" = now(),
         status = CASE WHEN status = ${PaymentStatus.RenewalFailed}
@@ -362,8 +370,8 @@ const requestCancel = (sql: SqlClient.SqlClient) => (id: string) =>
     WHERE id = ${id}
       AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue}, ${PaymentStatus.RenewalFailed})
       AND "cancelRequestedAt" IS NULL
-    RETURNING id
-  `.pipe(Effect.map((rows) => rows.length > 0));
+    RETURNING "cancelRequestedAt"
+  `.pipe(Effect.map((rows) => Option.fromNullable(rows[0]?.cancelRequestedAt)));
 
 const clearCancelRequest = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<{ readonly id: string }>`
@@ -380,15 +388,19 @@ const markCancelledLapsed = (sql: SqlClient.SqlClient) => (id: string) =>
     WHERE id = ${id} AND "cancelRequestedAt" IS NOT NULL
   `.pipe(Effect.asVoid);
 
+// Returns its stamp for the same reason as `requestCancel`: `payment_cancelled` from
+// this path keys on `cancelRequestedAt`, so an upstream cancel and an operator cancel of
+// the SAME cancellation still collapse to one event (the deliberate cross-path dedupe),
+// while a later cancellation after a reactivation is reported as its own.
 const cancelUpstream = (sql: SqlClient.SqlClient) => (id: string) =>
-  sql<{ readonly id: string }>`
+  sql<{ readonly cancelRequestedAt: Date }>`
     UPDATE payments
     SET status = ${PaymentStatus.Cancelled}, "cancelRequestedAt" = now(),
         "updatedAt" = now()
     WHERE id = ${id}
       AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
-    RETURNING id
-  `.pipe(Effect.map((rows) => rows.length > 0));
+    RETURNING "cancelRequestedAt"
+  `.pipe(Effect.map((rows) => Option.fromNullable(rows[0]?.cancelRequestedAt)));
 
 const defer =
   (sql: SqlClient.SqlClient) =>

@@ -179,12 +179,22 @@ const createPayment = (
     )(insertPayment(sql, body));
   });
 
-/** Audit the operator action and enqueue the cancel notify (docs/23). */
+/**
+ * Audit the operator action and enqueue the cancel notify (docs/23).
+ *
+ * `cancelRequestedAt` is the occurrence discriminator, taken from the UPDATE that
+ * stamped it rather than a fresh clock read: the queue key and the event key both
+ * derive from this one value, so a retried delivery of the SAME cancellation
+ * reproduces the same keys, while a genuine cancel → reactivate → cancel produces
+ * different ones. It is serialized as ISO-8601 at every layer — a bare `${Date}` in a
+ * template literal is a different string from `.toISOString()`, and the two must match.
+ */
 const enqueueCancel = (
   sql: SqlClient.SqlClient,
   actor: { readonly role: Role },
   payment: Payment,
-  reasonInput?: string,
+  reasonInput: string | undefined,
+  cancelRequestedAt: Date,
 ) =>
   Effect.gen(function* () {
     const reason = reasonInput ?? 'operator';
@@ -195,13 +205,15 @@ const enqueueCancel = (
       targetId: payment.id,
       detail: { reason },
     });
+    const occurredAt = cancelRequestedAt.toISOString();
     yield* enqueue(sql)({
       messageType: PAYMENT_CANCEL,
-      idemKey: `cancel:${payment.id}`,
+      idemKey: `cancel:${payment.id}:${occurredAt}`,
       payload: {
         subscriptionId: payment.id,
         externalUserId: payment.externalUserId,
         reason,
+        cancelRequestedAt: occurredAt,
       },
     });
   });
@@ -232,7 +244,7 @@ const cancelPayment = (
       );
     }
     const requested = yield* repo.requestCancel(id);
-    if (!requested) {
+    if (Option.isNone(requested)) {
       return yield* Effect.fail(
         new UnprocessableEntity({
           reason:
@@ -240,7 +252,7 @@ const cancelPayment = (
         }),
       );
     }
-    yield* enqueueCancel(sql, actor, found.value, body.reason);
+    yield* enqueueCancel(sql, actor, found.value, body.reason, requested.value);
     return { status: 'cancelled' as const };
   });
 

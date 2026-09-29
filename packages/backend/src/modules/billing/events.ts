@@ -47,12 +47,19 @@ export interface RetryFailure {
   readonly reason: string;
 }
 
+/**
+ * Keyed on the due date of the attempt that failed, not the attempt number alone: the
+ * ladder resets to attempt 1 whenever a payment recovers and later fails again, so
+ * `_retry_1` collided across ladders and every retry of a second ladder was dropped.
+ * This is the same anchor the provider `orderReference` uses, so the event key and the
+ * charge it describes identify the same attempt.
+ */
 export const chargeRetryFailed = (
   sub: Payment,
   failure: RetryFailure,
   now: Date,
 ): ChargeRetryFailedEvent => ({
-  id: `evt_sub_${sub.id}_retry_${failure.attempt.toString()}`,
+  id: `evt_sub_${sub.id}_retry_${sub.nextPaymentDate.getTime().toString()}_${failure.attempt.toString()}`,
   name: 'charge_retry_failed',
   occurredAt: now,
   correlationId: sub.id,
@@ -65,12 +72,16 @@ export const chargeRetryFailed = (
   },
 });
 
+/**
+ * Keyed on the attempt the ladder gave up at. A constant id meant a payment that failed,
+ * was resubscribed, and failed again reported only the first failure.
+ */
 export const renewalFailed = (
   sub: Payment,
   reason: string,
   now: Date,
 ): RenewalFailedEvent => ({
-  id: `evt_sub_${sub.id}_renewal_failed`,
+  id: `evt_sub_${sub.id}_renewal_failed_${sub.nextPaymentDate.getTime().toString()}`,
   name: 'renewal_failed',
   occurredAt: now,
   correlationId: sub.id,
@@ -90,8 +101,9 @@ export const sinkCancelled = (
   sub: Payment,
   reason: string,
   now: Date,
+  cancelRequestedAt: Date,
 ): PaymentCancelledEvent => ({
-  id: `evt_sub_${sub.id}_cancelled`,
+  id: `evt_sub_${sub.id}_cancelled_${cancelRequestedAt.toISOString()}`,
   name: 'payment_cancelled',
   occurredAt: now,
   correlationId: sub.id,

@@ -20,6 +20,14 @@ export const CancelNotify = Schema.Struct({
   subscriptionId: Schema.String,
   externalUserId: Schema.String,
   reason: Schema.String,
+  /**
+   * When THIS cancellation was stamped, ISO-8601. The occurrence discriminator: the
+   * queue idemKey and the event id both derive from it, so a cancel → reactivate →
+   * cancel yields distinct keys while a redelivery of one cancellation does not.
+   * Declared here because `Schema.Struct` drops undeclared keys silently — an
+   * unadded field would vanish between enqueue and handler with no error.
+   */
+  cancelRequestedAt: Schema.String,
 });
 
 export type CancelNotify = Schema.Schema.Type<typeof CancelNotify>;
@@ -58,6 +66,13 @@ export type MethodChangeNotify = Schema.Schema.Type<typeof MethodChangeNotify>;
 export const LapseNotify = Schema.Struct({
   paymentId: Schema.String,
   externalUserId: Schema.String,
+  /**
+   * The `cancelRequestedAt` this lapse belongs to, ISO-8601 — NOT the tick's clock.
+   * The scheduler re-offers the row on every tick until `markCancelledLapsed` commits,
+   * so a time-of-tick key would enqueue one message per tick; keyed on the cancellation
+   * it lapses, every tick in that window produces the same key and collapses to one.
+   */
+  cancelRequestedAt: Schema.String,
 });
 
 export type LapseNotify = Schema.Schema.Type<typeof LapseNotify>;

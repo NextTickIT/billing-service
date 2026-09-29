@@ -233,28 +233,46 @@ const startScheduler = (
           client,
           ingest,
           publish,
-          lapse: (sub) =>
-            enqueue(sql)({
+          // Keyed on the cancellation being lapsed, never the tick's clock: the row keeps
+          // coming back from `findDue` until `markCancelledLapsed` commits, so a
+          // time-based key would enqueue one message — and emit one event, and message
+          // one customer — per tick until then. A null `cancelRequestedAt` cannot reach
+          // here (the scheduler only lapses cancel-pending rows), so the epoch fallback
+          // is unreachable and exists only to keep the key a total function.
+          lapse: (sub) => {
+            const cancelRequestedAt = (
+              sub.cancelRequestedAt ?? new Date(0)
+            ).toISOString();
+            return enqueue(sql)({
               messageType: PAYMENT_LAPSE,
-              idemKey: `lapse:${sub.id}`,
+              idemKey: `lapse:${sub.id}:${cancelRequestedAt}`,
               payload: {
                 paymentId: sub.id,
                 externalUserId: sub.externalUserId,
+                cancelRequestedAt,
               },
-            }).pipe(Effect.asVoid),
+            }).pipe(Effect.asVoid);
+          },
           upstreamCancelled,
           // Contact cancelled upstream: flip to cancelled + record payment_cancelled
           // (unmapped to a flow → no echo back to a user who already cancelled).
           cancelUpstream: (sub, now) =>
-            subs
-              .cancelUpstream(sub.id)
-              .pipe(
-                Effect.flatMap((cancelled) =>
-                  cancelled
-                    ? publish(sinkCancelled(sub, 'sendpulse_cancelled', now))
-                    : Effect.void,
-                ),
+            subs.cancelUpstream(sub.id).pipe(
+              Effect.flatMap(
+                Option.match({
+                  onNone: () => Effect.void,
+                  onSome: (cancelRequestedAt) =>
+                    publish(
+                      sinkCancelled(
+                        sub,
+                        'sendpulse_cancelled',
+                        now,
+                        cancelRequestedAt,
+                      ),
+                    ),
+                }),
               ),
+            ),
           // Token-less (crypto) renewal prompt (docs/28): mint/reuse our internal checkout.
           createManualCheckout: manualCheckoutMinter(sql, config),
         },
