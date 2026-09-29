@@ -36,6 +36,7 @@ const deferNotify: DeferNotify = {
 const lapseNotify: LapseNotify = {
   paymentId: 'pay_abc',
   externalUserId: 'sp:42',
+  cancelRequestedAt: '2026-01-01T00:00:00.000Z',
 };
 
 const methodChangeNotifyPayload: MethodChangeNotify = {
@@ -116,13 +117,21 @@ it.effect('cancelLapsed: produces renewal_failed with reason cancelled', () =>
   }),
 );
 
-it.effect('cancelLapsed: id is deterministic (one lapse per payment)', () =>
+it.effect('cancelLapsed: one event per CANCELLATION, not per payment', () =>
   Effect.sync(() => {
+    // Redelivery of the same lapse dedupes...
     const e1 = cancelLapsed(lapseNotify, now);
     const e2 = cancelLapsed(lapseNotify, new Date('2026-01-01'));
-
     expect(e1.id).toBe(e2.id);
-    expect(e1.id).toBe('evt_pay_abc_cancel_lapsed');
+    expect(e1.id).toBe('evt_pay_abc_cancel_lapsed_2026-01-01T00:00:00.000Z');
+
+    // ...but a payment cancelled, reactivated and cancelled again lapses twice, and
+    // both lapses must be reported. Keying on the payment alone dropped the second.
+    const second = cancelLapsed(
+      { ...lapseNotify, cancelRequestedAt: '2026-06-01T00:00:00.000Z' },
+      now,
+    );
+    expect(second.id).not.toBe(e1.id);
   }),
 );
 

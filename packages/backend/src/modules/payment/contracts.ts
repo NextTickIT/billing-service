@@ -20,6 +20,14 @@ export const CancelNotify = Schema.Struct({
   subscriptionId: Schema.String,
   externalUserId: Schema.String,
   reason: Schema.String,
+  /**
+   * When THIS cancellation was stamped, ISO-8601. The occurrence discriminator: the
+   * queue idemKey and the event id both derive from it, so a cancel → reactivate →
+   * cancel yields distinct keys while a redelivery of one cancellation does not.
+   * Declared here because `Schema.Struct` drops undeclared keys silently — an
+   * unadded field would vanish between enqueue and handler with no error.
+   */
+  cancelRequestedAt: Schema.String,
 });
 
 export type CancelNotify = Schema.Schema.Type<typeof CancelNotify>;
@@ -60,6 +68,14 @@ export const LapseNotify = Schema.Struct({
   paymentId: Schema.String,
   externalUserId: Schema.String,
   dueAt: Schema.optional(Schema.Number),
+  /**
+   * The `cancelRequestedAt` this lapse belongs to, ISO-8601 — NOT the tick's clock.
+   * `dueAt` says WHICH due date is lapsing (a defer makes an older lapse stale); this says
+   * WHICH cancellation: a reactivation between enqueue and handler followed by a fresh
+   * cancel in the same period keeps `dueAt` but must not reuse the spent key. It also
+   * keys the event, so a second cancellation's lapse is reported as its own.
+   */
+  cancelRequestedAt: Schema.String,
 });
 
 export type LapseNotify = Schema.Schema.Type<typeof LapseNotify>;
