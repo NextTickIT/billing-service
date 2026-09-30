@@ -19,7 +19,7 @@ kind (`checkout` → initial, `recurring` → renewal); see 22.
 | `initial_payment_failed` | first checkout payment **declined** for a known session — no retry ladder; the customer re-initiates checkout | external_user_id, amount, currency, method, period, reason, source |
 | `charge_retry_failed` | failed intermediate **recurring** charge attempt | external_user_id, attempt number, next retry date, provider reason |
 | `renewal_failed` | final failure of the **recurring** retry cycle (day 7) | external_user_id, reason |
-| `payment_created` | new gateway Payment record appeared | external_user_id, amount, period |
+| `payment_created` | new gateway Payment record appeared | external_user_id, amount, currency, method, period |
 | `payment_cancelled` | Payment soft-cancelled by an operator (access runs to period end) | external_user_id, reason |
 | `payment_reactivated` | a pending cancellation reversed within the grace window (docs/23) | external_user_id |
 | `payment_deferred` | operator granted N free days; the paid period was extended (docs/23) | external_user_id, new_period_end, days |

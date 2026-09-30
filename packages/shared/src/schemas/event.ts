@@ -127,7 +127,12 @@ export type InitialPaymentFailedEvent = Schema.Schema.Type<
   typeof InitialPaymentFailedEvent
 >;
 
-/** A brand-new gateway payment created from a first checkout payment. */
+/**
+ * A brand-new gateway payment created from a first checkout payment. `method` is how it
+ * was paid and therefore how it renews — a card autocharges, crypto takes a manual
+ * prompt (`payment_manual_required`) — so the event that states what the payment costs
+ * per period also states how that money is taken.
+ */
 export const PaymentCreatedEvent = Schema.Struct({
   ...envelope,
   name: Schema.Literal('payment_created'),
@@ -135,6 +140,7 @@ export const PaymentCreatedEvent = Schema.Struct({
   payload: Schema.Struct({
     amount: Schema.Int,
     currency: CurrencySchema,
+    method: Schema.Int,
     period: Schema.String,
   }),
 });
@@ -205,6 +211,10 @@ export type PaymentManualRequiredEvent = Schema.Schema.Type<
  * gives up first, a lie. `chargeDate` is an ISO-8601 string (payload-date convention);
  * the SendPulse sink renders `chargeDate_formatted` / `period_formatted` for the
  * message itself.
+ *
+ * `method` is what is about to happen, not a detail: a card payment is money leaving an
+ * account by itself, a crypto one is a manual payment the customer must make, so a
+ * notice that cannot tell the two apart cannot be worded correctly.
  */
 export const UpcomingChargeEvent = Schema.Struct({
   ...envelope,
@@ -214,6 +224,7 @@ export const UpcomingChargeEvent = Schema.Struct({
     paymentId: Schema.String,
     amount: Schema.Int,
     currency: CurrencySchema,
+    method: Schema.Int,
     period: Schema.String,
     chargeDate: Schema.String,
     /** How many days before `chargeDate` this notice is for — lets a flow branch. */

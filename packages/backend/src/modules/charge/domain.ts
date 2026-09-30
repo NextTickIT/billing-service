@@ -179,6 +179,7 @@ export const paymentCreated = (
   payload: {
     amount: event.amount,
     currency: event.currency,
+    method: match.method,
     period: match.period,
   },
 });
