@@ -209,7 +209,9 @@ it.effect('a checkout first charge also emits payment_created', () =>
         subscriptionId: null,
         externalUserId: 'sp:2',
         period: 'P1M',
-        method: 0,
+        // Crypto, not the default card, so the payload assertion below proves the
+        // method is taken from the match instead of assumed.
+        method: 1,
         recurring: true,
       }),
       applier: applierOf({
@@ -225,6 +227,15 @@ it.effect('a checkout first charge also emits payment_created', () =>
       'initial_payment_succeeded',
     ]);
     expect(pub.events.every((e) => e.aggregateId === 'sub_new')).toBe(true);
+    // The new payment's method decides how it renews (a card autocharges, crypto takes
+    // a manual prompt), so it travels with the amount and the period it applies to.
+    const created = pub.events.find((e) => e.name === 'payment_created');
+    expect(created?.payload).toEqual({
+      amount: 30000,
+      currency: 0,
+      method: 1,
+      period: 'P1M',
+    });
   }),
 );
 

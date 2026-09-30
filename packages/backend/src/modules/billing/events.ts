@@ -167,6 +167,7 @@ export const upcomingCharge = (
     paymentId: sub.id,
     amount: sub.amount,
     currency: sub.currency,
+    method: sub.method,
     period: sub.period,
     chargeDate: sub.nextPaymentDate.toISOString(),
     noticeDays,

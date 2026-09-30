@@ -92,6 +92,7 @@ it.effect('carries the charge date, amount and period the customer needs', () =>
       paymentId: 'sub-1',
       amount: 5000,
       currency: 1,
+      method: 0,
       period: 'P1M',
       chargeDate: '2026-10-02T09:00:00.000Z',
       noticeDays: 3,
@@ -100,6 +101,19 @@ it.effect('carries the charge date, amount and period the customer needs', () =>
     expect(Object.keys(notice?.payload ?? {})).not.toContain(
       'chargeDate_formatted',
     );
+  }),
+);
+
+it.effect('the notice carries the method of the payment, not a default', () =>
+  Effect.gen(function* () {
+    const published: DomainEvent[] = [];
+    yield* scheduleTick(deps({ 3: [sub({ method: 1 })] }, published), cfg([3]));
+
+    // What is coming differs by method: a card payment takes itself, a crypto one is a
+    // payment the customer has to make. A notice that can't tell them apart can't be
+    // worded correctly, so the method comes off the payment rather than being assumed.
+    const notice = published.find((e) => e.name === 'upcoming_charge');
+    expect(notice?.payload.method).toBe(1);
   }),
 );
 
