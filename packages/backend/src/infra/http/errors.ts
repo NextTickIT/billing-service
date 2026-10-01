@@ -37,6 +37,26 @@ export class Conflict extends Data.TaggedError('Conflict')<{
   }
 }
 
+/**
+ * The buyer already has a live subscription, so this checkout must not be paid again.
+ * Distinct from {@link Conflict} because the page has to say something different: a
+ * paying customer told "this link is no longer valid" reads it as us being broken.
+ * `code` is what the frontend branches on — never the prose.
+ */
+export class AlreadySubscribed extends Data.TaggedError('AlreadySubscribed')<{
+  readonly externalUserId: string;
+}> {
+  toHttp(): HttpReply {
+    return {
+      status: 409,
+      body: {
+        error: 'already subscribed',
+        code: 'already_subscribed',
+      },
+    };
+  }
+}
+
 export class NotFound extends Data.TaggedError('NotFound')<{
   readonly resource: string;
 }> {
@@ -56,13 +76,11 @@ export class UnprocessableEntity extends Data.TaggedError(
 }
 
 /**
- * A card change was requested for a payment that cannot be re-tokenized (docs/23):
- * a cancelled payment, no payment at all, or a proactive verify while the standalone
- * Card Verify method is not enabled. 409 → the caller starts a fresh checkout instead.
+ * A card- or method-change was requested for a payment that cannot be changed (docs/23,
+ * docs/32): a cancelled payment, no payment at all, or a proactive verify while the
+ * standalone Card Verify method is not enabled. 409 → the caller starts a fresh checkout.
  */
-export class CardChangeUnavailable extends Data.TaggedError(
-  'CardChangeUnavailable',
-)<{
+export class ChangeUnavailable extends Data.TaggedError('ChangeUnavailable')<{
   readonly reason: string;
 }> {
   toHttp(): HttpReply {

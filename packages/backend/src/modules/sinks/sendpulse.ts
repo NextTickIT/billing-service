@@ -8,6 +8,7 @@ import { Effect } from 'effect';
 import { isTransientStatus, retryTransient } from '@/infra/http/retry.js';
 import type { RateLimiter } from '@/infra/rate-limiter.js';
 import { SinkError, type SinkConnector } from '@/infra/sinks.js';
+import { formattedFields } from '@/modules/sinks/formatted.js';
 
 /**
  * SendPulse Telegram connector (docs/21, conv.12 — provider code lives here). Runs a
@@ -124,7 +125,14 @@ export const makeSendPulseConnector = (
         flow_id: flowId,
         // `event` (the name) + `event_id` let a flow reached by more than one event
         // branch/dedupe on which one fired; our keys win over any payload collision.
-        external_data: { ...event.payload, event: event.name, event_id: event.id },
+        external_data: {
+          ...event.payload,
+          // Human-readable twins (DD.MM.YYYY, "1 месяц") for the flow to drop straight
+          // into a message. Added here, never stored on the event — see formatted.ts.
+          ...formattedFields(event.payload),
+          event: event.name,
+          event_id: event.id,
+        },
       });
       yield* call(client, 'POST', '/flows/run', body).pipe(
         Effect.flatMap(parseData),
@@ -196,3 +204,78 @@ export const listFlows = (
     );
     return perBot.flat();
   });
+
+/** A contact's tag names, lowercased. SendPulse contacts carry a top-level `tags`
+ * array of plain strings (verified against the live API). */
+const asTags = (data: unknown): readonly string[] => {
+  const tags = (data as { tags?: unknown }).tags;
+  return Array.isArray(tags)
+    ? tags
+        .filter((t): t is string => typeof t === 'string')
+        .map((t) => t.toLowerCase())
+    : [];
+};
+
+/**
+ * Read one contact's tags: `GET /telegram/contacts/get?id=<contactId>` (the
+ * externalUserId is the SendPulse contact id). The scheduler uses this before a
+ * recurring charge — a contact tagged as cancelled/quarantined upstream must not
+ * be charged (docs/23). Runs on the worker; the token stays server-side.
+ */
+export const getContactTags = (
+  client: SendPulseClient,
+  contactId: string,
+): Effect.Effect<readonly string[], SinkError> =>
+  call(client, 'GET', `/contacts/get?id=${encodeURIComponent(contactId)}`).pipe(
+    Effect.flatMap(parseData),
+    Effect.map(asTags),
+    Effect.mapError(toSinkError),
+  );
+
+/** A contact's searchable profile — the operator payments search resolves a typed
+ * name/username/email/phone to the contact id (= externalUserId). */
+export interface ContactProfile {
+  readonly name: string;
+  readonly username: string;
+  readonly email: string;
+  readonly phone: string;
+}
+
+const str = (x: unknown): string => (typeof x === 'string' ? x : '');
+
+/** Assemble a display name from the Telegram channel_data (first/last/username)
+ * with a `name` variable fallback. */
+const asProfile = (data: unknown): ContactProfile => {
+  const d = data as {
+    channel_data?: {
+      username?: unknown;
+      first_name?: unknown;
+      last_name?: unknown;
+    };
+    variables?: Record<string, unknown>;
+  };
+  const cd = d.channel_data ?? {};
+  const v = d.variables ?? {};
+  const username = str(cd.username);
+  const full = [str(cd.first_name), str(cd.last_name)]
+    .filter((s) => s.length > 0)
+    .join(' ');
+  return {
+    name: full || str(v['name']) || username,
+    username,
+    email: str(v['email']),
+    phone: str(v['phone']),
+  };
+};
+
+/** Read one contact's searchable profile (same endpoint as {@link getContactTags}).
+ * Used by the worker's contacts-cache sync so name search stays server-side. */
+export const getContactProfile = (
+  client: SendPulseClient,
+  contactId: string,
+): Effect.Effect<ContactProfile, SinkError> =>
+  call(client, 'GET', `/contacts/get?id=${encodeURIComponent(contactId)}`).pipe(
+    Effect.flatMap(parseData),
+    Effect.map(asProfile),
+    Effect.mapError(toSinkError),
+  );

@@ -19,6 +19,9 @@ const id = route.params['id'] as string;
 const cancelReason = ref('');
 const deferDays = ref(1);
 const deferError = ref<string | null>(null);
+// A stable idempotency key per defer intent: a double-click or a retry of an ambiguous
+// failure reuses it (the server dedups), and it rotates only after a success.
+let deferKey = crypto.randomUUID();
 
 onMounted(() => {
   void store.loadDetail(id);
@@ -26,9 +29,10 @@ onMounted(() => {
 
 const isCancelling = computed((): boolean => {
   const p = store.current;
+  // A soft-cancel sits on an Active OR PastDue payment (it lapses at the next tick).
   return (
     p !== null &&
-    p.status === PaymentStatus.Active &&
+    (p.status === PaymentStatus.Active || p.status === PaymentStatus.PastDue) &&
     p.cancelRequestedAt !== null
   );
 });
@@ -36,6 +40,20 @@ const isCancelling = computed((): boolean => {
 const isActive = computed(
   (): boolean => store.current?.status === PaymentStatus.Active,
 );
+
+// A NEW cancel only succeeds on a non-terminal payment that is not already
+// cancel-pending (matches the backend `requestCancel` guard) — so we only show the
+// Cancel form then, and never let the operator re-click into a 422.
+const canCancel = computed((): boolean => {
+  const p = store.current;
+  return (
+    p !== null &&
+    p.cancelRequestedAt === null &&
+    (p.status === PaymentStatus.Active ||
+      p.status === PaymentStatus.PastDue ||
+      p.status === PaymentStatus.RenewalFailed)
+  );
+});
 
 function statusLabel(s: number): string {
   return t(`payments.statuses.${s}`);
@@ -65,7 +83,9 @@ async function handleDefer(): Promise<void> {
     deferError.value = t('payments.deferDaysError');
     return;
   }
-  await store.defer(id, deferDays.value);
+  await store.defer(id, deferDays.value, deferKey);
+  // Rotate only on success; a failed/ambiguous attempt keeps the key so a retry dedups.
+  if (store.error === null) deferKey = crypto.randomUUID();
 }
 </script>
 
@@ -95,6 +115,14 @@ async function handleDefer(): Promise<void> {
           <span>{{ store.current.period }}</span>
         </div>
         <div class="info-row">
+          <span class="lbl">{{ t('payments.type') }}</span>
+          <span>{{
+            store.current.recurring
+              ? t('payments.recurring')
+              : t('payments.oneTime')
+          }}</span>
+        </div>
+        <div class="info-row">
           <span class="lbl">{{ t('common.status') }}</span>
           <span>{{ effectiveStatusLabel() }}</span>
         </div>
@@ -122,7 +150,7 @@ async function handleDefer(): Promise<void> {
       <div v-if="isCancelling" class="notice notice--cancelling">
         {{
           t('payments.cancellingNotice', {
-            date: formatDateTime(store.current.currentPeriodEnd, locale),
+            date: formatDateTime(store.current.nextPaymentDate, locale),
           })
         }}
       </div>
@@ -186,7 +214,7 @@ async function handleDefer(): Promise<void> {
         </tbody>
       </table>
 
-      <div class="cancel-section">
+      <div v-if="canCancel" class="cancel-section">
         <h2 class="section-title">{{ t('payments.cancelTitle') }}</h2>
         <div class="cancel-row">
           <BaseInput

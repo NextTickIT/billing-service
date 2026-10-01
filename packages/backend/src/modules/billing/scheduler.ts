@@ -11,6 +11,9 @@ import type { WayForPayClient } from '@/modules/wayforpay/client.js';
 import {
   chargeIncomingEvent,
   chargeRetryFailed,
+  type ManualCheckout,
+  paymentManualRequired,
+  upcomingCharge,
   renewalFailed,
 } from '@/modules/billing/events.js';
 
@@ -28,11 +31,29 @@ export interface SchedulerDeps {
     event: DomainEvent,
   ) => Effect.Effect<void, SqlError.SqlError>;
   readonly lapse: (sub: Payment) => Effect.Effect<void, SqlError.SqlError>;
+  /** Best-effort check that the contact cancelled/quarantined on the SendPulse side
+   * (by contact tag). Fail-open: the boot wires any SendPulse error to `false` so a
+   * SendPulse outage never stalls real renewals (docs/23). */
+  readonly upstreamCancelled: (sub: Payment) => Effect.Effect<boolean>;
+  /** Cancel locally because the contact cancelled upstream: flip to cancelled +
+   * record payment_cancelled. No charge, no retry ladder. */
+  readonly cancelUpstream: (
+    sub: Payment,
+    now: Date,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  /** Mint OUR internal checkout session for a token-less (crypto) renewal and return its
+   * link + live window, so the manual-pay prompt can point the user at it (docs/28). */
+  readonly createManualCheckout: (
+    sub: Payment,
+    now: Date,
+  ) => Effect.Effect<ManualCheckout, SqlError.SqlError>;
 }
 
 export interface SchedulerConfig {
   readonly intervalSeconds: number;
   readonly batchSize: number;
+  /** Days before a charge to announce it; empty disables the notice sweep. */
+  readonly upcomingChargeNoticeDays: readonly number[];
 }
 
 /** Deterministic per attempt: the timestamp changes only when the schedule moves. */
@@ -67,24 +88,48 @@ const onFailure = (
     );
   });
 
-const chargeOne = (deps: SchedulerDeps, sub: Payment, now: Date) =>
+/**
+ * A token-less (crypto) renewal came due (docs/28): we cannot autocharge, so we prompt the
+ * user to pay again at OUR internal checkout. The attempt rides the SAME retry ladder as a
+ * card failure — re-prompting on each scheduled date — and the exhausted ladder lapses to
+ * `renewal_failed`. Paying the session extends the payment (and a card pay captures a token,
+ * graduating it back to autocharge next cycle). We check the ladder BEFORE prompting so the
+ * giving-up tick emits only `renewal_failed`, never a fresh prompt.
+ */
+const promptManual = (deps: SchedulerDeps, sub: Payment, now: Date) =>
   Effect.gen(function* () {
-    if (sub.cancelRequestedAt !== null) {
-      // A soft-cancelled payment lapses at the due date instead of charging —
-      // no charge, no retry ladder (docs/23). The lapse is enqueued (not published
-      // inline) so the worker-owned outbox emits the terminal event durably.
-      yield* deps.lapse(sub);
+    const firstFailureAt = sub.firstFailureAt ?? now;
+    const plan = planRetry(sub.retryAttempt, firstFailureAt);
+    if (plan.final || plan.nextPaymentDate === null) {
+      yield* deps.subs.markRenewalFailed(sub.id);
+      yield* deps.publish(
+        renewalFailed(sub, 'manual payment not completed', now),
+      );
       return;
     }
-    if (sub.recurringTokenRef === null) {
-      return; // no token on file — nothing to charge (findDue filters these out)
-    }
+    // Still within the ladder: mint our checkout link and prompt. Publish BEFORE
+    // recordRetry so the event carries this attempt's due date (recordRetry moves it).
+    const checkout = yield* deps.createManualCheckout(sub, now);
+    yield* deps.publish(
+      paymentManualRequired(sub, checkout, now, plan.attempt),
+    );
+    yield* deps.subs.recordRetry(sub.id, {
+      firstFailureAt,
+      retryAttempt: plan.attempt,
+      nextPaymentDate: plan.nextPaymentDate,
+    });
+  });
+
+/** Charge the stored card token and settle the outcome: approve → advance from the
+ * anchor + feed the success back through the pipeline; decline → the retry ladder. */
+const chargeCard = (deps: SchedulerDeps, sub: Payment, now: Date) =>
+  Effect.gen(function* () {
     const orderReference = orderReferenceFor(sub);
     const response = yield* deps.client.charge({
       orderReference,
       amount: sub.amount,
       currency: sub.currency,
-      recToken: sub.recurringTokenRef,
+      recToken: sub.recurringTokenRef ?? '',
       orderDate: Math.floor(now.getTime() / 1000),
       productName: `Payment ${sub.period}`,
     });
@@ -102,6 +147,69 @@ const chargeOne = (deps: SchedulerDeps, sub: Payment, now: Date) =>
     }
     yield* onFailure(deps, sub, response.reason ?? 'charge declined', now);
   });
+
+const chargeOne = (deps: SchedulerDeps, sub: Payment, now: Date) =>
+  Effect.gen(function* () {
+    if (sub.cancelRequestedAt !== null) {
+      // A soft-cancelled payment lapses at the due date instead of charging —
+      // no charge, no retry ladder (docs/23). The lapse is enqueued (not published
+      // inline) so the worker-owned outbox emits the terminal event durably.
+      yield* deps.lapse(sub);
+      return;
+    }
+    if (yield* deps.upstreamCancelled(sub)) {
+      // The contact cancelled/quarantined on the SendPulse side — cancel on our
+      // side and never attempt the charge (docs/23). Applies to card AND crypto
+      // renewals (checked before the token branch below).
+      yield* deps.cancelUpstream(sub, now);
+      return;
+    }
+    if (sub.recurringTokenRef === null) {
+      // No reusable token (WhitePay crypto): can't autocharge — prompt the user to pay
+      // again at our internal checkout (docs/28) instead.
+      return yield* promptManual(deps, sub, now);
+    }
+    yield* chargeCard(deps, sub, now);
+  });
+
+/**
+ * Send advance notices for charges coming up on each configured offset.
+ *
+ * Runs on the same tick as the charge sweep but is strictly read-then-publish: it never
+ * charges and never moves a date, so a failure here can only cost a notice, never money.
+ * Exactly-once comes from the event id, which pins (payment, due date, offset) — the
+ * outbox's `ON CONFLICT (id) DO NOTHING` absorbs every re-run, so a 5-minute tick does
+ * not mean a notice every 5 minutes.
+ */
+const noticeSweep = (deps: SchedulerDeps, config: SchedulerConfig, now: Date) =>
+  Effect.forEach(
+    config.upcomingChargeNoticeDays,
+    (days) =>
+      Effect.gen(function* () {
+        const upcoming = yield* deps.subs.findUpcomingForNotice(
+          days,
+          config.batchSize,
+        );
+        // Isolate each notice: one bad row must not cost the rest their warning.
+        yield* Effect.forEach(
+          upcoming,
+          (sub) =>
+            deps.publish(upcomingCharge(sub, days, now)).pipe(
+              Effect.catchAllCause((cause) =>
+                Effect.logError('scheduler: notice failed').pipe(
+                  Effect.annotateLogs({
+                    paymentId: sub.id,
+                    noticeDays: days,
+                    cause: Cause.pretty(cause),
+                  }),
+                ),
+              ),
+            ),
+          { discard: true },
+        );
+      }),
+    { discard: true },
+  );
 
 export const scheduleTick = (
   deps: SchedulerDeps,
@@ -125,6 +233,15 @@ export const scheduleTick = (
           ),
         ),
       { discard: true },
+    );
+    // After charging: a payment charged on this very tick has had its next date moved
+    // forward, so it cannot also be announced as "coming up" in the same pass.
+    yield* noticeSweep(deps, config, now).pipe(
+      Effect.catchAllCause((cause) =>
+        Effect.logError('scheduler: notice sweep failed').pipe(
+          Effect.annotateLogs('cause', Cause.pretty(cause)),
+        ),
+      ),
     );
     return due.length;
   });

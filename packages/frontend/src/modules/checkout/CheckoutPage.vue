@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n';
 import {
   CheckoutSessionKind,
   CheckoutSessionStatus,
+  formatPeriod,
   PaymentMethod,
 } from '@billing-service/shared';
 import { useCheckoutStore } from './store.js';
@@ -40,14 +41,12 @@ const isPayable = computed(
     store.session?.status !== CheckoutSessionStatus.Expired,
 );
 
-// Crypto (WhitePay) is offered ONLY when the build flag is on AND this checkout was
-// explicitly created with Crypto as its method (`method: 1`). Default/card checkouts
-// hide the crypto button entirely; a crypto invoice opts in at creation. (Kept dark
-// otherwise while webhook delivery is still being finalized — docs/25.)
+// Crypto (WhitePay) is offered whenever the build flag is on — both methods are shown on
+// every checkout so a buyer can pick crypto even when the checkout didn't preselect it
+// (the backend `pay` route honors whichever method the buyer picks). Kept dark until the
+// WhitePay slug + API token + webhook token are provisioned (VITE_WHITEPAY_ENABLED — docs/25).
 const cryptoOffered = computed(
-  () =>
-    import.meta.env.VITE_WHITEPAY_ENABLED === 'true' &&
-    store.session?.method === PaymentMethod.Crypto,
+  () => import.meta.env.VITE_WHITEPAY_ENABLED === 'true',
 );
 
 onMounted(() => {
@@ -94,7 +93,7 @@ watch(
   },
 );
 
-// The methods the picker offers: Card always; Crypto only when this checkout opted in.
+// The methods the picker offers: Card always; Crypto whenever WhitePay is enabled.
 const methods = computed<PaymentMethod[]>(() =>
   cryptoOffered.value
     ? [PaymentMethod.Card, PaymentMethod.Crypto]
@@ -127,6 +126,14 @@ watch(
 async function onPay(): Promise<void> {
   await store.pay(id, selectedMethod.value);
 }
+
+// Legal documents (Offer / Privacy / Data consent), hosted on the marketing site,
+// linked below the Pay button so the buyer accepts them at the point of payment.
+const legalLinks = [
+  { key: 'checkout.legalOffer', url: 'https://nexttick.it/offer.html' },
+  { key: 'checkout.legalPrivacy', url: 'https://nexttick.it/privacy.html' },
+  { key: 'checkout.legalConsent', url: 'https://nexttick.it/consent.html' },
+] as const;
 </script>
 
 <template>
@@ -141,7 +148,10 @@ async function onPay(): Promise<void> {
       </div>
 
       <div v-else-if="store.error" class="checkout__msg checkout__msg--error">
-        {{ store.error }}
+        {{ t(store.error) }}
+        <span v-if="store.errorDetail" class="checkout__msg-detail">
+          {{ store.errorDetail }}
+        </span>
       </div>
 
       <template v-else-if="store.session">
@@ -164,18 +174,32 @@ async function onPay(): Promise<void> {
         </div>
 
         <div v-else class="checkout__content">
+          <p class="checkout__kind">
+            {{
+              store.session.recurring
+                ? t('checkout.typeSubscription')
+                : t('checkout.typeOneTime')
+            }}
+          </p>
           <div class="checkout__row">
             <span class="checkout__label">{{ t('common.amount') }}</span>
             <span class="checkout__value">
               {{ formatAmount(store.session.amount, store.session.currency) }}
             </span>
           </div>
-          <div class="checkout__row">
-            <span class="checkout__label">{{ t('checkout.expiresAt') }}</span>
+          <div v-if="store.session.recurring" class="checkout__row">
+            <span class="checkout__label">{{ t('checkout.periodLabel') }}</span>
             <span class="checkout__value">
-              {{ formatDate(store.session.expiresAt, locale) }}
+              {{ formatPeriod(store.session.period, locale) }}
             </span>
           </div>
+          <p class="checkout__expiry">
+            {{
+              t('checkout.linkValidUntil', {
+                date: formatDate(store.session.expiresAt, locale),
+              })
+            }}
+          </p>
           <div class="checkout__pay">
             <div
               v-if="methods.length > 1"
@@ -198,6 +222,17 @@ async function onPay(): Promise<void> {
               :loading="store.submitting"
               @click="onPay()"
             />
+          </div>
+          <div class="checkout__legal">
+            <p class="checkout__legal-note">{{ t('checkout.legalNote') }}</p>
+            <p class="checkout__legal-links">
+              <template v-for="(l, i) in legalLinks" :key="l.url">
+                <a :href="l.url" target="_blank" rel="noopener noreferrer">{{
+                  t(l.key)
+                }}</a
+                ><span v-if="i < legalLinks.length - 1"> · </span>
+              </template>
+            </p>
           </div>
         </div>
       </template>
@@ -232,6 +267,13 @@ async function onPay(): Promise<void> {
 .checkout__msg--error {
   color: var(--red);
 }
+/* Provider-written detail (422 only) — secondary to the translated line above it. */
+.checkout__msg-detail {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.875em;
+  opacity: 0.8;
+}
 .checkout__msg--warn {
   color: var(--amber);
 }
@@ -243,6 +285,14 @@ async function onPay(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* What is being sold, above the figures that quantify it — a caption, not a row:
+   it has no counterpart value to align against. */
+.checkout__kind {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
 }
 
 .checkout__row {
@@ -257,6 +307,14 @@ async function onPay(): Promise<void> {
 }
 .checkout__value {
   color: var(--txt);
+}
+
+/* The link's own TTL is checkout housekeeping, not a term of the purchase: smaller and
+   dimmer than the figures above it so it never reads as another product fact. */
+.checkout__expiry {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--dim);
 }
 
 .checkout__pay {
@@ -274,5 +332,26 @@ async function onPay(): Promise<void> {
 /* Keep Pay right-aligned whether or not the method picker is shown. */
 .checkout__paybtn {
   margin-left: auto;
+}
+
+.checkout__legal {
+  margin-top: 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  color: var(--dim);
+}
+.checkout__legal-note {
+  margin: 0;
+}
+.checkout__legal-links {
+  margin: 2px 0 0;
+}
+.checkout__legal a {
+  color: var(--dim);
+  text-decoration: underline;
+}
+.checkout__legal a:hover {
+  color: var(--txt);
 }
 </style>

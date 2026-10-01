@@ -94,6 +94,10 @@ const setAppEnv = (database: string): void => {
   process.env['DB_NAME'] = database;
   process.env['ADMIN_TOKEN'] = ADMIN_TOKEN;
   process.env['SESSION_TTL_SECONDS'] = '3600';
+  // A non-empty merchant secret so the hardened WayForPay callback (which
+  // fail-closes on an empty key) verifies the edge signature. Must match
+  // edge.e2e.ts's MERCHANT_SECRET.
+  process.env['W4P_SECRET_KEY'] = 'e2e-w4p-secret';
 };
 
 const dropStaleTestDbs = (): void => {
@@ -196,7 +200,8 @@ const verifyNoLeaks = (): void => {
   if (remaining !== '0') {
     throw new Error(`leaked ${remaining} test database(s)`);
   }
-  const total = scenarios.length + effectScenarios.length + edgeScenarios.length;
+  const total =
+    scenarios.length + effectScenarios.length + edgeScenarios.length;
   console.log(`e2e: ${total.toString()} scenarios passed; 0 leaked databases`);
 };
 

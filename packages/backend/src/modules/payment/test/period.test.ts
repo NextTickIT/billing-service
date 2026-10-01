@@ -59,6 +59,7 @@ const basePayment: Payment = {
   method: 0,
   period: 'P1M',
   status: PaymentStatus.Active,
+  recurring: true,
   currentPeriodStart: new Date('2026-01-01T00:00:00Z'),
   currentPeriodEnd: new Date('2026-01-20T00:00:00Z'),
   nextPaymentDate: new Date('2026-01-20T00:00:00Z'),

@@ -1,6 +1,7 @@
 import type { SqlError } from '@effect/sql';
 import type {
   DomainEvent,
+  MethodChangedEvent,
   PaymentCancelledEvent,
   PaymentDeferredEvent,
   PaymentReactivatedEvent,
@@ -13,9 +14,11 @@ import {
   CancelNotify,
   DeferNotify,
   LapseNotify,
+  MethodChangeNotify,
   PAYMENT_CANCEL,
   PAYMENT_DEFER,
   PAYMENT_LAPSE,
+  PAYMENT_METHOD_CHANGE,
   PAYMENT_REACTIVATE,
   ReactivateNotify,
 } from '@/modules/payment/contracts.js';
@@ -27,12 +30,20 @@ import {
  * worker runtime, so these run there — the operator/scheduler side only enqueues.
  */
 
-/** payment_cancelled envelope (docs/07); deterministic id so replays dedupe. */
+/**
+ * payment_cancelled envelope (docs/07). The id carries `cancelRequestedAt`, so a
+ * redelivery of one cancellation dedupes while a genuine cancel → reactivate → cancel
+ * produces a distinct event. A constant id here silently dropped every cancellation
+ * after the first.
+ */
 export const paymentCancelled = (
   notify: CancelNotify,
   now: Date,
 ): PaymentCancelledEvent => ({
-  id: `evt_sub_${notify.subscriptionId}_cancelled`,
+  id:
+    notify.cancelRequestedAt === ''
+      ? `evt_sub_${notify.subscriptionId}_cancelled`
+      : `evt_sub_${notify.subscriptionId}_cancelled_${notify.cancelRequestedAt}`,
   name: 'payment_cancelled',
   occurredAt: now,
   correlationId: notify.subscriptionId,
@@ -69,16 +80,35 @@ export const paymentDeferred = (
   payload: { newPeriodEnd: notify.newPeriodEnd, days: notify.days },
 });
 
+/** method_changed envelope: the no-payment flip recorded the new method. */
+export const methodChanged = (
+  notify: MethodChangeNotify,
+  now: Date,
+): MethodChangedEvent => ({
+  id: `evt_${notify.paymentId}_method_changed_${notify.at.toString()}`,
+  name: 'method_changed',
+  occurredAt: now,
+  correlationId: notify.paymentId,
+  externalUserId: notify.externalUserId,
+  aggregateId: notify.paymentId,
+  payload: { method: notify.method },
+});
+
 /**
  * The soft-cancel due-date lapse reuses the terminal `renewal_failed` (reason
  * `cancelled`) — SendPulse already treats it as a lapse, so no new sink flow is
- * needed (docs/23). One event id per payment: the lapse fires exactly once.
+ * needed (docs/23). Keyed on the cancellation being lapsed, not the payment: one event
+ * per cancellation, so a payment cancelled, reactivated and cancelled again lapses twice
+ * and both lapses are reported.
  */
 export const cancelLapsed = (
   notify: LapseNotify,
   now: Date,
 ): RenewalFailedEvent => ({
-  id: `evt_${notify.paymentId}_cancel_lapsed`,
+  id:
+    notify.cancelRequestedAt === ''
+      ? `evt_${notify.paymentId}_cancel_lapsed`
+      : `evt_${notify.paymentId}_cancel_lapsed_${notify.cancelRequestedAt}`,
   name: 'renewal_failed',
   occurredAt: now,
   correlationId: notify.paymentId,
@@ -138,6 +168,23 @@ export const deferNotify =
       ),
     );
 
+/** The `payment_method_change` handler: decode the payload, then emit the event. */
+export const methodChangeNotify =
+  (publish: (event: DomainEvent) => Effect.Effect<void, SqlError.SqlError>) =>
+  (payload: unknown): Effect.Effect<void, SqlError.SqlError> =>
+    Schema.decodeUnknown(MethodChangeNotify)(payload).pipe(
+      Effect.flatMap((notify) =>
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((ms) => publish(methodChanged(notify, new Date(ms)))),
+        ),
+      ),
+      Effect.catchTag('ParseError', (error) =>
+        Effect.die(
+          `invalid ${PAYMENT_METHOD_CHANGE} payload: ${error.message}`,
+        ),
+      ),
+    );
+
 /**
  * The `payment_lapse` handler: the cancel-pending payment reached its due date.
  * Flip it to `cancelled` (state before the event, CLAUDE.md §5), then emit the
@@ -152,8 +199,19 @@ export const lapseNotify =
     Schema.decodeUnknown(LapseNotify)(payload).pipe(
       Effect.flatMap((notify) =>
         repo.markCancelledLapsed(notify.paymentId).pipe(
-          Effect.andThen(Clock.currentTimeMillis),
-          Effect.flatMap((ms) => publish(cancelLapsed(notify, new Date(ms)))),
+          Effect.flatMap((lapsed) =>
+            // Announce only what actually happened. A reactivation inside the grace
+            // window clears `cancelRequestedAt` between enqueue and here, so the row
+            // is no longer cancel-pending — publishing then told SendPulse a live
+            // subscriber had lapsed, and the pre-charge tag check stopped billing them.
+            lapsed
+              ? Clock.currentTimeMillis.pipe(
+                  Effect.flatMap((ms) =>
+                    publish(cancelLapsed(notify, new Date(ms))),
+                  ),
+                )
+              : Effect.void,
+          ),
         ),
       ),
       Effect.catchTag('ParseError', (error) =>

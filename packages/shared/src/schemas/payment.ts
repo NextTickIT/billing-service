@@ -71,6 +71,10 @@ export const Payment = Schema.Struct({
   method: PaymentMethodSchema,
   period: Schema.String,
   status: PaymentStatusSchema,
+  // false for a one-time payment: created fresh per charge (never extended), holds no
+  // reusable token, excluded from the scheduler and the one-active-per-user rule, so a
+  // user may have any number alongside a single recurring payment. Default true.
+  recurring: Schema.Boolean,
   currentPeriodStart: Schema.Date,
   currentPeriodEnd: Schema.Date,
   nextPaymentDate: Schema.Date,
@@ -126,13 +130,15 @@ export const PaymentDetail = Schema.Struct({
 
 export type PaymentDetail = Schema.Schema.Type<typeof PaymentDetail>;
 
-/** POST /api/payment body: operator creates a Payment directly. */
+/** POST /api/payment body: operator creates a Payment directly. `recurring` defaults
+ * to true (a subscription); pass false to record a one-time payment. */
 export const CreatePaymentRequest = Schema.Struct({
   externalUserId: Schema.String,
   amount: Schema.Int,
   currency: CurrencySchema,
   period: Schema.String,
   method: Schema.optional(PaymentMethodSchema),
+  recurring: Schema.optional(Schema.Boolean),
 });
 
 export type CreatePaymentRequest = Schema.Schema.Type<

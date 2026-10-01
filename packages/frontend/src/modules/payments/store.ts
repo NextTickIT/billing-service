@@ -72,18 +72,22 @@ export const usePaymentsStore = defineStore('payments', () => {
     await loadDetail(id);
   });
 
-  const defer = wrapAction(refs, async (id: string, days: number) => {
-    await deferPayment(id, days);
-    await loadDetail(id);
-  });
+  const defer = wrapAction(
+    refs,
+    async (id: string, days: number, idempotencyKey: string) => {
+      await deferPayment(id, days, idempotencyKey);
+      await loadDetail(id);
+    },
+  );
 
   async function create(
     body: CreatePaymentRequest,
+    idempotencyKey: string,
   ): Promise<CreateAccepted | null> {
     loading.value = true;
     error.value = null;
     try {
-      const created = await createPayment(body);
+      const created = await createPayment(body, idempotencyKey);
       await loadList();
       return created;
     } catch (e) {

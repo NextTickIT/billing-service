@@ -27,6 +27,7 @@ const event = (id: string): DomainEvent => ({
     method: 0,
     period: 'P1M',
     source: 'test',
+    nextPaymentDate: '2026-02-01T00:00:00.000Z',
   },
 });
 
@@ -91,7 +92,10 @@ const sinksOf = (...sinks: readonly SinkConnector[]): SinksService => ({
   all: () => Effect.succeed(sinks),
 });
 
-const successSink: SinkConnector = { name: 'sendpulse', deliver: () => Effect.void };
+const successSink: SinkConnector = {
+  name: 'sendpulse',
+  deliver: () => Effect.void,
+};
 const failSink: SinkConnector = {
   name: 'sendpulse',
   deliver: () =>

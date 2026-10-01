@@ -6,10 +6,11 @@ import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import { addDays, addPeriod } from '@/modules/payment/period.js';
 
 /**
- * The billing terms a successful charge establishes for a user (FR-003). The
- * gateway holds at most one active payment per external user, so a charge
- * either creates it or extends the existing one — the next charge is always the
- * payment date plus the period.
+ * The billing terms a successful charge establishes for a user (FR-003). A recurring
+ * charge either creates the user's payment or extends the existing one (at most one
+ * active recurring payment per user). A one-time charge (`recurring: false`) is always
+ * a fresh record — never extended, never capped — so a user may hold any number of
+ * them alongside a recurring payment. The next charge is the payment date plus period.
  */
 export interface ApplyPaymentParams {
   readonly externalUserId: string;
@@ -17,15 +18,82 @@ export interface ApplyPaymentParams {
   readonly currency: number;
   readonly method: number;
   readonly period: string;
+  readonly recurring: boolean;
   readonly recurringTokenRef: string | null;
   readonly paidAt: Date;
+  /**
+   * A one-time bonus period (ISO-8601 duration) granted on top of the paid period, or
+   * null. Only a checkout that carried a promo sets it; a recurring renewal never does,
+   * so the bonus lands exactly once — on the charge that earned it.
+   */
+  readonly promoBonus?: string | null;
 }
 
 export interface ApplyPaymentResult {
   readonly subscriptionId: string;
   /** true when a new payment was created (drives `payment_created`). */
   readonly created: boolean;
+  /** The next scheduled charge date established by this charge (the paid-through anchor).
+   * Carried out so the succeeded event can report it. */
+  readonly nextPaymentDate: Date;
 }
+
+/** The period a successful charge pays for; the next charge anchors on its end. */
+interface PeriodAnchors {
+  readonly currentPeriodStart: Date;
+  readonly currentPeriodEnd: Date;
+  readonly nextPaymentDate: Date;
+}
+
+const periodAnchors = (params: ApplyPaymentParams): PeriodAnchors => {
+  const paidThrough = addPeriod(params.paidAt, params.period);
+  // A promo grants free time ON TOP of the paid period, once: it pushes the paid-through
+  // anchor further, and the next charge date derives from that anchor — so the bonus
+  // shifts both together and drift stays impossible (CLAUDE.md §6). Applied only here, on
+  // the charge that carried the promo; a later renewal has no `promoBonus` and resumes
+  // the normal cadence.
+  const currentPeriodEnd =
+    params.promoBonus != null && params.promoBonus.length > 0
+      ? addPeriod(paidThrough, params.promoBonus)
+      : paidThrough;
+  return {
+    currentPeriodStart: params.paidAt,
+    currentPeriodEnd,
+    nextPaymentDate: currentPeriodEnd,
+  };
+};
+
+/** Insert a fresh Payment. A one-time payment stores no reusable token (it is never
+ * charged again) and is `recurring: false`, so the scheduler — which only selects
+ * `recurring = true` rows — never renews it. (Token-less RECURRING payments ARE now
+ * picked up: they get a manual-pay prompt instead of an autocharge, docs/28.) */
+const insertNew =
+  (repo: PaymentRepo) =>
+  (
+    params: ApplyPaymentParams,
+    anchors: PeriodAnchors,
+  ): Effect.Effect<ApplyPaymentResult, SqlError.SqlError> =>
+    repo
+      .insert({
+        externalUserId: params.externalUserId,
+        amount: params.amount,
+        currency: params.currency,
+        method: params.method,
+        period: params.period,
+        status: PaymentStatus.Active,
+        recurring: params.recurring,
+        ...anchors,
+        recurringTokenRef: params.recurring ? params.recurringTokenRef : null,
+        firstFailureAt: null,
+        retryAttempt: 0,
+      })
+      .pipe(
+        Effect.map((created) => ({
+          subscriptionId: created.id,
+          created: true,
+          nextPaymentDate: anchors.nextPaymentDate,
+        })),
+      );
 
 export const createOrExtend =
   (repo: PaymentRepo) =>
@@ -33,10 +101,13 @@ export const createOrExtend =
     params: ApplyPaymentParams,
   ): Effect.Effect<ApplyPaymentResult, SqlError.SqlError> =>
     Effect.gen(function* () {
-      const currentPeriodStart = params.paidAt;
-      const currentPeriodEnd = addPeriod(params.paidAt, params.period);
-      const nextPaymentDate = currentPeriodEnd;
-      const existing = yield* repo.findActiveByExternalUser(
+      const anchors = periodAnchors(params);
+      // A one-time payment never extends and never collapses into the user's recurring
+      // payment — always a new record, with no per-user cap.
+      if (!params.recurring) {
+        return yield* insertNew(repo)(params, anchors);
+      }
+      const existing = yield* repo.findActiveRecurringByExternalUser(
         params.externalUserId,
       );
       if (Option.isSome(existing)) {
@@ -45,28 +116,16 @@ export const createOrExtend =
           currency: params.currency,
           method: params.method,
           period: params.period,
-          currentPeriodStart,
-          currentPeriodEnd,
-          nextPaymentDate,
+          ...anchors,
           recurringTokenRef: params.recurringTokenRef,
         });
-        return { subscriptionId: existing.value.id, created: false };
+        return {
+          subscriptionId: existing.value.id,
+          created: false,
+          nextPaymentDate: anchors.nextPaymentDate,
+        };
       }
-      const created = yield* repo.insert({
-        externalUserId: params.externalUserId,
-        amount: params.amount,
-        currency: params.currency,
-        method: params.method,
-        period: params.period,
-        status: PaymentStatus.Active,
-        currentPeriodStart,
-        currentPeriodEnd,
-        nextPaymentDate,
-        recurringTokenRef: params.recurringTokenRef,
-        firstFailureAt: null,
-        retryAttempt: 0,
-      });
-      return { subscriptionId: created.id, created: true };
+      return yield* insertNew(repo)(params, anchors);
     });
 
 /**

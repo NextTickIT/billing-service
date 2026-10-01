@@ -42,7 +42,36 @@ export interface AdvanceAnchor {
  * Success` reset the retry state (a good payment restores standing).
  */
 export interface PaymentRepo {
-  readonly findActiveByExternalUser: (
+  /**
+   * The user's live RECURRING payment that create-or-extend acts on: Active, or PastDue
+   * (a renewal mid-retry — incl. a crypto manual-renewal prompt that flipped it to
+   * PastDue). A paid checkout REVIVES that row in place instead of minting a duplicate.
+   * Active is preferred over PastDue (Active-first order) so an existing Active is never
+   * revive-collided with the `payments_one_active_per_user` unique index. RenewalFailed
+   * is terminal (docs/28 D4) and excluded — a post-failure checkout starts a fresh row;
+   * one-time and Cancelled are excluded too.
+   */
+  /**
+   * Payments whose next charge falls on the Kyiv calendar day `noticeDays` from now —
+   * the population an advance notice targets.
+   *
+   * Kyiv, not UTC: "3 days before" is a human statement about a calendar, and a charge
+   * at 21:30 UTC already belongs to the next local day. Deliberately includes
+   * token-less (crypto) payments, which get a manual-pay prompt rather than an
+   * autocharge and so need the warning at least as much. Deliberately excludes anything
+   * mid-retry (`status` past Active, or a ladder in progress) — a retry is a failure
+   * being worked through, not a scheduled charge — and anything with a cancellation
+   * pending, where the scheduler will never charge and the notice would be a lie.
+   *
+   * `noticeDays` is cast explicitly: a bound parameter reaches Postgres untyped, and
+   * `date + unknown` is ambiguous (42725), so without the cast this whole sweep fails
+   * at runtime while every unit test against a fake repo still passes.
+   */
+  readonly findUpcomingForNotice: (
+    noticeDays: number,
+    limit: number,
+  ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
+  readonly findActiveRecurringByExternalUser: (
     externalUserId: string,
   ) => Effect.Effect<Option.Option<Payment>, SqlError.SqlError>;
   readonly findById: (
@@ -74,6 +103,11 @@ export interface PaymentRepo {
   readonly findByExternalUser: (
     externalUserId: string,
   ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
+  /** Payments whose cached contact name/username/email/phone matches the query
+   * (case-insensitive substring) — the operator's search-by-name. */
+  readonly findByContactName: (
+    query: string,
+  ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
   /**
    * All payments, newest first — the operator's default table view. An optional
    * filter narrows by status buckets and/or the derived "cancelling" state.
@@ -83,21 +117,37 @@ export interface PaymentRepo {
     filter?: PaymentListFilter,
   ) => Effect.Effect<readonly Payment[], SqlError.SqlError>;
   /**
-   * Soft-cancel: flag an active payment for lapse at its due date (docs/23).
-   * Keeps `status = active`; returns false if it was not active or already
-   * flagged, so the route can reject with a 422.
+   * Cancel a payment from any non-terminal state. Active/PastDue soft-cancel
+   * (flagged for lapse at the next due tick, status unchanged); a terminal
+   * RenewalFailed flips straight to `cancelled` (no future tick to lapse it).
+   * Returns the stamped `cancelRequestedAt` on success, `None` when already cancelled
+   * or already flagged (the route 422s). The timestamp is the occurrence discriminator:
+   * the queue idemKey and the event key both derive from it, so every layer agrees on
+   * one value and a repeat of the SAME cancellation cannot look like a new one.
    */
   readonly requestCancel: (
     id: string,
-  ) => Effect.Effect<boolean, SqlError.SqlError>;
+  ) => Effect.Effect<Option.Option<Date>, SqlError.SqlError>;
   /** Reverse a pending cancel within the grace window; false if none pending. */
   readonly clearCancelRequest: (
     id: string,
   ) => Effect.Effect<boolean, SqlError.SqlError>;
-  /** At the due date, flip a cancel-pending payment to `cancelled` (idempotent). */
+  /**
+   * At the due date, flip a cancel-pending payment to `cancelled` (idempotent).
+   * Returns false when the row was no longer cancel-pending — a reactivation landed
+   * first — so the caller can skip announcing a lapse that did not happen.
+   */
   readonly markCancelledLapsed: (
     id: string,
-  ) => Effect.Effect<void, SqlError.SqlError>;
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
+  /**
+   * Terminal cancel driven by an upstream (SendPulse) signal at charge time: flip
+   * an Active/PastDue payment straight to `cancelled` (no lapse tick needed).
+   * Returns false if it was already terminal.
+   */
+  readonly cancelUpstream: (
+    id: string,
+  ) => Effect.Effect<Option.Option<Date>, SqlError.SqlError>;
   /** Deferral: push the anchor + re-derived next date on an active payment. */
   readonly defer: (
     id: string,
@@ -109,6 +159,25 @@ export interface PaymentRepo {
     id: string,
     recToken: string,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /** Record the subscription's payment method (0=Card, 1=Crypto) — a method change.
+   * A label the checkout page preselects and events report; it shifts no date. */
+  readonly setMethod: (
+    id: string,
+    method: number,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  /** Drop the stored recurring token, so the scheduler prompts a manual (crypto) renewal
+   * next cycle instead of autocharging a card (docs/28). Shifts no date. */
+  readonly clearToken: (id: string) => Effect.Effect<void, SqlError.SqlError>;
+  /**
+   * Remap every payment of one opaque external user to another (docs/31), returning
+   * how many rows moved. Fails with a unique-violation SqlError when both ids hold an
+   * active recurring payment (the one-active-per-user index) — the caller maps it to a
+   * Conflict. `externalUserId` is carried verbatim (AC9); only the owning id changes.
+   */
+  readonly renameExternalUser: (
+    from: string,
+    to: string,
+  ) => Effect.Effect<number, SqlError.SqlError>;
 }
 
 /**
@@ -123,11 +192,30 @@ export interface PaymentListFilter {
 
 const COLUMNS = columnList(Payment.fields);
 
-const findActiveByExternalUser =
+const findUpcomingForNotice =
+  (sql: SqlClient.SqlClient) => (noticeDays: number, limit: number) =>
+    sql<Payment>`
+      SELECT ${sql.unsafe(COLUMNS)} FROM payments
+      WHERE recurring = true
+        AND status = ${PaymentStatus.Active}
+        AND "cancelRequestedAt" IS NULL
+        AND "firstFailureAt" IS NULL
+        AND "retryAttempt" = 0
+        AND ("nextPaymentDate" AT TIME ZONE 'Europe/Kyiv')::date
+            = ((now() AT TIME ZONE 'Europe/Kyiv')::date + ${noticeDays}::int)
+      ORDER BY "nextPaymentDate"
+      LIMIT ${limit}
+    `;
+
+const findActiveRecurringByExternalUser =
   (sql: SqlClient.SqlClient) => (externalUserId: string) =>
     sql<Payment>`
       SELECT ${sql.unsafe(COLUMNS)} FROM payments
-      WHERE "externalUserId" = ${externalUserId} AND status = ${PaymentStatus.Active}
+      WHERE "externalUserId" = ${externalUserId}
+        AND recurring = true
+        AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+      ORDER BY status, "createdAt" DESC
+      LIMIT 1
     `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
 const findById = (sql: SqlClient.SqlClient) => (id: string) =>
@@ -139,8 +227,8 @@ const findDue = (sql: SqlClient.SqlClient) => (now: Date, limit: number) =>
   sql<Payment>`
     SELECT ${sql.unsafe(COLUMNS)} FROM payments
     WHERE status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+      AND recurring = true
       AND "nextPaymentDate" <= ${now}
-      AND "recurringTokenRef" IS NOT NULL
     ORDER BY "nextPaymentDate"
     LIMIT ${limit}
     FOR UPDATE SKIP LOCKED
@@ -149,12 +237,12 @@ const findDue = (sql: SqlClient.SqlClient) => (now: Date, limit: number) =>
 const insert = (sql: SqlClient.SqlClient) => (input: CreatePayment) =>
   sql<Payment>`
     INSERT INTO payments
-      ("externalUserId", amount, currency, method, period, status,
+      ("externalUserId", amount, currency, method, period, status, recurring,
        "currentPeriodStart", "currentPeriodEnd", "nextPaymentDate",
        "recurringTokenRef", "firstFailureAt", "retryAttempt")
     VALUES
       (${input.externalUserId}, ${input.amount}, ${input.currency}, ${input.method},
-       ${input.period}, ${input.status}, ${input.currentPeriodStart},
+       ${input.period}, ${input.status}, ${input.recurring}, ${input.currentPeriodStart},
        ${input.currentPeriodEnd}, ${input.nextPaymentDate},
        ${input.recurringTokenRef}, ${input.firstFailureAt}, ${input.retryAttempt})
     RETURNING ${sql.unsafe(COLUMNS)}
@@ -211,11 +299,25 @@ const findByExternalUser =
       ORDER BY "createdAt" DESC
     `;
 
+const findByContactName = (sql: SqlClient.SqlClient) => (query: string) => {
+  const like = `%${query}%`;
+  return sql<Payment>`
+    SELECT ${sql.unsafe(COLUMNS)} FROM payments
+    WHERE "externalUserId" IN (
+      SELECT "externalUserId" FROM contacts
+      WHERE name ILIKE ${like} OR username ILIKE ${like}
+         OR email ILIKE ${like} OR phone ILIKE ${like}
+    )
+    ORDER BY "createdAt" DESC
+  `;
+};
+
 /**
- * Turn the filter into disjoint status buckets OR'd together. `active` excludes
- * cancel-pending rows (they render as "cancelling"); `cancelling` is that derived
- * bucket. `sql.or` of equality fragments — not `sql.in`, whose pg quirk drops the
- * `IN` keyword (CLAUDE.md §5).
+ * Turn the filter into disjoint status buckets OR'd together. The `active` and
+ * `past_due` buckets exclude cancel-pending rows (those render under the derived
+ * `cancelling` bucket) — a soft-cancel can now sit on either an Active or a PastDue
+ * payment (docs/24). Raw `IN (…)` — not `sql.in`, whose pg quirk drops the `IN`
+ * keyword (CLAUDE.md §5).
  */
 const listFilterConditions = (
   sql: SqlClient.SqlClient,
@@ -224,14 +326,15 @@ const listFilterConditions = (
   const conditions: Statement.Fragment[] = [];
   for (const status of filter.statuses ?? []) {
     conditions.push(
-      status === PaymentStatus.Active
-        ? sql`(status = ${PaymentStatus.Active} AND "cancelRequestedAt" IS NULL)`
+      status === PaymentStatus.Active || status === PaymentStatus.PastDue
+        ? sql`(status = ${status} AND "cancelRequestedAt" IS NULL)`
         : sql`status = ${status}`,
     );
   }
   if (filter.cancelling === true) {
     conditions.push(
-      sql`(status = ${PaymentStatus.Active} AND "cancelRequestedAt" IS NOT NULL)`,
+      sql`(status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+           AND "cancelRequestedAt" IS NOT NULL)`,
     );
   }
   return conditions;
@@ -251,27 +354,68 @@ const listAll =
     `;
   };
 
+// Cancel is allowed from any non-terminal state: Active and PastDue soft-cancel —
+// they stay put and lapse at the next scheduler tick (chargeOne sees
+// `cancelRequestedAt` and skips the charge). A terminal RenewalFailed has no future
+// tick to lapse it (findDue selects only Active/PastDue), so it flips straight to
+// Cancelled here. An already-Cancelled or already-pending payment is a no-op.
+// Returns the stamped `cancelRequestedAt` rather than a bare boolean: it is the
+// discriminator that makes THIS cancellation distinguishable from the next one, and
+// both the queue key and the event key derive from it. Taking it from `RETURNING`
+// rather than a second `now()` keeps every layer on one value — a wall-clock capture
+// at enqueue would make a double-clicked cancel look like two occurrences.
 const requestCancel = (sql: SqlClient.SqlClient) => (id: string) =>
-  sql<{ readonly id: string }>`
-    UPDATE payments SET "cancelRequestedAt" = now(), "updatedAt" = now()
-    WHERE id = ${id} AND status = ${PaymentStatus.Active}
+  sql<{ readonly cancelRequestedAt: Date }>`
+    UPDATE payments
+    SET "cancelRequestedAt" = now(),
+        status = CASE WHEN status = ${PaymentStatus.RenewalFailed}
+                      THEN ${PaymentStatus.Cancelled} ELSE status END,
+        "updatedAt" = now()
+    WHERE id = ${id}
+      AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue}, ${PaymentStatus.RenewalFailed})
       AND "cancelRequestedAt" IS NULL
-    RETURNING id
-  `.pipe(Effect.map((rows) => rows.length > 0));
+    RETURNING "cancelRequestedAt"
+  `.pipe(Effect.map((rows) => Option.fromNullable(rows[0]?.cancelRequestedAt)));
 
 const clearCancelRequest = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<{ readonly id: string }>`
     UPDATE payments SET "cancelRequestedAt" = NULL, "updatedAt" = now()
-    WHERE id = ${id} AND status = ${PaymentStatus.Active}
+    WHERE id = ${id}
+      AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
       AND "cancelRequestedAt" IS NOT NULL
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
 
+// Returns whether it actually lapsed the row. The caller must not announce a lapse it
+// did not perform: a buyer who reactivates inside the grace window clears
+// `cancelRequestedAt` between the scheduler's enqueue and this handler, so the UPDATE
+// matches nothing — and publishing anyway told SendPulse a live subscriber had lapsed,
+// which tags the contact and makes the pre-charge tag check refuse to bill them.
 const markCancelledLapsed = (sql: SqlClient.SqlClient) => (id: string) =>
-  sql`
+  sql<{ readonly id: string }>`
     UPDATE payments SET status = ${PaymentStatus.Cancelled}, "updatedAt" = now()
     WHERE id = ${id} AND "cancelRequestedAt" IS NOT NULL
-  `.pipe(Effect.asVoid);
+    RETURNING id
+  `.pipe(Effect.map((rows) => rows.length > 0));
+
+// Returns its stamp for the same reason as `requestCancel`: `payment_cancelled` from
+// this path keys on `cancelRequestedAt`, so an upstream cancel and an operator cancel of
+// the SAME cancellation still collapse to one event (the deliberate cross-path dedupe),
+// while a later cancellation after a reactivation is reported as its own.
+const cancelUpstream = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql<{ readonly cancelRequestedAt: Date }>`
+    UPDATE payments
+    SET status = ${PaymentStatus.Cancelled},
+        -- COALESCE, not now(): an operator soft-cancel has already stamped this, and
+        -- overwriting it would emit a SECOND payment_cancelled under a different key
+        -- for what is one cancellation. Keeping the first stamp preserves the
+        -- deliberate collapse between the operator and upstream paths.
+        "cancelRequestedAt" = COALESCE("cancelRequestedAt", now()),
+        "updatedAt" = now()
+    WHERE id = ${id}
+      AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+    RETURNING "cancelRequestedAt"
+  `.pipe(Effect.map((rows) => Option.fromNullable(rows[0]?.cancelRequestedAt)));
 
 const defer =
   (sql: SqlClient.SqlClient) =>
@@ -291,8 +435,29 @@ const updateToken =
       WHERE id = ${id}
     `.pipe(Effect.asVoid);
 
+const setMethod = (sql: SqlClient.SqlClient) => (id: string, method: number) =>
+  sql`
+    UPDATE payments SET method = ${method}, "updatedAt" = now()
+    WHERE id = ${id}
+  `.pipe(Effect.asVoid);
+
+const clearToken = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql`
+    UPDATE payments SET "recurringTokenRef" = NULL, "updatedAt" = now()
+    WHERE id = ${id}
+  `.pipe(Effect.asVoid);
+
+const renameExternalUser =
+  (sql: SqlClient.SqlClient) => (from: string, to: string) =>
+    sql<{ readonly id: string }>`
+      UPDATE payments SET "externalUserId" = ${to}, "updatedAt" = now()
+      WHERE "externalUserId" = ${from}
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length));
+
 export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
-  findActiveByExternalUser: findActiveByExternalUser(sql),
+  findActiveRecurringByExternalUser: findActiveRecurringByExternalUser(sql),
+  findUpcomingForNotice: findUpcomingForNotice(sql),
   findById: findById(sql),
   findDue: findDue(sql),
   insert: insert(sql),
@@ -301,10 +466,15 @@ export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   recordRetry: recordRetry(sql),
   markRenewalFailed: markRenewalFailed(sql),
   findByExternalUser: findByExternalUser(sql),
+  findByContactName: findByContactName(sql),
   listAll: listAll(sql),
   requestCancel: requestCancel(sql),
   clearCancelRequest: clearCancelRequest(sql),
   markCancelledLapsed: markCancelledLapsed(sql),
+  cancelUpstream: cancelUpstream(sql),
   defer: defer(sql),
   updateToken: updateToken(sql),
+  setMethod: setMethod(sql),
+  clearToken: clearToken(sql),
+  renameExternalUser: renameExternalUser(sql),
 });

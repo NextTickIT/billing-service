@@ -104,6 +104,20 @@ export interface SchedulerConfig {
   readonly enabled: boolean;
   readonly intervalSeconds: number;
   readonly batchSize: number;
+  /**
+   * How long a manual-pay checkout link stays live for a token-less (crypto) renewal
+   * prompt (docs/28), measured from the cycle anchor. Reported as `windowExpiresAt` on
+   * the event AND enforced at `/pay`. Default 7d so it spans the retry ladder (re-prompts
+   * at day 0/1/3/5, terminal at day 7) — i.e. the link is valid until the renewal
+   * ultimately fails, not a misleading shorter window.
+   */
+  readonly manualPaymentWindowSeconds: number;
+  /**
+   * Days before a scheduled charge to send an advance notice, e.g. `[3, 1]`. Empty
+   * disables the sweep entirely — and even when set, nothing reaches a customer until
+   * `upcoming_charge` is mapped to a SendPulse flow, so enabling this alone is safe.
+   */
+  readonly upcomingChargeNoticeDays: readonly number[];
 }
 
 /**
@@ -127,6 +141,10 @@ export interface SinksConfig {
   readonly sendpulse: {
     readonly apiUrl: string;
     readonly rateLimitRps: number;
+    /** Contact tags that mean "cancelled/quarantined upstream" — the scheduler
+     * skips + cancels a due payment whose contact carries any of these. Lowercased
+     * for case-insensitive matching. */
+    readonly cancelTags: readonly string[];
   };
 }
 
@@ -144,12 +162,33 @@ export interface AppConfig {
   readonly scheduler: SchedulerConfig;
   readonly worker: WorkerConfig;
   readonly sinks: SinksConfig;
+  /** Contacts-cache sync (migration 0019): mirror each payment contact's SendPulse
+   * profile so the operator payments search resolves a name to contact ids. */
+  readonly contactsSync: {
+    readonly enabled: boolean;
+    readonly intervalSeconds: number;
+    readonly ttlSeconds: number;
+    readonly batchSize: number;
+  };
   /**
    * Shared secret the BFF sends on every proxied request (`BFF_SECRET` env).
    * Empty string disables the gate (development / test). When set, the gate
    * rejects any request to the BFF-proxied surface that lacks the header.
    */
   readonly bffSecret: Redacted.Redacted;
+  /**
+   * Allowed hostnames for a checkout's post-payment redirect (`successUrl`/`failureUrl`,
+   * env `REDIRECT_ALLOWED_HOSTS`, comma-separated). Empty (default) accepts any http(s)
+   * host; set it in production to prevent an open redirect off `bill.nexttick.it`.
+   */
+  readonly redirectAllowedHosts: readonly string[];
+  /**
+   * Base URL of the hosted checkout page (env `CHECKOUT_BASE_URL`, no trailing slash).
+   * Used to build the `checkoutUrl` returned to callers and — now that a crypto
+   * manual-renewal prompt DELIVERS this link to the user — carried on the
+   * `payment_manual_required` event, so it must be correct per environment.
+   */
+  readonly checkoutBaseUrl: string;
 }
 
 /** Queue tuning is its own loader so `loadConfig` stays simple (one concern each). */
@@ -204,10 +243,46 @@ const loadWhitePayConfig = (): WhitePayConfig => ({
   rateLimitRps: Number(process.env['WHITEPAY_RATE_LIMIT_RPS'] ?? '2'),
 });
 
+/** Parse a seconds env var to a finite positive number, else the fallback. Guards a bad
+ * value from producing NaN → an `Invalid Date` window/expiry downstream. */
+const positiveSeconds = (raw: string | undefined, fallback: number): number => {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+
+/** The checkout page base URL (env `CHECKOUT_BASE_URL`), trailing slashes trimmed. */
+const loadCheckoutBaseUrl = (): string =>
+  (process.env['CHECKOUT_BASE_URL'] ?? 'https://bill.nexttick.it').replace(
+    /\/+$/,
+    '',
+  );
+
+/**
+ * Parse `UPCOMING_CHARGE_NOTICE_DAYS` ("3,1") into offsets. Junk entries are dropped
+ * rather than defaulted: a typo silently becoming "0" would notify people the morning
+ * of the charge. Sorted descending so the earliest warning is sent first, and
+ * de-duplicated so "3,3" cannot double-send.
+ */
+const noticeDays = (raw: string | undefined): readonly number[] => {
+  if (raw === undefined || raw.trim().length === 0) return [];
+  const parsed = raw
+    .split(',')
+    .map((part) => Number(part.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  return [...new Set(parsed)].sort((a, b) => b - a);
+};
+
 const loadSchedulerConfig = (): SchedulerConfig => ({
   enabled: process.env['SCHEDULER_ENABLED'] === 'true',
   intervalSeconds: Number(process.env['SCHEDULER_INTERVAL_SECONDS'] ?? '300'),
   batchSize: Number(process.env['SCHEDULER_BATCH_SIZE'] ?? '100'),
+  manualPaymentWindowSeconds: positiveSeconds(
+    process.env['SCHEDULER_MANUAL_PAYMENT_WINDOW_SECONDS'],
+    604800,
+  ),
+  upcomingChargeNoticeDays: noticeDays(
+    process.env['UPCOMING_CHARGE_NOTICE_DAYS'],
+  ),
 });
 
 const loadWayForPayConfig = (): WayForPayConfig => ({
@@ -252,6 +327,24 @@ const loadDatabaseConfig = (): DatabaseConfig => ({
   ssl: loadDbSsl(),
 });
 
+/** Parse the SendPulse "cancelled upstream" tag list (env, comma-separated),
+ * lowercased for case-insensitive matching. Its own loader so `loadConfig` stays
+ * within the complexity budget. */
+const loadSendPulseCancelTags = (): readonly string[] =>
+  (process.env['SENDPULSE_CANCEL_TAGS'] ?? 'карантин,скасували підписку')
+    .split(',')
+    .map((tag) => tag.trim().toLowerCase())
+    .filter((tag) => tag.length > 0);
+
+const loadContactsSyncConfig = (): AppConfig['contactsSync'] => ({
+  enabled: process.env['CONTACTS_SYNC_ENABLED'] !== 'false',
+  intervalSeconds: Number(
+    process.env['CONTACTS_SYNC_INTERVAL_SECONDS'] ?? '900',
+  ),
+  ttlSeconds: Number(process.env['CONTACTS_SYNC_TTL_SECONDS'] ?? '21600'),
+  batchSize: Number(process.env['CONTACTS_SYNC_BATCH_SIZE'] ?? '500'),
+});
+
 export const loadConfig = (): AppConfig => ({
   host: process.env['HOST'] ?? '0.0.0.0',
   port: Number(process.env['PORT'] ?? '3000'),
@@ -270,7 +363,14 @@ export const loadConfig = (): AppConfig => ({
         process.env['SENDPULSE_API_URL'] ??
         'https://api.sendpulse.com/telegram',
       rateLimitRps: Number(process.env['SENDPULSE_RATE_LIMIT_RPS'] ?? '5'),
+      cancelTags: loadSendPulseCancelTags(),
     },
   },
+  contactsSync: loadContactsSyncConfig(),
   bffSecret: Redacted.make(process.env['BFF_SECRET'] ?? ''),
+  redirectAllowedHosts: (process.env['REDIRECT_ALLOWED_HOSTS'] ?? '')
+    .split(',')
+    .map((h) => h.trim())
+    .filter((h) => h.length > 0),
+  checkoutBaseUrl: loadCheckoutBaseUrl(),
 });

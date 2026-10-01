@@ -15,6 +15,7 @@ const sub: Payment = {
   method: 0,
   period: 'P1M',
   status: 0,
+  recurring: true,
   currentPeriodStart: new Date(0),
   currentPeriodEnd: new Date(0),
   nextPaymentDate: new Date(0),
@@ -30,20 +31,26 @@ const die = () => Effect.die('unused');
 const repo = (found: Payment | null): PaymentRepo => ({
   findById: () =>
     Effect.succeed(found === null ? Option.none() : Option.some(found)),
-  findActiveByExternalUser: die,
+  findActiveRecurringByExternalUser: die,
   findDue: die,
+  findUpcomingForNotice: die,
   insert: die,
   extend: die,
   advanceAfterSuccess: die,
   recordRetry: die,
   markRenewalFailed: die,
   findByExternalUser: die,
+  findByContactName: die,
   listAll: die,
   requestCancel: die,
   clearCancelRequest: die,
   markCancelledLapsed: die,
+  cancelUpstream: die,
   defer: die,
   updateToken: die,
+  setMethod: die,
+  clearToken: die,
+  renameExternalUser: die,
 });
 
 const event = (

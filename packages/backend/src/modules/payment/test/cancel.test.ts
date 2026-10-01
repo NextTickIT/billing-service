@@ -8,7 +8,12 @@ import { cancelNotify, paymentCancelled } from '@/modules/payment/cancel.js';
 describe('paymentCancelled', () => {
   test('carries the reason and the external user (docs/07)', () => {
     const event = paymentCancelled(
-      { subscriptionId: 'sub_1', externalUserId: 'sp:1', reason: 'operator' },
+      {
+        subscriptionId: 'sub_1',
+        externalUserId: 'sp:1',
+        cancelRequestedAt: '2026-01-01T00:00:00.000Z',
+        reason: 'operator',
+      },
       new Date(0),
     );
     expect(event.name).toBe('payment_cancelled');
@@ -35,9 +40,36 @@ it.effect('cancelNotify decodes the payload and publishes the event', () =>
       subscriptionId: 'sub_1',
       externalUserId: 'sp:1',
       reason: 'operator',
+      cancelRequestedAt: '2026-01-01T00:00:00.000Z',
     });
 
     expect(pub.events).toHaveLength(1);
     expect(pub.events[0]?.name).toBe('payment_cancelled');
+    // The occurrence, not just the payment — a second cancellation after a
+    // reactivation must not dedupe against this one.
+    expect(pub.events[0]?.id).toBe(
+      'evt_sub_sub_1_cancelled_2026-01-01T00:00:00.000Z',
+    );
+  }),
+);
+
+it.effect('a payload from the previous image still produces its event', () =>
+  Effect.gen(function* () {
+    // The deploy case. A `payment_cancel` enqueued by the old image carries no
+    // `cancelRequestedAt`; a required field would fail decode, die, retry five times
+    // and dead-letter — destroying a real cancellation at deploy, which is exactly the
+    // loss this work exists to stop.
+    const pub = recordingPublish();
+
+    yield* cancelNotify(pub.publish)({
+      subscriptionId: 'sub_legacy',
+      externalUserId: 'sp:1',
+      reason: 'operator',
+    });
+
+    expect(pub.events).toHaveLength(1);
+    // Falls back to the OLD id, so it still dedupes against anything already emitted
+    // for this cancellation by the previous image.
+    expect(pub.events[0]?.id).toBe('evt_sub_sub_legacy_cancelled');
   }),
 );

@@ -177,7 +177,11 @@ it.effect(
           period: 'P1M',
           method: 0,
         }),
-        applier: applierOf({ subscriptionId: 'sub_1', created: false }),
+        applier: applierOf({
+          subscriptionId: 'sub_1',
+          created: false,
+          nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+        }),
         publish: pub.publish,
       })(encodedPayload('k2'));
 
@@ -205,9 +209,16 @@ it.effect('a checkout first charge also emits payment_created', () =>
         subscriptionId: null,
         externalUserId: 'sp:2',
         period: 'P1M',
-        method: 0,
+        // Crypto, not the default card, so the payload assertion below proves the
+        // method is taken from the match instead of assumed.
+        method: 1,
+        recurring: true,
       }),
-      applier: applierOf({ subscriptionId: 'sub_new', created: true }),
+      applier: applierOf({
+        subscriptionId: 'sub_new',
+        created: true,
+        nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+      }),
       publish: pub.publish,
     })(encodedPayload('k7'));
 
@@ -216,7 +227,57 @@ it.effect('a checkout first charge also emits payment_created', () =>
       'initial_payment_succeeded',
     ]);
     expect(pub.events.every((e) => e.aggregateId === 'sub_new')).toBe(true);
+    // The new payment's method decides how it renews (a card autocharges, crypto takes
+    // a manual prompt), so it travels with the amount and the period it applies to.
+    const created = pub.events.find((e) => e.name === 'payment_created');
+    expect(created?.payload).toEqual({
+      amount: 30000,
+      currency: 0,
+      method: 1,
+      period: 'P1M',
+    });
   }),
+);
+
+it.effect(
+  'a one-time checkout emits payment_created + one_time_purchase_succeeded',
+  () =>
+    Effect.gen(function* () {
+      const { repo } = makeFakeRepo();
+      const pub = recordingPublish();
+
+      yield* handleChargeEvent({
+        repo,
+        matcher: matcherOf({
+          matched: true,
+          kind: 'checkout',
+          subscriptionId: null,
+          externalUserId: 'sp:ot',
+          period: 'P1M',
+          method: 0,
+          recurring: false,
+        }),
+        // The applier surfaces a next-charge date, but a one-time purchase never renews —
+        // its success event must null it out.
+        applier: applierOf({
+          subscriptionId: 'pay_ot',
+          created: true,
+          nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+        }),
+        publish: pub.publish,
+      })(encodedPayload('k_ot'));
+
+      // A one-time purchase fires its OWN success event, never initial_payment_succeeded.
+      expect(pub.events.map((e) => e.name)).toEqual([
+        'payment_created',
+        'one_time_purchase_succeeded',
+      ]);
+      expect(pub.events.every((e) => e.aggregateId === 'pay_ot')).toBe(true);
+      expect(
+        (pub.events[1]?.payload as { nextPaymentDate?: unknown })
+          .nextPaymentDate,
+      ).toBeNull();
+    }),
 );
 
 it.effect(
@@ -315,6 +376,7 @@ it('recurringPaymentSucceeded carries the docs/07 required payload fields', () =
       method: 1,
     },
     'sub_9',
+    new Date('2026-02-01T00:00:00Z'),
   );
   expect(event.payload).toEqual({
     amount: 30000,
@@ -322,6 +384,7 @@ it('recurringPaymentSucceeded carries the docs/07 required payload fields', () =
     method: 1,
     period: 'P1M',
     source: 'test',
+    nextPaymentDate: '2026-02-01T00:00:00.000Z',
   });
   expect(event.aggregateId).toBe('sub_9');
 });
@@ -368,7 +431,11 @@ it.effect(
       yield* handleChargeEvent({
         repo,
         matcher: matcherOf(cardChangeMatch(false)),
-        applier: applierOf({ subscriptionId: 'pay_1', created: false }),
+        applier: applierOf({
+          subscriptionId: 'pay_1',
+          created: false,
+          nextPaymentDate: null,
+        }),
         publish: pub.publish,
       })(encodedPayload('cc1'));
 
@@ -389,7 +456,11 @@ it.effect(
       yield* handleChargeEvent({
         repo,
         matcher: matcherOf(cardChangeMatch(true)),
-        applier: applierOf({ subscriptionId: 'pay_1', created: false }),
+        applier: applierOf({
+          subscriptionId: 'pay_1',
+          created: false,
+          nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+        }),
         publish: pub.publish,
       })(encodedPayload('cc2'));
 

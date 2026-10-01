@@ -13,6 +13,31 @@ export interface PurchaseForm {
 }
 
 /**
+ * Never hand out an order with less life left than this. A buyer who opens the link in
+ * its final seconds would otherwise get a form that is already dead at the provider.
+ */
+const MIN_ORDER_TIMEOUT_SECONDS = 300;
+
+/**
+ * How long WayForPay keeps this order payable, in seconds — optional on the hosted
+ * Purchase form (wiki 852102), and NOT part of the signature base (see
+ * `purchaseSignatureBase`), so sending it is purely additive.
+ *
+ * Derived from what is LEFT of our session TTL, never the full TTL, so the two clocks
+ * track each other instead of drifting: a link that still looks payable never hands back
+ * an order the provider already expired. The floor is the one deliberate exception — an
+ * order minted in the link's last moments outlives it by up to five minutes, which is
+ * preferable to handing out a form that is dead on arrival. Sending
+ * nothing (as we used to) inherits WayForPay's own default, which is unrelated to our
+ * TTL — that gap is what leaves a buyer staring at a live Pay button on a dead order.
+ */
+const orderTimeoutFor = (session: CheckoutSession, orderDate: number): number =>
+  Math.max(
+    MIN_ORDER_TIMEOUT_SECONDS,
+    Math.floor(session.expiresAt.getTime() / 1000) - orderDate,
+  );
+
+/**
  * Build a signed WayForPay Purchase (docs/14 flow A). No `regularMode`: we take the
  * recToken from the callback and run our own billing cycle, so we must not let
  * WayForPay create its own managed schedule (the migration gotcha). Amount is sent
@@ -47,6 +72,7 @@ export const buildPurchase = (
       merchantSignature,
       orderReference: session.id,
       orderDate,
+      orderTimeout: orderTimeoutFor(session, orderDate),
       amount,
       currency,
       productName: [productName],

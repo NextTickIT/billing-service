@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 import { SqlClient } from '@effect/sql';
 import { CheckoutSessionKind, PaymentStatus } from '@billing-service/shared';
-import { Duration, Effect } from 'effect';
+import { Duration, Effect, Option } from 'effect';
 
 import type { AppConfig } from '@/config.js';
 import { defaultRetryConfig } from '@/infra/queue/policy.js';
@@ -18,12 +18,14 @@ import {
 } from '@/modules/charge/contracts.js';
 import { makeChargeRepo } from '@/modules/charge/data-access.js';
 import { ChargePipeline } from '@/modules/charge/domain.js';
+import { sinkCancelled } from '@/modules/billing/events.js';
 import { scheduleTick } from '@/modules/billing/scheduler.js';
 import { normalizeCallback } from '@/modules/wayforpay/callback.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import { cancelNotify, lapseNotify } from '@/modules/payment/cancel.js';
 import { PAYMENT_CANCEL, PAYMENT_LAPSE } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
+import { makeContactsRepo } from '@/modules/contacts/data-access.js';
 import type { W4pTransaction } from '@/modules/wayforpay/contracts.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
 import { pollTick } from '@/modules/wayforpay/poller.js';
@@ -343,7 +345,12 @@ const driveCheckout = Effect.gen(function* () {
     currency: 0,
     period: 'P1M',
     kind: CheckoutSessionKind.Checkout,
+    recurring: true,
     paymentId: null,
+    successUrl: null,
+    failureUrl: null,
+    promo: null,
+    idempotencyKey: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -433,6 +440,7 @@ const driveScheduler = Effect.gen(function* () {
     method: 0,
     period: 'P1M',
     status: 0,
+    recurring: true,
     currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
     currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
     nextPaymentDate: new Date('2026-01-01T00:00:00Z'),
@@ -455,8 +463,12 @@ const driveScheduler = Effect.gen(function* () {
       ingest: pipeline.ingest,
       publish: outbox.publish,
       lapse: () => Effect.void,
+      upstreamCancelled: () => Effect.succeed(false),
+      cancelUpstream: () => Effect.void,
+      createManualCheckout: () =>
+        Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10 },
+    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
   yield* runFor(2);
 });
@@ -516,6 +528,7 @@ const driveCancel = Effect.gen(function* () {
     method: 0,
     period: 'P1M',
     status: 0,
+    recurring: true,
     currentPeriodStart: new Date('2029-12-01T00:00:00Z'),
     currentPeriodEnd: new Date('2030-01-01T00:00:00Z'),
     nextPaymentDate: new Date('2030-01-01T00:00:00Z'),
@@ -523,14 +536,18 @@ const driveCancel = Effect.gen(function* () {
     firstFailureAt: null,
     retryAttempt: 0,
   });
-  yield* subs.requestCancel(created.id);
+  // Take the discriminator from the UPDATE that stamped it, exactly as the route does —
+  // a hand-written payload here would not exercise the contract the route relies on.
+  const stamped = yield* subs.requestCancel(created.id);
+  const cancelRequestedAt = Option.getOrThrow(stamped).toISOString();
   yield* enqueue(sql)({
     messageType: PAYMENT_CANCEL,
-    idemKey: `cancel:${created.id}`,
+    idemKey: `cancel:${created.id}:${cancelRequestedAt}`,
     payload: {
       subscriptionId: created.id,
       externalUserId: 'sp:cancel',
       reason: 'operator',
+      cancelRequestedAt,
     },
   });
   yield* runFor(2);
@@ -593,6 +610,7 @@ const driveLapse = Effect.gen(function* () {
     method: 0,
     period: 'P1M',
     status: 0,
+    recurring: true,
     currentPeriodStart: new Date('2026-06-01T00:00:00Z'),
     currentPeriodEnd: new Date('2026-07-01T00:00:00Z'),
     nextPaymentDate: new Date('2026-07-01T00:00:00Z'), // due in the past
@@ -612,14 +630,28 @@ const driveLapse = Effect.gen(function* () {
       },
       ingest: pipeline.ingest,
       publish: outbox.publish,
-      lapse: (sub) =>
-        enqueue(sql)({
+      // Mirrors worker-boot's wiring: keyed on the cancellation being lapsed, never the
+      // tick, so the ticks between enqueue and commit collapse to one message.
+      lapse: (sub) => {
+        const cancelRequestedAt = (
+          sub.cancelRequestedAt ?? new Date(0)
+        ).toISOString();
+        return enqueue(sql)({
           messageType: PAYMENT_LAPSE,
-          idemKey: `lapse:${sub.id}`,
-          payload: { paymentId: sub.id, externalUserId: sub.externalUserId },
-        }).pipe(Effect.asVoid),
+          idemKey: `lapse:${sub.id}:${cancelRequestedAt}`,
+          payload: {
+            paymentId: sub.id,
+            externalUserId: sub.externalUserId,
+            cancelRequestedAt,
+          },
+        }).pipe(Effect.asVoid);
+      },
+      upstreamCancelled: () => Effect.succeed(false),
+      cancelUpstream: () => Effect.void,
+      createManualCheckout: () =>
+        Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10 },
+    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
   yield* runFor(2);
 });
@@ -683,6 +715,7 @@ const driveCardChangeOwed = Effect.gen(function* () {
     method: 0,
     period: 'P1M',
     status: PaymentStatus.PastDue,
+    recurring: true,
     currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
     currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
     nextPaymentDate: new Date('2026-01-08T00:00:00Z'),
@@ -697,7 +730,12 @@ const driveCardChangeOwed = Effect.gen(function* () {
     currency: 0,
     period: 'P1M',
     kind: CheckoutSessionKind.CardChange,
+    recurring: true,
     paymentId: created.id,
+    successUrl: null,
+    failureUrl: null,
+    promo: null,
+    idempotencyKey: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -791,6 +829,7 @@ const driveCardChangeDecline = Effect.gen(function* () {
     method: 0,
     period: 'P1M',
     status: PaymentStatus.PastDue,
+    recurring: true,
     currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
     currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
     nextPaymentDate: new Date('2026-01-08T00:00:00Z'),
@@ -805,7 +844,12 @@ const driveCardChangeDecline = Effect.gen(function* () {
     currency: 0,
     period: 'P1M',
     kind: CheckoutSessionKind.CardChange,
+    recurring: true,
     paymentId: created.id,
+    successUrl: null,
+    failureUrl: null,
+    promo: null,
+    idempotencyKey: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -859,14 +903,621 @@ const cardChangeDeclineLeavesPayment: EffectScenario = {
   },
 };
 
+/**
+ * The revive-in-place guard (docs/28): a crypto manual-renewal prompt flips the payment to
+ * PastDue, so `findActiveRecurringByExternalUser` MUST still return it — otherwise paying
+ * the manual session would insert a duplicate recurring payment instead of extending. This
+ * exercises the real SQL predicate against Postgres.
+ */
+const findExtendableMatchesPastDue: EffectScenario = {
+  name: 'create-or-extend: a PastDue recurring payment is still extendable (revive-in-place)',
+  run: async ({ config }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const subs = makePaymentRepo(sql);
+          const created = yield* subs.insert({
+            externalUserId: 'sp:pastdue',
+            amount: 30000,
+            currency: 0,
+            method: 1, // crypto
+            period: 'P1M',
+            status: PaymentStatus.PastDue,
+            recurring: true,
+            currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
+            currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
+            nextPaymentDate: new Date('2026-01-01T00:00:00Z'),
+            recurringTokenRef: null, // token-less → the manual-prompt path
+            firstFailureAt: new Date('2026-01-01T00:00:00Z'),
+            retryAttempt: 1,
+          });
+          const found =
+            yield* subs.findActiveRecurringByExternalUser('sp:pastdue');
+          assert.equal(
+            Option.isSome(found),
+            true,
+            'a PastDue recurring payment must be extendable (else paying duplicates it)',
+          );
+          assert.equal(
+            Option.isSome(found) ? found.value.id : null,
+            created.id,
+          );
+        }),
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
+/**
+ * Guards against a unique-violation brick (23505): if a user somehow has BOTH an Active and
+ * a PastDue recurring row, the finder must return the ACTIVE one (Active-first ordering), so
+ * create-or-extend revives the already-Active row and never flips the PastDue to a SECOND
+ * Active — which `payments_one_active_per_user` (migration 0014) would reject.
+ */
+const findPrefersActiveWhenBothExist: EffectScenario = {
+  name: 'create-or-extend: prefers the Active recurring over a coexisting PastDue (no 23505 brick)',
+  run: async ({ config }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const subs = makePaymentRepo(sql);
+          // PastDue is inserted FIRST (older createdAt); Active SECOND (newer) — so a naive
+          // "newest first" would wrongly pick the PastDue. Active-first ordering must win.
+          const pastDue = yield* subs.insert({
+            externalUserId: 'sp:both',
+            amount: 30000,
+            currency: 0,
+            method: 1,
+            period: 'P1M',
+            status: PaymentStatus.PastDue,
+            recurring: true,
+            currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
+            currentPeriodEnd: new Date('2026-01-01T00:00:00Z'),
+            nextPaymentDate: new Date('2026-01-01T00:00:00Z'),
+            recurringTokenRef: null,
+            firstFailureAt: new Date('2026-01-01T00:00:00Z'),
+            retryAttempt: 1,
+          });
+          const active = yield* subs.insert({
+            externalUserId: 'sp:both',
+            amount: 30000,
+            currency: 0,
+            method: 0,
+            period: 'P1M',
+            status: PaymentStatus.Active,
+            recurring: true,
+            currentPeriodStart: new Date('2026-02-01T00:00:00Z'),
+            currentPeriodEnd: new Date('2026-03-01T00:00:00Z'),
+            nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+            recurringTokenRef: 'tok',
+            firstFailureAt: null,
+            retryAttempt: 0,
+          });
+          const found =
+            yield* subs.findActiveRecurringByExternalUser('sp:both');
+          assert.equal(
+            Option.isSome(found) ? found.value.id : null,
+            active.id,
+            'must return the Active row, not the (older) PastDue one',
+          );
+          assert.notEqual(
+            Option.isSome(found) ? found.value.id : null,
+            pastDue.id,
+          );
+        }),
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
+/** A PastDue (mid-retry) payment can now be cancelled: requestCancel flags it, and
+ * the next scheduler tick lapses it instead of retrying the charge (no WFP call). */
+const driveCancelPastDue = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makePaymentRepo(sql);
+  const created = yield* subs.insert({
+    externalUserId: 'sp:pd-cancel',
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: PaymentStatus.PastDue,
+    recurring: true,
+    currentPeriodStart: new Date('2026-06-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2026-07-01T00:00:00Z'),
+    nextPaymentDate: new Date('2026-07-01T00:00:00Z'), // due in the past
+    recurringTokenRef: 'tok',
+    firstFailureAt: new Date('2026-07-01T00:00:00Z'),
+    retryAttempt: 1,
+  });
+  const ok = yield* subs.requestCancel(created.id);
+  if (!ok) {
+    return yield* Effect.die('requestCancel must accept a PastDue payment');
+  }
+  const outbox = yield* Outbox;
+  const pipeline = yield* ChargePipeline;
+  yield* scheduleTick(
+    {
+      subs,
+      client: {
+        charge: () => Effect.die('WFP charge must not run on a cancel lapse'),
+      },
+      ingest: pipeline.ingest,
+      publish: outbox.publish,
+      // Mirrors worker-boot's wiring: keyed on the cancellation being lapsed, never the
+      // tick, so the ticks between enqueue and commit collapse to one message.
+      lapse: (sub) => {
+        const cancelRequestedAt = (
+          sub.cancelRequestedAt ?? new Date(0)
+        ).toISOString();
+        return enqueue(sql)({
+          messageType: PAYMENT_LAPSE,
+          idemKey: `lapse:${sub.id}:${cancelRequestedAt}`,
+          payload: {
+            paymentId: sub.id,
+            externalUserId: sub.externalUserId,
+            cancelRequestedAt,
+          },
+        }).pipe(Effect.asVoid);
+      },
+      upstreamCancelled: () => Effect.succeed(false),
+      cancelUpstream: () => Effect.void,
+      createManualCheckout: () =>
+        Effect.die('manual checkout unused: this payment has a token'),
+    },
+    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+  );
+  yield* runFor(2);
+});
+
+const cancelPastDueLapses: EffectScenario = {
+  name: 'support: cancel a PastDue payment — next tick lapses it, no charge',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveCancelPastDue);
+      await assertLapse(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
+/** A terminal RenewalFailed payment has no future scheduler tick to lapse it, so
+ * cancelling it flips straight to `cancelled` inside requestCancel. */
+const driveCancelRenewalFailed = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makePaymentRepo(sql);
+  const created = yield* subs.insert({
+    externalUserId: 'sp:rf-cancel',
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: PaymentStatus.RenewalFailed,
+    recurring: true,
+    currentPeriodStart: new Date('2026-01-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2026-02-01T00:00:00Z'),
+    nextPaymentDate: new Date('2026-02-08T00:00:00Z'),
+    recurringTokenRef: 'tok',
+    firstFailureAt: new Date('2026-02-01T00:00:00Z'),
+    retryAttempt: 5,
+  });
+  const ok = yield* subs.requestCancel(created.id);
+  if (!ok) {
+    return yield* Effect.die(
+      'requestCancel must accept a RenewalFailed payment',
+    );
+  }
+});
+
+const assertRenewalFailedCancelled = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT status::text FROM payments`,
+    '3',
+    'a cancelled RenewalFailed flips straight to cancelled (no lapse tick)',
+  );
+  await eq(
+    query,
+    `SELECT ("cancelRequestedAt" IS NOT NULL)::text FROM payments`,
+    'true',
+    'cancelRequestedAt is stamped',
+  );
+};
+
+const cancelRenewalFailedImmediate: EffectScenario = {
+  name: 'support: cancelling a RenewalFailed payment flips it straight to cancelled',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveCancelRenewalFailed);
+      await assertRenewalFailedCancelled(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
+/** The scheduler's pre-charge check reports the contact cancelled upstream
+ * (SendPulse): cancel locally via the real cancelUpstream repo + emit
+ * payment_cancelled, and NEVER call the WFP charge client (docs/23). */
+const driveCancelUpstream = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makePaymentRepo(sql);
+  const created = yield* subs.insert({
+    externalUserId: 'sp:upstream-cancel',
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: PaymentStatus.Active,
+    recurring: true,
+    currentPeriodStart: new Date('2026-06-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2026-07-01T00:00:00Z'),
+    nextPaymentDate: new Date('2026-07-01T00:00:00Z'), // due
+    recurringTokenRef: 'tok',
+    firstFailureAt: null,
+    retryAttempt: 0,
+  });
+  void created;
+  const outbox = yield* Outbox;
+  yield* scheduleTick(
+    {
+      subs,
+      client: {
+        charge: () =>
+          Effect.die('WFP charge must not run: contact cancelled upstream'),
+      },
+      ingest: (yield* ChargePipeline).ingest,
+      publish: outbox.publish,
+      lapse: () =>
+        Effect.die('lapse unused: upstream cancel uses cancelUpstream'),
+      upstreamCancelled: () => Effect.succeed(true),
+      // Mirrors worker-boot: `Option.match`, not a truthiness test — `Option.none()` is
+      // a truthy object, so `cancelled ? … : …` would publish unconditionally and stop
+      // testing the guard entirely. The stamp is threaded from the repo rather than
+      // hardcoded, so the cross-path dedupe is actually exercised.
+      cancelUpstream: (sub, now) =>
+        subs.cancelUpstream(sub.id).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.void,
+              onSome: (cancelRequestedAt) =>
+                outbox.publish(
+                  sinkCancelled(
+                    sub,
+                    'sendpulse_cancelled',
+                    now,
+                    cancelRequestedAt,
+                  ),
+                ),
+            }),
+          ),
+        ),
+      createManualCheckout: () =>
+        Effect.die('manual checkout unused: this payment has a token'),
+    },
+    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+  );
+  yield* runFor(2);
+});
+
+const assertCancelUpstream = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT status::text FROM payments`,
+    '3',
+    'the upstream-cancelled payment is cancelled locally',
+  );
+  await eq(
+    query,
+    `SELECT ("cancelRequestedAt" IS NOT NULL)::text FROM payments`,
+    'true',
+    'cancelRequestedAt is stamped',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM domain_events WHERE name = 'payment_cancelled'
+       AND payload->>'reason' = 'sendpulse_cancelled'`,
+    '1',
+    'payment_cancelled (reason sendpulse_cancelled) emitted',
+  );
+  await eq(
+    query,
+    `SELECT count(*) FROM charge_fixations`,
+    '0',
+    'no WFP charge was attempted (no fixation)',
+  );
+};
+
+const cancelUpstreamSkipsCharge: EffectScenario = {
+  name: 'scheduler: a contact cancelled upstream is cancelled locally, never charged',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveCancelUpstream);
+      await assertCancelUpstream(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
+/** The operator payments search resolves a typed name/username/phone to contact
+ * ids via the contacts cache (migration 0019): findByContactName joins contacts
+ * and ILIKE-matches. Verifies case-insensitivity, phone-fragment match, and that
+ * a decoy contact is not returned. */
+const driveNameSearch = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const subs = makePaymentRepo(sql);
+  const contacts = makeContactsRepo(sql);
+  const mk = (externalUserId: string) => ({
+    externalUserId,
+    amount: 30000,
+    currency: 0,
+    method: 0,
+    period: 'P1M',
+    status: PaymentStatus.Active,
+    recurring: true,
+    currentPeriodStart: new Date('2026-01-01T00:00:00Z'),
+    currentPeriodEnd: new Date('2026-02-01T00:00:00Z'),
+    nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+    recurringTokenRef: 'tok',
+    firstFailureAt: null,
+    retryAttempt: 0,
+  });
+  yield* subs.insert(mk('sp:match'));
+  yield* subs.insert(mk('sp:decoy'));
+  yield* contacts.upsert('sp:match', {
+    name: 'Олександр Петренко',
+    username: 'alex_p',
+    email: 'a@b.com',
+    phone: '+380631112233',
+  });
+  yield* contacts.upsert('sp:decoy', {
+    name: 'Іван Сидоренко',
+    username: 'ivan',
+    email: '',
+    phone: '',
+  });
+  const only = (rows: readonly { externalUserId: string }[], id: string) =>
+    rows.length === 1 && rows[0]?.externalUserId === id;
+  const bySurname = yield* subs.findByContactName('петренко'); // case-insensitive
+  const byUsername = yield* subs.findByContactName('alex_p');
+  const byPhone = yield* subs.findByContactName('1112233');
+  const byDecoy = yield* subs.findByContactName('сидоренко');
+  if (
+    !only(bySurname, 'sp:match') ||
+    !only(byUsername, 'sp:match') ||
+    !only(byPhone, 'sp:match') ||
+    !only(byDecoy, 'sp:decoy')
+  ) {
+    return yield* Effect.die(
+      'name search did not resolve to the expected contact',
+    );
+  }
+});
+
+const assertNameSearch = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT count(*) FROM contacts`,
+    '2',
+    'both contacts were cached',
+  );
+};
+
+const nameSearchResolvesContact: EffectScenario = {
+  name: 'operator: payments search resolves a typed name/phone to the contact',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveNameSearch);
+      await assertNameSearch(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
+/** Payment factory for the cancelling-filter scenario. */
+const filterPayment = (
+  externalUserId: string,
+  status: PaymentStatus,
+  firstFailureAt: Date | null,
+  retryAttempt: number,
+) => ({
+  externalUserId,
+  amount: 30000,
+  currency: 0,
+  method: 0,
+  period: 'P1M',
+  status,
+  recurring: true,
+  currentPeriodStart: new Date('2026-06-01T00:00:00Z'),
+  currentPeriodEnd: new Date('2026-07-01T00:00:00Z'),
+  nextPaymentDate: new Date('2026-07-01T00:00:00Z'),
+  recurringTokenRef: 'tok',
+  firstFailureAt,
+  retryAttempt,
+});
+
+/** The operator "cancelling" bucket now covers a soft-cancel on an Active OR a
+ * PastDue payment (docs/24); those rows also drop out of the plain PastDue bucket. */
+const driveCancellingFilter = Effect.gen(function* () {
+  const subs = makePaymentRepo(yield* SqlClient.SqlClient);
+  const failedAt = new Date('2026-07-01T00:00:00Z');
+  const a = yield* subs.insert(
+    filterPayment('sp:cf-active', PaymentStatus.Active, null, 0),
+  );
+  const pd = yield* subs.insert(
+    filterPayment('sp:cf-pastdue', PaymentStatus.PastDue, failedAt, 1),
+  );
+  const pd2 = yield* subs.insert(
+    filterPayment('sp:cf-pastdue2', PaymentStatus.PastDue, failedAt, 1),
+  );
+  yield* subs.requestCancel(a.id); // Active soft-cancel
+  yield* subs.requestCancel(pd.id); // PastDue soft-cancel; pd2 stays a plain PastDue
+  const inCancelling = (yield* subs.listAll(500, {
+    statuses: [],
+    cancelling: true,
+  })).map((p) => p.id);
+  const inPastDue = (yield* subs.listAll(500, {
+    statuses: [PaymentStatus.PastDue],
+    cancelling: false,
+  })).map((p) => p.id);
+  const ok =
+    inCancelling.includes(a.id) &&
+    inCancelling.includes(pd.id) &&
+    !inCancelling.includes(pd2.id) &&
+    inPastDue.includes(pd2.id) &&
+    !inPastDue.includes(pd.id);
+  if (!ok) {
+    return yield* Effect.die(
+      'cancelling bucket must include Active+PastDue soft-cancels and exclude them from the PastDue bucket',
+    );
+  }
+});
+
+const assertCancellingFilter = async (
+  query: EffectE2eContext['query'],
+): Promise<void> => {
+  await eq(
+    query,
+    `SELECT count(*) FROM payments WHERE "cancelRequestedAt" IS NOT NULL`,
+    '2',
+    'two soft-cancels seeded (one Active, one PastDue)',
+  );
+};
+
+const cancellingBucketIncludesPastDue: EffectScenario = {
+  name: 'operator: the cancelling bucket includes soft-cancelled PastDue subs',
+  run: async ({ config, query }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(driveCancellingFilter);
+      await assertCancellingFilter(query);
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
+const noticeSweepSelectsUpcoming: EffectScenario = {
+  name: 'notice sweep: the upcoming-charge query runs and picks only the right payments',
+  run: async ({ config }) => {
+    const runtime = makeWorkerRuntime(config);
+    try {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const subs = makePaymentRepo(sql);
+          // Kyiv "3 days from now", mid-morning so the local date is unambiguous.
+          const inDays = (n: number): Date => {
+            const at = new Date();
+            at.setUTCDate(at.getUTCDate() + n);
+            at.setUTCHours(9, 0, 0, 0);
+            return at;
+          };
+          const base = {
+            amount: 5000,
+            currency: 1 as const,
+            method: 0,
+            period: 'P1M',
+            recurring: true,
+            currentPeriodStart: new Date(),
+            currentPeriodEnd: inDays(3),
+            nextPaymentDate: inDays(3),
+            recurringTokenRef: 'tok',
+            firstFailureAt: null,
+            retryAttempt: 0,
+          };
+          const wanted = yield* subs.insert({
+            ...base,
+            externalUserId: 'sp:notice-due',
+            status: PaymentStatus.Active,
+          });
+          // Token-less crypto: must STILL be notified — it gets a manual-pay prompt.
+          const tokenless = yield* subs.insert({
+            ...base,
+            externalUserId: 'sp:notice-crypto',
+            status: PaymentStatus.Active,
+            recurringTokenRef: null,
+          });
+          // Mid-retry: must NOT be notified.
+          yield* subs.insert({
+            ...base,
+            externalUserId: 'sp:notice-retry',
+            status: PaymentStatus.PastDue,
+            firstFailureAt: new Date(),
+            retryAttempt: 1,
+          });
+          // Wrong day: must NOT be notified.
+          yield* subs.insert({
+            ...base,
+            externalUserId: 'sp:notice-later',
+            status: PaymentStatus.Active,
+            nextPaymentDate: inDays(5),
+          });
+
+          // The query itself is the thing under test: a bound parameter reaches
+          // Postgres untyped, and `date + unknown` is ambiguous — a fake repo cannot
+          // catch that, only a real database can.
+          const found = yield* subs.findUpcomingForNotice(3, 100);
+          const ids = found.map((p) => p.id).sort();
+          assert.deepEqual(
+            ids,
+            [wanted.id, tokenless.id].sort(),
+            'exactly the Active payments due in 3 days, token or not, and nothing mid-retry',
+          );
+
+          const none = yield* subs.findUpcomingForNotice(4, 100);
+          assert.equal(
+            none.length,
+            0,
+            'an offset with nothing due returns nothing',
+          );
+        }),
+      );
+    } finally {
+      await runtime.dispose();
+    }
+  },
+};
+
 export const effectScenarios: readonly EffectScenario[] = [
   quarantineAndDeliver,
+  findExtendableMatchesPastDue,
+  findPrefersActiveWhenBothExist,
   bindReprocesses,
   pollerIngestsJournal,
   checkoutCreatesPayment,
   schedulerChargesDue,
   cancelPayment,
   softCancelLapses,
+  cancelPastDueLapses,
+  cancelRenewalFailedImmediate,
+  cancelUpstreamSkipsCharge,
+  cancellingBucketIncludesPastDue,
+  nameSearchResolvesContact,
   cardChangeOwedRevives,
   cardChangeDeclineLeavesPayment,
+  noticeSweepSelectsUpcoming,
 ];
