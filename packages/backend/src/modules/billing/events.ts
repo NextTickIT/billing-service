@@ -107,6 +107,12 @@ export interface ManualCheckout {
   readonly windowExpiresAt: Date;
 }
 
+/** Where a manual prompt sits on the retry ladder: which attempt, and the next ladder date. */
+export interface ManualLadder {
+  readonly attempt: number;
+  readonly nextRetryDate: Date;
+}
+
 /**
  * A due recurring charge with no usable token (WhitePay crypto) → prompt the user to pay
  * again at our internal checkout (docs/28). The id keys on the due date so an at-least-once
@@ -116,6 +122,7 @@ export const paymentManualRequired = (
   sub: Payment,
   checkout: ManualCheckout,
   now: Date,
+  ladder: ManualLadder,
 ): PaymentManualRequiredEvent => ({
   id: `evt_sub_${sub.id}_manual_${sub.nextPaymentDate.getTime().toString()}`,
   name: 'payment_manual_required',
@@ -131,6 +138,8 @@ export const paymentManualRequired = (
     checkoutUrl: checkout.checkoutUrl,
     dueDate: sub.nextPaymentDate.toISOString(),
     windowExpiresAt: checkout.windowExpiresAt.toISOString(),
+    attempt: ladder.attempt,
+    nextRetryDate: ladder.nextRetryDate.toISOString(),
   },
 });
 

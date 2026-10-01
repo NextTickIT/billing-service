@@ -232,11 +232,14 @@ const promptManual = (deps: SchedulerDeps, sub: Payment, now: Date) =>
       .pipe(
         Effect.catchTag('ForeignManualCheckout', () => Effect.succeed(null)),
       );
+    // Non-null here (the final case returned above) and the date recordRetry is about to
+    // write, so the prompt names the same next date the ladder will actually use.
     const nextPaymentDate = plan.nextPaymentDate;
+    const ladder = { attempt: plan.attempt, nextRetryDate: nextPaymentDate };
     yield* whileUnmoved(deps, sub, (locked) =>
       (checkout === null
         ? Effect.void
-        : deps.publish(paymentManualRequired(locked, checkout, now))
+        : deps.publish(paymentManualRequired(locked, checkout, now, ladder))
       ).pipe(
         Effect.andThen(
           deps.subs.recordRetry(locked.id, {

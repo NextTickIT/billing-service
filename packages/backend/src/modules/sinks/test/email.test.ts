@@ -174,6 +174,26 @@ describe('renderReceipt', () => {
   });
 });
 
+describe('renderReceipt on a manual-pay prompt', () => {
+  it('calls the next ladder date the charge date, not a charge attempt', () => {
+    // A crypto subscriber pays by hand: the next ladder date is the charge date they
+    // are paying towards, so the card-retry wording would mislead.
+    const r = renderReceipt(
+      event({
+        name: 'payment_manual_required',
+        payload: {
+          amount: 5000,
+          currency: 1,
+          nextRetryDate: '2026-10-18T14:53:17.000Z',
+        },
+      }),
+    );
+    expect(r?.html).toContain('Дата списания');
+    expect(r?.html).toContain('18.10.2026');
+    expect(r?.html).not.toContain('Следующая попытка');
+  });
+});
+
 describe('email connector', () => {
   it('sends the receipt, base64-encoded, after minting a token', async () => {
     const calls: Recorded[] = [];

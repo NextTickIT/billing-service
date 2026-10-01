@@ -222,6 +222,22 @@ export const PaymentManualRequiredEvent = Schema.Struct({
     checkoutUrl: Schema.String,
     dueDate: Schema.String,
     windowExpiresAt: Schema.String,
+    /**
+     * Which prompt in the retry ladder this is, same meaning as
+     * `charge_retry_failed.attempt`. A token-less renewal re-prompts on each scheduled
+     * date, so without it every prompt looks identical to a flow — it cannot escalate
+     * the wording as the ladder runs out, and the customer gets the same message two or
+     * three times with no sign the last one is the last.
+     */
+    attempt: Schema.Int,
+    /**
+     * The next date on the ladder, same meaning as `charge_retry_failed.nextRetryDate`:
+     * when the customer is reminded again, or, on the last reminder, the day the renewal
+     * is marked failed. `dueDate` is THIS prompt and `windowExpiresAt` is how long the
+     * link stays live; neither says when the customer will be asked again, so without
+     * this a flow could not say "we will remind you on the 5th".
+     */
+    nextRetryDate: Schema.String,
   }),
 });
 

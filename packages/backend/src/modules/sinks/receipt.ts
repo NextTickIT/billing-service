@@ -209,7 +209,10 @@ interface Row {
 }
 
 /** The detail rows, built only from values the event actually carries. */
-const rowsFor = (payload: Record<string, unknown>): readonly Row[] => {
+const rowsFor = (
+  name: string,
+  payload: Record<string, unknown>,
+): readonly Row[] => {
   const fmt = formattedFields(payload);
   const out: Row[] = [];
   const amount = money(payload['amount'], payload['currency']);
@@ -225,7 +228,12 @@ const rowsFor = (payload: Record<string, unknown>): readonly Row[] => {
     });
   if (typeof fmt['nextRetryDate_formatted'] === 'string')
     out.push({
-      label: 'Следующая попытка',
+      // On a manual prompt the next ladder date is the charge date the customer is
+      // paying towards, not a card retry — "attempt" is our word, not theirs.
+      label:
+        name === 'payment_manual_required'
+          ? 'Дата списания'
+          : 'Следующая попытка',
       value: fmt['nextRetryDate_formatted'],
     });
   return out;
@@ -277,7 +285,7 @@ export const renderReceipt = (event: StoredEvent): RenderedEmail | null => {
   const copy = COPY[event.name];
   if (copy === undefined) return null;
   const payload: Record<string, unknown> = event.payload;
-  const rows = rowsFor(payload);
+  const rows = rowsFor(event.name, payload);
   const action = actionUrlFor(copy, payload);
 
   const html = `<!doctype html>

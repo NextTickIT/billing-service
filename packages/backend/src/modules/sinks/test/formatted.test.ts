@@ -112,7 +112,7 @@ describe('drift guard', () => {
   // a new event shipping to SendPulse without its formatted twin.
   const DOCUMENTED_DATE_FIELDS = [
     'nextPaymentDate', // initial/recurring/one_time succeeded
-    'nextRetryDate', // charge_retry_failed
+    'nextRetryDate', // charge_retry_failed, payment_manual_required
     'dueDate', // payment_manual_required
     'windowExpiresAt', // payment_manual_required
     'newPeriodEnd', // payment_deferred
