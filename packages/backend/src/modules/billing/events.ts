@@ -128,6 +128,7 @@ export const paymentManualRequired = (
   sub: Payment,
   checkout: ManualCheckout,
   now: Date,
+  attempt: number,
 ): PaymentManualRequiredEvent => ({
   id: `evt_sub_${sub.id}_manual_${sub.nextPaymentDate.getTime().toString()}`,
   name: 'payment_manual_required',
@@ -143,6 +144,7 @@ export const paymentManualRequired = (
     checkoutUrl: checkout.checkoutUrl,
     dueDate: sub.nextPaymentDate.toISOString(),
     windowExpiresAt: checkout.windowExpiresAt.toISOString(),
+    attempt,
   },
 });
 

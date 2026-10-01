@@ -363,7 +363,12 @@ it.effect(
       expect(
         (calls.published[0]?.payload as { checkoutUrl?: unknown }).checkoutUrl,
       ).toContain('/checkout/');
-      // It rides the SAME retry ladder — first prompt schedules the next attempt.
+      // It rides the SAME retry ladder — first prompt schedules the next attempt, and
+      // the event says which prompt this is, so a flow can word the last one
+      // differently from the first. Matches the number recordRetry stores.
+      expect(
+        (calls.published[0]?.payload as { attempt?: unknown }).attempt,
+      ).toBe(1);
       expect(calls.retry?.state.retryAttempt).toBe(1);
       // No autocharge / advance happened.
       expect(calls.ingested).toHaveLength(0);
@@ -394,4 +399,30 @@ it.effect(
       // The giving-up tick must not mint a link or prompt again.
       expect(calls.manualCheckout).toHaveLength(0);
     }),
+);
+
+it.effect('a later manual prompt carries its own attempt number', () =>
+  Effect.gen(function* () {
+    // Second time around the ladder: the customer ignored prompt 1. Without the attempt
+    // number every prompt is byte-identical to the flow, so it cannot escalate and the
+    // customer sees the same message again with no sign the window is closing.
+    const sub: Payment = {
+      ...baseSub,
+      recurringTokenRef: null,
+      retryAttempt: 1,
+      firstFailureAt: new Date('2026-01-01T00:00:00Z'),
+    };
+    const { deps, calls } = makeDeps(sub, {
+      transactionStatus: 'Approved',
+      createdDate: '1700000000',
+    });
+
+    yield* scheduleTick(deps, config);
+
+    expect(calls.published[0]?.name).toBe('payment_manual_required');
+    expect((calls.published[0]?.payload as { attempt?: unknown }).attempt).toBe(
+      2,
+    );
+    expect(calls.retry?.state.retryAttempt).toBe(2);
+  }),
 );
