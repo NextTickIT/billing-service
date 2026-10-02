@@ -50,6 +50,9 @@ const processOne = (
     const exit = yield* Effect.exit(handler(message.payload));
     const nowMillis = yield* Clock.currentTimeMillis;
     const failed = Exit.isFailure(exit);
+    const failure = Exit.isFailure(exit)
+      ? describeError(Cause.squash(exit.cause))
+      : null;
     const outcome = decideOutcome(
       { failed, attemptCount: message.attemptCount },
       nowMillis,
@@ -62,9 +65,27 @@ const processOne = (
       startedAt,
       now: new Date(nowMillis),
       result: null,
-      error: failed ? describeError(Cause.squash(exit.cause)) : null,
+      error: failure,
       outcome,
     });
+    // A dead letter is work that will NEVER be retried again: for a `deliver_event` that
+    // means a domain event reached no sink, and until now the only trace was a row in a
+    // table nothing reads. Six such rows sat in production for two months with nobody
+    // told. Logged at ERROR with a stable marker so the watchdog can tail for it, rather
+    // than at warn among the ordinary retry noise.
+    if (outcome.status === 'fail') {
+      yield* Effect.logError(
+        'DEAD_LETTER queue message exhausted its retries',
+      ).pipe(
+        Effect.annotateLogs({
+          messageId: message.id,
+          messageType: message.messageType,
+          idemKey: message.idemKey,
+          attempts: message.attemptCount,
+          error: failure,
+        }),
+      );
+    }
   });
 
 const tick = (deps: DispatcherDeps, options: DispatcherOptions) =>
