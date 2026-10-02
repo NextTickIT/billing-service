@@ -21,6 +21,9 @@ export interface SinksLiveConfig {
     readonly apiUrl: string;
     readonly rateLimitRps: number;
   };
+  readonly crm: {
+    readonly rateLimitRps: number;
+  };
 }
 
 interface CacheState {
@@ -36,10 +39,14 @@ export const SinksLive = (
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const rateLimiter = yield* makeRateLimiter(config.sendpulse.rateLimitRps);
+      // Its own limiter, built once here with the others: a shared one would let a CRM
+      // backlog delay the customer-facing SendPulse deliveries.
+      const crmRateLimiter = yield* makeRateLimiter(config.crm.rateLimitRps);
       const repo = makeSinksRepo(sql);
       const deps: ConnectorDeps = {
         fetch: (url, init) => globalThis.fetch(url, init),
         rateLimiter,
+        crmRateLimiter,
         apiUrl: config.sendpulse.apiUrl,
       };
       const cache = yield* Ref.make<CacheState | null>(null);

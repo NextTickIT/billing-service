@@ -129,6 +129,14 @@ export default {
     noMatch: 'No matching records.',
   },
   sinks: {
+    crm: {
+      title: 'CRM feed',
+      about:
+        'A second, independent sink: every event is POSTed to the CRM in snake_case, alongside the SendPulse flows. Disabling it does not affect customer messages.',
+      url: 'Ingest endpoint',
+      urlEnter: 'https://crm.example/api/v1/billing-events',
+      urlMissing: 'Enabled with no endpoint — nothing will be sent.',
+    },
     title: 'Sinks',
     enabled: 'Enabled',
     on: 'On',

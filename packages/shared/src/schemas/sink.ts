@@ -11,6 +11,8 @@ import { EventName } from '@/schemas/event.js';
  */
 export enum SinkKind {
   SendPulse = 0,
+  /** The CRM's own event feed — one source of truth for what billing did (docs/21). */
+  Crm = 1,
 }
 
 export const SinkKindSchema = Schema.Enums(SinkKind);
@@ -22,10 +24,12 @@ export const SinkKindSchema = Schema.Enums(SinkKind);
  */
 export const SinkKindCode: Readonly<Record<SinkKind, string>> = {
   [SinkKind.SendPulse]: 'sendpulse',
+  [SinkKind.Crm]: 'crm',
 };
 
 const CodeToKind: Readonly<Record<string, SinkKind>> = {
   sendpulse: SinkKind.SendPulse,
+  crm: SinkKind.Crm,
 };
 
 /** Resolve a route/delivery code back to its numeric kind; undefined if unknown. */
@@ -80,6 +84,27 @@ export const SendPulseConfig = Schema.Struct({
 
 export type SendPulseConfig = Schema.Schema.Type<typeof SendPulseConfig>;
 
+/**
+ * CRM config: just where to POST. No flow map — unlike SendPulse, which runs a chosen
+ * automation per event and so needs an explicit opt-in per name, the CRM is the system of
+ * record and wants EVERY event. Making it opt-in per event would mean an event we add
+ * later silently never reaches the one consumer whose job is to have all of them.
+ *
+ * `url` is the full ingest endpoint. Empty disables delivery even if the row is enabled —
+ * the seeded row has no URL, so turning the sink on before pointing it somewhere cannot
+ * start dead-lettering every event.
+ */
+export const CrmConfig = Schema.Struct({
+  url: Schema.String,
+});
+
+export type CrmConfig = Schema.Schema.Type<typeof CrmConfig>;
+
+/** Either sink's config, for the one update body the `:code` route accepts. */
+export const SinkConfig = Schema.Union(SendPulseConfig, CrmConfig);
+
+export type SinkConfig = Schema.Schema.Type<typeof SinkConfig>;
+
 /** The persisted sink entity (DU on `kind`). `auth`/`config` are jsonb at rest. */
 export const SendPulseSink = Schema.Struct({
   kind: Schema.Literal(SinkKind.SendPulse),
@@ -91,7 +116,17 @@ export const SendPulseSink = Schema.Struct({
 
 export type SendPulseSink = Schema.Schema.Type<typeof SendPulseSink>;
 
-export const Sink = Schema.Union(SendPulseSink);
+export const CrmSink = Schema.Struct({
+  kind: Schema.Literal(SinkKind.Crm),
+  enabled: Schema.Boolean,
+  auth: SinkAuth,
+  config: CrmConfig,
+  updatedAt: Schema.Date,
+});
+
+export type CrmSink = Schema.Schema.Type<typeof CrmSink>;
+
+export const Sink = Schema.Union(SendPulseSink, CrmSink);
 
 export type Sink = Schema.Schema.Type<typeof Sink>;
 
@@ -104,13 +139,31 @@ export const SendPulseSinkView = Schema.Struct({
   updatedAt: Schema.Date,
 });
 
-export const SinkView = Schema.Union(SendPulseSinkView);
+export type SendPulseSinkView = Schema.Schema.Type<typeof SendPulseSinkView>;
+
+export const CrmSinkView = Schema.Struct({
+  kind: Schema.Literal(SinkKind.Crm),
+  enabled: Schema.Boolean,
+  auth: SinkAuthView,
+  config: CrmConfig,
+  updatedAt: Schema.Date,
+});
+
+export type CrmSinkView = Schema.Schema.Type<typeof CrmSinkView>;
+
+export const SinkView = Schema.Union(SendPulseSinkView, CrmSinkView);
 
 export type SinkView = Schema.Schema.Type<typeof SinkView>;
 
 /**
  * Operator update (write). `auth.token` is optional — absent/empty keeps the stored
- * token (write-only). One kind today, so a flat struct; widen to a DU per new kind.
+ * token (write-only).
+ *
+ * `config` is the UNION of the per-kind shapes rather than a discriminated union: the
+ * kind comes from the `:code` path segment, not the body, so there is no discriminant
+ * here to narrow on. The domain therefore checks the supplied config against the stored
+ * sink's kind and rejects a mismatch — a `flows` map must not land on the CRM row, where
+ * nothing would read it and the operator would believe they had configured something.
  */
 export const UpdateSinkRequest = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean),
@@ -120,7 +173,7 @@ export const UpdateSinkRequest = Schema.Struct({
       token: Schema.optional(Schema.String),
     }),
   ),
-  config: Schema.optional(SendPulseConfig),
+  config: Schema.optional(SinkConfig),
 });
 
 export type UpdateSinkRequest = Schema.Schema.Type<typeof UpdateSinkRequest>;

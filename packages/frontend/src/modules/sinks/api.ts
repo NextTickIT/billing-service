@@ -12,8 +12,12 @@ export async function getSinks(): Promise<SinkView[]> {
   return res.json() as Promise<SinkView[]>;
 }
 
-export async function updateSink(body: UpdateSinkRequest): Promise<SinkView> {
-  const res = await apiFetch('/api/sinks/sendpulse', {
+/** `code` is the sink's stable path segment: 'sendpulse' or 'crm'. */
+export async function updateSink(
+  code: string,
+  body: UpdateSinkRequest,
+): Promise<SinkView> {
+  const res = await apiFetch(`/api/sinks/${code}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -22,6 +26,7 @@ export async function updateSink(body: UpdateSinkRequest): Promise<SinkView> {
   return res.json() as Promise<SinkView>;
 }
 
+/** Flows are a SendPulse concept; the CRM has none, so this stays hard-coded. */
 export async function getSinkFlows(): Promise<SinkFlow[]> {
   const res = await apiFetch('/api/sinks/sendpulse/flows');
   if (!res.ok) throw new Error(`HTTP ${String(res.status)}`);
