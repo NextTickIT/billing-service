@@ -103,6 +103,101 @@ export const runFor = (
     );
   });
 
+/**
+ * Upper bound on a drain, not an expected duration. Nothing should come close; if a drain
+ * hits this, the queue is genuinely stuck and the test says so rather than asserting
+ * against a half-processed database.
+ */
+const DRAIN_DEADLINE_SECONDS = 30;
+
+/**
+ * Is there any work the dispatcher could pick up right now?
+ *
+ * `retry` with a FUTURE `retryAt` does not count: a scenario that deliberately leaves a
+ * failed delivery in backoff is quiescent, and waiting for it would hang until the
+ * deadline. Only work that is claimable now keeps the drain going.
+ */
+const claimableNow = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ readonly count: number }>`
+    SELECT count(*)::int AS count FROM messages
+    WHERE status IN ('pending', 'in_progress')
+       OR (status = 'retry' AND "retryAt" <= now())
+  `;
+  return rows[0]?.count ?? 1;
+});
+
+/** What is still outstanding, for a deadline failure that names the problem. */
+const outstanding = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    readonly messageType: string;
+    readonly status: string;
+    readonly count: number;
+  }>`
+    SELECT "messageType", status, count(*)::int AS count FROM messages
+    WHERE status IN ('pending', 'in_progress')
+       OR (status = 'retry' AND "retryAt" <= now())
+    GROUP BY "messageType", status
+  `;
+  return rows
+    .map((r) => `${r.messageType}/${r.status}=${r.count.toString()}`)
+    .join(' ');
+});
+
+/**
+ * Wait until the queue has nothing claimable, twice in a row.
+ *
+ * Two consecutive readings rather than one: a handler enqueues its follow-up in the same
+ * transaction that completes it, so a single zero is almost certainly real — but the
+ * second reading costs 50ms and removes the "almost".
+ */
+const untilDrained = Effect.gen(function* () {
+  let consecutiveZeros = 0;
+  while (consecutiveZeros < 2) {
+    yield* Effect.sleep(Duration.millis(50));
+    consecutiveZeros = (yield* claimableNow) === 0 ? consecutiveZeros + 1 : 0;
+  }
+});
+
+/**
+ * Run the dispatch loop until the queue is drained, then stop (the loop is
+ * `Effect<never>`).
+ *
+ * This used to race the loop against a fixed `Effect.sleep(2)`. That is a global
+ * wall-clock budget, not a completion condition: the loop polls every 50ms and each
+ * scenario shells out to `psql`, so on a loaded machine two seconds stopped the dispatcher
+ * mid-queue and the assertions then read a half-processed database. Three consecutive runs
+ * failed in three different places. Draining on the queue's own state makes a green run
+ * mean the work finished, and makes a red run a real failure rather than a slow machine.
+ */
+export const drain = Effect.gen(function* () {
+  const queue = yield* Queue;
+  const result = yield* Effect.race(
+    queue.run({
+      workerId: 'e2e',
+      pollIntervalMillis: 50,
+      batchSize: 10,
+      visibilityTimeoutMillis: 300_000,
+      retry: defaultRetryConfig,
+    }),
+    Effect.race(
+      untilDrained.pipe(Effect.as('drained' as const)),
+      Effect.sleep(Duration.seconds(DRAIN_DEADLINE_SECONDS)).pipe(
+        Effect.as('deadline' as const),
+      ),
+    ),
+  );
+  if (result === 'deadline') {
+    const left = yield* outstanding;
+    return yield* Effect.die(
+      new Error(
+        `queue did not drain within ${DRAIN_DEADLINE_SECONDS.toString()}s; outstanding: ${left}`,
+      ),
+    );
+  }
+});
+
 /** A retry policy whose first backoff outlasts any `runFor`: a failed attempt stays in
  * `retry` so the scenario can inspect what it left behind before letting it re-run. */
 export const holdRetries: RetryConfig = {

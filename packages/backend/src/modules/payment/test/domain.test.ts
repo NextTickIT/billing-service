@@ -41,6 +41,7 @@ const activePayment: Payment = {
   firstFailureAt: null,
   retryAttempt: 0,
   cancelRequestedAt: null,
+  metadata: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
 };
@@ -58,6 +59,7 @@ const makeFakeRepo = (existing: Payment | null) => {
           ...input,
           id: 'sub_new',
           cancelRequestedAt: null,
+          metadata: null,
           createdAt: new Date(0),
           updatedAt: new Date(0),
         };
@@ -290,6 +292,11 @@ it.effect(
         prolonged: true,
         reactivated: false,
         nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+        // The window this charge bought is the stacked one written below.
+        periodStart: new Date('2026-01-01T00:00:00Z'),
+        periodEnd: new Date('2026-03-01T00:00:00Z'),
+        // Nothing declared on this charge: the row's own (none) stands.
+        metadata: null,
       });
       expect(fake.getInserted()).toBe(null);
       expect(fake.getExtended()).toEqual({
@@ -451,7 +458,14 @@ it.effect(
         () => false,
       );
 
-      expect(next).toEqual(Option.some(new Date('2026-03-01T00:00:00Z')));
+      expect(next).toEqual(
+        Option.some({
+          currentPeriodStart: new Date('2026-02-01T00:00:00Z'),
+          currentPeriodEnd: new Date('2026-03-01T00:00:00Z'),
+          nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+          metadata: null,
+        }),
+      );
       expect(refused).toEqual(Option.none());
       expect(advanced).toEqual([
         {
@@ -501,6 +515,10 @@ it.effect(
         prolonged: false,
         introOnLive: true,
         nextPaymentDate: paidAhead.nextPaymentDate,
+        // Nothing was written, so the row's own window and declaration are reported.
+        periodStart: paidAhead.currentPeriodStart,
+        periodEnd: paidAhead.currentPeriodEnd,
+        metadata: null,
       });
       expect(fake.getExtended()).toBe(null);
       expect(fake.getInserted()).toBe(null);

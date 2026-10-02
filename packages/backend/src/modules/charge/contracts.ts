@@ -124,6 +124,10 @@ export type MatchResult =
       /** A multi-cycle manual renewal: how many `period`s at `amount` the charge bought.
        * Null or absent for any other charge. */
       readonly cycles?: number | null;
+      /** Opaque caller declaration to stamp on the payment and echo on its events. A
+       * `checkout` match carries the session's; a `recurring` match carries the payment's
+       * own (the last one declared), so a renewal reports intent rather than dropping it. */
+      readonly metadata?: Record<string, unknown> | null | undefined;
     }
   | { readonly matched: false };
 
@@ -164,6 +168,25 @@ export interface SettledCharge {
   /** The payment's next scheduled charge date after applying this charge, or null when
    * there is none (a one-time purchase, or a reconciliation with no known schedule). */
   readonly nextPaymentDate: Date | null;
+  /** The window this charge actually bought — what the succeeded event reports as the
+   * prolongation. Null where the applier establishes no window (a card-change verify). */
+  readonly periodStart: Date | null;
+  readonly periodEnd: Date | null;
+  /** The declaration the payment carries AFTER this charge: the one just supplied, or the
+   * stored one a renewal left standing. Null when none was ever declared. */
+  readonly metadata: Record<string, unknown> | null;
+}
+
+/**
+ * What a succeeded-payment event reports beyond the charge itself: the schedule and the
+ * window the money bought, plus the caller's declaration. Grouped so adding a fact to the
+ * success contract touches one type rather than four builder signatures.
+ */
+export interface Prolongation {
+  readonly nextPaymentDate: Date | null;
+  readonly periodStart: Date | null;
+  readonly periodEnd: Date | null;
+  readonly metadata: Record<string, unknown> | null;
 }
 
 /**

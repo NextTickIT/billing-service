@@ -3,6 +3,7 @@ import { Schema } from 'effect';
 import { isNonZeroPeriod, isValidPeriod, RecurringPeriod } from '@/period.js';
 import {
   CurrencySchema,
+  Metadata,
   PaymentMethod,
   PaymentMethodSchema,
 } from '@/schemas/payment.js';
@@ -171,6 +172,9 @@ export const CheckoutSession = Schema.Struct({
   // after they message the bot, and no API can create it), so the id billing holds is
   // unreachable at exactly the moment they have paid. Email needs only an address.
   email: Schema.String,
+  // Opaque caller passthrough (see `Metadata`): stamped onto the payment when this
+  // session is paid and echoed on the events that follow. Null when the caller sent none.
+  metadata: Schema.NullOr(Metadata),
   expiresAt: Schema.Date,
   createdAt: Schema.Date,
   // Renewal terms when they differ from the first charge; null renews at the top-level
@@ -286,9 +290,13 @@ export const sessionIdOfRef = (ref: string): string =>
  * at creation (Card unless the create request said otherwise); optional so a session may
  * still be inserted without a preselected method (it is then chosen on the page). */
 export const NewCheckoutSession = CheckoutSession.pipe(
-  Schema.omit('method', 'status', 'createdAt'),
+  Schema.omit('method', 'status', 'createdAt', 'metadata'),
   Schema.extend(
-    Schema.Struct({ method: Schema.optional(PaymentMethodSchema) }),
+    Schema.Struct({
+      method: Schema.optional(PaymentMethodSchema),
+      // Optional AND nullable on insert: omitted or null both store NULL.
+      metadata: Schema.optional(Schema.NullOr(Metadata)),
+    }),
   ),
 );
 
@@ -390,6 +398,11 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
           Schema.maxItems(10),
         ),
       ),
+      // Opaque passthrough. ABSENT and `{}` are different instructions: absent leaves
+      // whatever the payment already carries, `{}` is a supplied value and replaces it.
+      // A client that defaults this to `{}` therefore wipes the stored intent — send
+      // nothing, not an empty object, when you mean "unchanged".
+      metadata: Schema.optional(Metadata),
     }),
   ),
   Schema.filter((v) => brokenRule(v, v.recurring) ?? true),

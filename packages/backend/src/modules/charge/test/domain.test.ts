@@ -129,15 +129,24 @@ const matcherOf =
   () =>
     Effect.succeed(result);
 
-/** A settled applier result; `prolonged` defaults to false. */
-type Settled = Omit<SettledCharge, 'prolonged'> & {
-  readonly prolonged?: boolean;
-};
+/** The fields a settled result defaults: not prolonged, and no window or declaration. */
+type Defaulted = 'prolonged' | 'periodStart' | 'periodEnd' | 'metadata';
+
+/** A settled applier result; the `Defaulted` fields may be omitted. */
+type Settled = Omit<SettledCharge, Defaulted> &
+  Partial<Pick<SettledCharge, Defaulted>>;
+
+const settledDefaults = {
+  prolonged: false,
+  periodStart: null,
+  periodEnd: null,
+  metadata: null,
+} as const;
 
 const applierOf =
   (result: Settled): ChargeApplier =>
   () =>
-    Effect.succeed({ prolonged: false, ...result });
+    Effect.succeed({ ...settledDefaults, ...result });
 
 /** Applier for paths where no match occurs, so it must never be called. */
 const noApplier: ChargeApplier = () =>
@@ -198,6 +207,9 @@ it.effect(
           subscriptionId: 'sub_1',
           created: false,
           nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+          periodStart: new Date('2026-01-01T00:00:00Z'),
+          periodEnd: new Date('2026-02-01T00:00:00Z'),
+          metadata: null,
         }),
         publish: pub.publish,
       })(encodedPayload('k2'));
@@ -235,6 +247,9 @@ it.effect('a checkout first charge also emits payment_created', () =>
         subscriptionId: 'sub_new',
         created: true,
         nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+        periodStart: new Date('2026-01-01T00:00:00Z'),
+        periodEnd: new Date('2026-02-01T00:00:00Z'),
+        metadata: null,
       }),
       publish: pub.publish,
     })(encodedPayload('k7'));
@@ -254,6 +269,9 @@ it.effect('a checkout first charge also emits payment_created', () =>
       period: 'P1M',
       // AC 21: additive; null because this checkout set no renewal terms.
       renewal: null,
+      // The match carried no declaration, so the event says so explicitly rather than
+      // omitting the key — a consumer reading `metadata` must not get `undefined`.
+      metadata: null,
     });
   }),
 );
@@ -282,6 +300,9 @@ it.effect(
           subscriptionId: 'pay_ot',
           created: true,
           nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+          periodStart: new Date('2026-01-01T00:00:00Z'),
+          periodEnd: new Date('2026-02-01T00:00:00Z'),
+          metadata: null,
         }),
         publish: pub.publish,
       })(encodedPayload('k_ot'));
@@ -395,7 +416,12 @@ it('recurringPaymentSucceeded carries the docs/07 required payload fields', () =
       method: 1,
     },
     'sub_9',
-    new Date('2026-02-01T00:00:00Z'),
+    {
+      nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+      periodStart: new Date('2026-01-01T00:00:00Z'),
+      periodEnd: new Date('2026-02-01T00:00:00Z'),
+      metadata: { plan: 'half_year' },
+    },
   );
   expect(event.payload).toEqual({
     amount: 30000,
@@ -404,6 +430,11 @@ it('recurringPaymentSucceeded carries the docs/07 required payload fields', () =
     period: 'P1M',
     source: 'test',
     nextPaymentDate: '2026-02-01T00:00:00.000Z',
+    // The window the money bought, and the caller's own declaration echoed back.
+    periodStart: '2026-01-01T00:00:00.000Z',
+    periodEnd: '2026-02-01T00:00:00.000Z',
+    recurring: true,
+    metadata: { plan: 'half_year' },
   });
   expect(event.aggregateId).toBe('sub_9');
 });
@@ -454,6 +485,9 @@ it.effect(
           subscriptionId: 'pay_1',
           created: false,
           nextPaymentDate: null,
+          periodStart: null,
+          periodEnd: null,
+          metadata: null,
         }),
         publish: pub.publish,
       })(encodedPayload('cc1'));
@@ -479,6 +513,9 @@ it.effect(
           subscriptionId: 'pay_1',
           created: false,
           nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+          periodStart: new Date('2026-01-01T00:00:00Z'),
+          periodEnd: new Date('2026-02-01T00:00:00Z'),
+          metadata: null,
         }),
         publish: pub.publish,
       })(encodedPayload('cc2'));
@@ -587,7 +624,7 @@ const countingApplier = (result: Settled) => {
   const applier: ChargeApplier = () =>
     Effect.sync(() => {
       calls += 1;
-      return { prolonged: false, ...result };
+      return { ...settledDefaults, ...result };
     });
   return { applier, calls: () => calls };
 };
@@ -706,6 +743,8 @@ it.effect.each([
         method: 0,
         period: 'P4W',
         renewal: { amount: 5000, period: 'P4W' },
+        // The match carried no declaration, so the event says so explicitly.
+        metadata: null,
       });
     }),
 );

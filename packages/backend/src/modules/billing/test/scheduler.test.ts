@@ -52,6 +52,7 @@ const baseSub: Payment = {
   firstFailureAt: null,
   retryAttempt: 0,
   cancelRequestedAt: null,
+  metadata: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
 };
@@ -468,6 +469,7 @@ it.effect('a cancel-pending payment lapses instead of being charged', () =>
     const sub: Payment = {
       ...baseSub,
       cancelRequestedAt: new Date('2026-01-20T00:00:00Z'),
+      metadata: null,
     };
     const { deps, calls, lapseCalls } = makeDeps(sub);
 

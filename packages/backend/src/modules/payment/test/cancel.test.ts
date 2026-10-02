@@ -41,6 +41,7 @@ it.effect('cancelNotify decodes the payload and publishes the event', () =>
       externalUserId: 'sp:1',
       reason: 'operator',
       cancelRequestedAt: '2026-01-01T00:00:00.000Z',
+      metadata: null,
     });
 
     expect(pub.events).toHaveLength(1);

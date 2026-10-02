@@ -16,6 +16,9 @@ import { deliverEvent, publish } from '@/modules/outbox/domain.js';
 
 const event = (id: string): DomainEvent => ({
   id,
+  // Equal to `id` here, as it is for every event today — the point of the separate field
+  // is that a consumer dedupes on it without depending on the id's format.
+  idempotencyKey: id,
   name: 'initial_payment_succeeded',
   occurredAt: new Date(0),
   correlationId: 'corr-1',
@@ -28,6 +31,10 @@ const event = (id: string): DomainEvent => ({
     period: 'P1M',
     source: 'test',
     nextPaymentDate: '2026-02-01T00:00:00.000Z',
+    periodStart: '2026-01-01T00:00:00.000Z',
+    periodEnd: '2026-02-01T00:00:00.000Z',
+    recurring: true,
+    metadata: null,
   },
 });
 
@@ -69,7 +76,9 @@ const makeFakeRepo = () => {
               deliveryId,
               sink: d.sink,
               status: d.status,
-              event: e,
+              // The repo coalesces this column to `id` on read, so a stored event always
+              // reaches a sink with a dedupe key even if its row predates the column.
+              event: { ...e, idempotencyKey: e.idempotencyKey ?? e.id },
             })
           : Option.none();
       }),

@@ -220,6 +220,7 @@ describe('events', () => {
           method: PaymentMethod.Card,
           period: 'P8W',
           renewal,
+          metadata: null,
         },
       });
     expect(Either.isRight(created({ amount: 5000, period: 'P4W' }))).toBe(true);
