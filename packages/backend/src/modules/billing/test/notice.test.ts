@@ -30,6 +30,7 @@ const sub = (over: Partial<Payment> = {}): Payment =>
     firstFailureAt: null,
     retryAttempt: 0,
     cancelRequestedAt: null,
+    metadata: null,
     currentPeriodStart: new Date('2026-09-02T09:00:00.000Z'),
     currentPeriodEnd: new Date('2026-10-02T09:00:00.000Z'),
     createdAt: new Date('2026-09-02T09:00:00.000Z'),

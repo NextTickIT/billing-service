@@ -1,6 +1,6 @@
 import { Schema } from 'effect';
 
-import { CurrencySchema } from '@/schemas/payment.js';
+import { CurrencySchema, Metadata } from '@/schemas/payment.js';
 
 /**
  * Outgoing domain events must reach each connected sink within this many seconds
@@ -46,6 +46,12 @@ export type EventName = Schema.Schema.Type<typeof EventName>;
  */
 const envelope = {
   id: Schema.String,
+  // The dedupe surface, separate from `id` (the identity a sink reads as `event_id` and
+  // live flows branch on). Optional at construction: every event's key equals its id
+  // today, so the outbox defaults it rather than making all seventeen constructors repeat
+  // themselves. A constructor sets it only when an event must collapse on something its
+  // identity does not describe. Always present by the time a sink sees it.
+  idempotencyKey: Schema.optional(Schema.String),
   occurredAt: Schema.Date,
   correlationId: Schema.String,
   aggregateId: Schema.String,
@@ -69,6 +75,21 @@ const succeededPayload = {
   // renews). A string (not Schema.Date) to match the payload-date convention used by
   // `payment_deferred.newPeriodEnd` / `charge_retry_failed.nextRetryDate`.
   nextPaymentDate: Schema.NullOr(Schema.String),
+  // THIS prolongation: the window the money just bought. `period` alone says the cadence,
+  // not what was actually purchased — and the two come apart as soon as a buyer can pick a
+  // different duration at pay time, or a promo grants bonus days on top (`periodEnd` then
+  // sits past `periodStart + period`). Stating the window makes the event answer "what did
+  // they get" without a consumer re-deriving it from a cadence and a date.
+  // ISO-8601 instants, per the payload-date convention. Null where no window is known —
+  // an operator bind reconciling a legacy payment has no schedule to report.
+  periodStart: Schema.NullOr(Schema.String),
+  periodEnd: Schema.NullOr(Schema.String),
+  // Whether this payment renews. A one-time purchase and a subscription's first charge
+  // otherwise look alike apart from the event name.
+  recurring: Schema.Boolean,
+  // The caller's own declaration of what was bought (see `Metadata`), echoed unchanged.
+  // Null when no checkout ever supplied one.
+  metadata: Schema.NullOr(Metadata),
 };
 
 export const InitialPaymentSucceededEvent = Schema.Struct({
@@ -170,6 +191,9 @@ export const PaymentCreatedEvent = Schema.Struct({
     renewal: Schema.NullOr(
       Schema.Struct({ amount: Schema.Int, period: Schema.String }),
     ),
+    // The caller's own declaration of what was bought (see `Metadata`), echoed unchanged
+    // from the checkout that created this payment. Null when the caller supplied none.
+    metadata: Schema.NullOr(Metadata),
   }),
 });
 
@@ -451,6 +475,8 @@ export type DomainEvent = Schema.Schema.Type<typeof DomainEvent>;
  */
 export interface StoredEvent {
   readonly id: string;
+  /** Never null here: the column is backfilled from `id` and readers coalesce to it. */
+  readonly idempotencyKey: string;
   readonly name: EventName;
   readonly occurredAt: Date;
   readonly correlationId: string;

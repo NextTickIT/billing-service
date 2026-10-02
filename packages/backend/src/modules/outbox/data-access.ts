@@ -57,6 +57,7 @@ interface DeliveryEventJoin {
   readonly sink: string;
   readonly status: DeliveryStatus;
   readonly id: string;
+  readonly idempotencyKey: string | null;
   readonly name: DomainEvent['name'];
   readonly occurredAt: Date;
   readonly correlationId: string;
@@ -72,6 +73,10 @@ const toDeliveryWithEvent = (r: DeliveryEventJoin): DeliveryWithEvent => ({
   status: r.status,
   event: {
     id: r.id,
+    // Coalesce rather than trust the column: during a rolling deploy the previous image
+    // is still inserting rows that predate `idempotencyKey`, and a sink must never be
+    // handed a null dedupe key. `id` is what such a row deduped on anyway.
+    idempotencyKey: r.idempotencyKey ?? r.id,
     name: r.name,
     occurredAt: r.occurredAt,
     correlationId: r.correlationId,
@@ -84,10 +89,12 @@ const toDeliveryWithEvent = (r: DeliveryEventJoin): DeliveryWithEvent => ({
 const insertEvent = (sql: SqlClient.SqlClient) => (event: DomainEvent) =>
   sql<{ readonly id: string }>`
     INSERT INTO domain_events
-      (id, name, "occurredAt", "correlationId", "externalUserId", "aggregateId", payload)
+      (id, "idempotencyKey", name, "occurredAt", "correlationId", "externalUserId",
+       "aggregateId", payload)
     VALUES
-      (${event.id}, ${event.name}, ${event.occurredAt}, ${event.correlationId},
-       ${event.externalUserId}, ${event.aggregateId}, ${JSON.stringify(event.payload)}::jsonb)
+      (${event.id}, ${event.idempotencyKey ?? event.id}, ${event.name}, ${event.occurredAt},
+       ${event.correlationId}, ${event.externalUserId}, ${event.aggregateId},
+       ${JSON.stringify(event.payload)}::jsonb)
     ON CONFLICT (id) DO NOTHING
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
@@ -107,7 +114,7 @@ const getDeliveryWithEvent =
   (sql: SqlClient.SqlClient) => (deliveryId: string) =>
     sql<DeliveryEventJoin>`
       SELECT d.id AS "deliveryId", d.sink, d.status,
-             e.id, e.name, e."occurredAt", e."correlationId",
+             e.id, e."idempotencyKey", e.name, e."occurredAt", e."correlationId",
              e."externalUserId", e."aggregateId", e.payload
       FROM event_deliveries d
       JOIN domain_events e ON e.id = d."eventId"

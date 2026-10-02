@@ -214,6 +214,8 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
         // Caller-created: no internal origin, renews no particular subscription.
         origin: null,
         renewalOf: null,
+        // Absent means "none declared"; a sent `{}` is a value and replaces on extend.
+        metadata: input.metadata ?? null,
         // Opt-in dedup key from the caller's header; null → always a fresh session.
         idempotencyKey: idempotencyKeyOf(request),
         // Where the receipt goes. '' when the caller sent none: no address, no email —
@@ -427,6 +429,9 @@ const clonedIntent = (
   promo: session.promo,
   // Carried like the promo: a re-issued link must still reach the buyer.
   email: session.email,
+  // The declaration describes the purchase being re-offered, so it rides along rather
+  // than being dropped because the first link expired.
+  metadata: session.metadata,
   // The same intent renews on the same terms, and keeps its attribution: a plain clone
   // of a prolong/manual-renewal link still names the subscription it renews.
   renewal: session.renewal,
@@ -793,6 +798,9 @@ const changeSession = (
   renewal: null,
   origin,
   renewalOf: null,
+  // A method change re-tokenizes an existing payment rather than declaring a purchase, so
+  // it supplies none and the payment keeps whatever it already carries.
+  metadata: null,
   idempotencyKey: null,
   expiresAt,
 });

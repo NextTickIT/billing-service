@@ -31,6 +31,7 @@ const session: CheckoutSession = {
   renewalOf: null,
   idempotencyKey: null,
   email: '',
+  metadata: null,
   expiresAt: new Date(0),
   createdAt: new Date(0),
 };

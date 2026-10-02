@@ -37,6 +37,7 @@ const session = (over: Partial<CheckoutSession> = {}): CheckoutSession => ({
   renewalOf: null,
   idempotencyKey: 'sp:1',
   email: 'buyer@example.com',
+  metadata: null,
   expiresAt: new Date(NOW - HOUR), // lapsed an hour ago
   createdAt: new Date(NOW - 2 * HOUR),
   ...over,
@@ -83,6 +84,7 @@ const liveSub = (over: Partial<Payment> = {}): Payment => ({
   firstFailureAt: null,
   retryAttempt: 0,
   cancelRequestedAt: null,
+  metadata: null,
   createdAt: new Date(NOW - 40 * 24 * HOUR),
   updatedAt: new Date(NOW - 40 * 24 * HOUR),
   ...over,

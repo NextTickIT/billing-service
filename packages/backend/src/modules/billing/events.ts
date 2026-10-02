@@ -24,9 +24,13 @@ export const chargeIncomingEvent = (
   response: W4pChargeResponse,
   now: Date,
 ): Charge => {
-  const createdDate = String(
-    response.createdDate ?? Math.floor(now.getTime() / 1000),
-  );
+  // Absent `createdDate` falls back to the EMPTY segment, never a wall-clock read.
+  // `transactionExternalId` — the scheme the poller derives — renders a missing
+  // createdDate as '', so this produces the identical key for the identical row and the
+  // promised FR-006 dedupe actually holds. A `Date.now()` here instead made the key
+  // differ on every emission, so a retried charge booked twice under two keys: the one
+  // defect this module's own comment claimed was impossible.
+  const createdDate = String(response.createdDate ?? '');
   return {
     source: 'wayforpay_charge',
     // Same scheme the poller derives, so a later journal read dedupes (FR-006).

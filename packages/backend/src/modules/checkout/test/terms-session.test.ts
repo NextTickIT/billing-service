@@ -34,6 +34,7 @@ const sub: Payment = {
   firstFailureAt: new Date('2026-10-01T00:00:00Z'),
   retryAttempt: 1,
   cancelRequestedAt: null,
+  metadata: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
 };
@@ -58,6 +59,7 @@ it('prolongSession is a recurring checkout at the sub terms, method-locked by or
     renewal: null,
     origin: 'prolong',
     renewalOf: 'sub_1',
+    metadata: null,
     idempotencyKey: 'idem-1',
     expiresAt: EXPIRES,
   });
@@ -95,6 +97,7 @@ const cardChangeSession = (
   paymentId: 'sub_1',
   origin: 'card_change',
   renewalOf: null,
+  metadata: null,
   status: 0,
   createdAt: new Date(0),
   ...over,
