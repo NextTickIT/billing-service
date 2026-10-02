@@ -179,6 +179,8 @@ it.effect(
 /** A repo whose lapse either flipped the row or found it already reactivated. */
 const repoThatLapsed = (lapsed: boolean): PaymentRepo =>
   ({
+    // The handler runs the flip and the publish in one transaction; a pass-through here.
+    transaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect,
     markCancelledLapsed: () => Effect.succeed(lapsed),
   }) as unknown as PaymentRepo;
 
@@ -203,6 +205,7 @@ it.effect('lapseNotify announces a lapse it actually performed', () =>
       paymentId: 'pay_abc',
       externalUserId: 'sp:42',
       cancelRequestedAt: '2026-01-01T00:00:00.000Z',
+      metadata: null,
     });
     expect(pub.events).toHaveLength(1);
     expect(pub.events[0]?.name).toBe('renewal_failed');
@@ -224,6 +227,7 @@ it.effect('lapseNotify stays silent when a reactivation won the race', () =>
       paymentId: 'pay_abc',
       externalUserId: 'sp:42',
       cancelRequestedAt: '2026-01-01T00:00:00.000Z',
+      metadata: null,
     });
     expect(pub.events).toHaveLength(0);
   }),

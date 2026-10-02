@@ -34,6 +34,7 @@ const recordingFetch =
 
 const event = (over: Partial<StoredEvent> = {}): StoredEvent => ({
   id: 'evt_1',
+  idempotencyKey: 'evt_1',
   name: 'initial_payment_succeeded',
   occurredAt: new Date('2026-01-01T00:00:00Z'),
   correlationId: 'c1',

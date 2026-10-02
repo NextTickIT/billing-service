@@ -10,9 +10,9 @@ import { PAYMENT_REBIND } from '@/modules/charge/contracts.js';
 import { makeChargeRepo } from '@/modules/charge/data-access.js';
 import { ChargePipeline } from '@/modules/charge/domain.js';
 import {
+  drain,
   eq,
   registerHandlers,
-  runFor,
   type EffectE2eContext,
   type EffectScenario,
 } from '@/modules/charge/test/e2e-harness.js';
@@ -66,7 +66,7 @@ const driveQuarantine = Effect.gen(function* () {
   const pipeline = yield* ChargePipeline;
   yield* pipeline.ingest(charge(IDEM_KEY));
   yield* pipeline.ingest(charge(IDEM_KEY)); // duplicate receipt
-  yield* runFor(3);
+  yield* drain;
 });
 
 const assertQuarantine = async (
@@ -127,7 +127,7 @@ const driveBind = Effect.gen(function* () {
   const pipeline = yield* ChargePipeline;
 
   yield* pipeline.ingest(charge(BIND_KEY));
-  yield* runFor(2); // quarantine + deliver
+  yield* drain; // quarantine + deliver
 
   const open = yield* repo.listOpenQuarantine();
   const record = open[0];
@@ -153,7 +153,7 @@ const driveBind = Effect.gen(function* () {
       method: 0,
     },
   });
-  yield* runFor(2); // reprocess + deliver
+  yield* drain; // reprocess + deliver
 });
 
 const assertBind = async (query: EffectE2eContext['query']): Promise<void> => {
@@ -244,7 +244,7 @@ const drivePoller = Effect.gen(function* () {
       maxWindowSeconds: 21600,
     },
   );
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertPoller = async (
@@ -308,6 +308,7 @@ const driveCheckout = Effect.gen(function* () {
     options: null,
     idempotencyKey: null,
     email: '',
+    metadata: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -321,7 +322,7 @@ const driveCheckout = Effect.gen(function* () {
       createdDate: '1700000000',
     }),
   );
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertCheckout = async (
@@ -428,7 +429,7 @@ const driveScheduler = Effect.gen(function* () {
     },
     { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertScheduler = async (
@@ -508,7 +509,7 @@ const driveCancel = Effect.gen(function* () {
       cancelRequestedAt,
     },
   });
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertCancel = async (
@@ -612,7 +613,7 @@ const driveLapse = Effect.gen(function* () {
     },
     { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertLapse = async (query: EffectE2eContext['query']): Promise<void> => {
@@ -700,6 +701,7 @@ const driveCardChangeOwed = Effect.gen(function* () {
     options: null,
     idempotencyKey: null,
     email: '',
+    metadata: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -714,7 +716,7 @@ const driveCardChangeOwed = Effect.gen(function* () {
     occurredAt: new Date('2026-01-05T00:00:00Z'),
     payload: { recToken: 'new' },
   });
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertCardChangeOwed = async (
@@ -819,6 +821,7 @@ const driveCardChangeDecline = Effect.gen(function* () {
     options: null,
     idempotencyKey: null,
     email: '',
+    metadata: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -833,7 +836,7 @@ const driveCardChangeDecline = Effect.gen(function* () {
     occurredAt: new Date('2026-01-05T00:00:00Z'),
     payload: { recToken: 'new', reason: 'Insufficient funds' },
   });
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertCardChangeDecline = async (
@@ -1046,7 +1049,7 @@ const driveCancelPastDue = Effect.gen(function* () {
     },
     { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
-  yield* runFor(2);
+  yield* drain;
 });
 
 const cancelPastDueLapses: EffectScenario = {
@@ -1183,7 +1186,7 @@ const driveCancelUpstream = Effect.gen(function* () {
     },
     { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertCancelUpstream = async (

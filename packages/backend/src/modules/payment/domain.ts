@@ -52,6 +52,11 @@ export interface ApplyPaymentParams {
    * at them.
    */
   readonly cycles?: number;
+  /**
+   * Opaque caller declaration. ABSENT (or null) means leave the stored value alone — only
+   * a checkout that actually supplied one re-stamps the payment. See `Metadata`.
+   */
+  readonly metadata?: Record<string, unknown> | null | undefined;
 }
 
 export interface ApplyPaymentResult {
@@ -71,6 +76,11 @@ export interface ApplyPaymentResult {
   /** The next scheduled charge date established by this charge (the paid-through anchor).
    * Carried out so the succeeded event can report it. */
   readonly nextPaymentDate: Date;
+  /** The window this charge bought (promo bonus already folded into the end). */
+  readonly periodStart: Date;
+  readonly periodEnd: Date;
+  /** What the payment carries after this charge — supplied value, else the stored one. */
+  readonly metadata: Record<string, unknown> | null;
 }
 
 /** The period a successful charge pays for; the next charge anchors on its end. */
@@ -125,6 +135,7 @@ const insertNew =
         recurringTokenRef: params.recurring ? params.recurringTokenRef : null,
         firstFailureAt: null,
         retryAttempt: 0,
+        metadata: params.metadata ?? null,
       })
       .pipe(
         Effect.map((created) => ({
@@ -132,6 +143,9 @@ const insertNew =
           created: true,
           prolonged: false,
           nextPaymentDate: anchors.nextPaymentDate,
+          periodStart: anchors.currentPeriodStart,
+          periodEnd: anchors.currentPeriodEnd,
+          metadata: created.metadata,
         })),
       );
 
@@ -234,6 +248,9 @@ export const createOrExtend =
             prolonged: false,
             introOnLive: true,
             nextPaymentDate: row.nextPaymentDate,
+            periodStart: row.currentPeriodStart,
+            periodEnd: row.currentPeriodEnd,
+            metadata: row.metadata,
           };
         }
         // The promo is dropped here: a live contact paying a promo link stacks the paid
@@ -250,6 +267,7 @@ export const createOrExtend =
           period: params.renewal?.period ?? params.period,
           ...tokenRule(params.source, params.recurringTokenRef, row),
           ...stacked,
+          metadata: params.metadata,
         });
         return {
           subscriptionId: row.id,
@@ -257,17 +275,28 @@ export const createOrExtend =
           prolonged: true,
           reactivated: row.cancelRequestedAt !== null,
           nextPaymentDate: stacked.nextPaymentDate,
+          periodStart: stacked.currentPeriodStart,
+          periodEnd: stacked.currentPeriodEnd,
+          // Mirrors what `extend`'s COALESCE just wrote: the supplied declaration, or the
+          // stored one when this charge supplied none.
+          metadata: params.metadata ?? row.metadata,
         };
       }
       return yield* insertNew(repo)(params, anchors);
     });
 
+/** What an advance credited: the anchors it wrote, plus the declaration the row carries
+ * (an advance never rewrites it), so a succeeded event can report the window it bought. */
+export interface AdvancedPeriod extends AdvanceAnchor {
+  readonly metadata: Record<string, unknown> | null;
+}
+
 /**
  * Credit `period` to a payment from its locked anchor (a renewal or an arrears card
  * change). Locks the row, skips unless `guard` accepts it, then advances by
  * `stackAnchors`, which also resets dunning and sets Active. Runs in the caller's
- * transaction when there is one (as a savepoint), else in its own. Returns the new next
- * charge date, or None when the row is gone or the guard refused.
+ * transaction when there is one (as a savepoint), else in its own. Returns what it
+ * credited, or None when the row is gone or the guard refused.
  */
 export const advanceLocked =
   (repo: PaymentRepo) =>
@@ -276,7 +305,7 @@ export const advanceLocked =
     period: string,
     at: Date,
     guard: (locked: Payment) => boolean,
-  ): Effect.Effect<Option.Option<Date>, SqlError.SqlError> =>
+  ): Effect.Effect<Option.Option<AdvancedPeriod>, SqlError.SqlError> =>
     repo.transaction(
       Effect.gen(function* () {
         const locked = yield* repo.lockById(id);
@@ -285,7 +314,7 @@ export const advanceLocked =
         }
         const anchors = stackAnchors(locked.value, period, at);
         yield* repo.advanceAfterSuccess(id, anchors);
-        return Option.some(anchors.nextPaymentDate);
+        return Option.some({ ...anchors, metadata: locked.value.metadata });
       }),
     );
 

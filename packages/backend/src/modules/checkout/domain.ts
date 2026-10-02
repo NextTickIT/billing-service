@@ -83,6 +83,9 @@ export const subscriptionTermsSession = (
   origin,
   // The sub this session renews: names it in a decline after the sub has died.
   renewalOf: origin === null ? null : sub.id,
+  // A renewal prompt re-charges terms the buyer already declared; it adds no declaration
+  // of its own, so paying it leaves the payment's stored metadata standing.
+  metadata: null,
   idempotencyKey,
   expiresAt,
 });
@@ -413,6 +416,8 @@ const checkoutMatch = (
   amount: terms.amount,
   currency: session.currency,
   cycles,
+  // The caller's declaration for THIS purchase; stamped on the payment when applied.
+  metadata: session.metadata,
 });
 
 /** The session a provider reference names and the terms of the option it paid for; None
@@ -534,6 +539,9 @@ export const makeCardChangeMatcher =
         amountCharged: event.amount > 0,
         arrears: isArrears(session),
         origin: session.origin,
+        // Usually null — a card change re-tokenizes rather than declaring a purchase — so
+        // the extend COALESCE leaves the payment's existing declaration standing.
+        metadata: session.metadata,
       };
     });
 
@@ -614,30 +622,32 @@ const applyCardChange =
               : locked.status !== PaymentStatus.Cancelled,
         );
         if (Option.isSome(advanced)) {
+          const credited = advanced.value;
           return {
             subscriptionId: paymentId,
             created: false,
             prolonged: false,
-            nextPaymentDate: advanced.value,
+            nextPaymentDate: credited.nextPaymentDate,
+            periodStart: credited.currentPeriodStart,
+            periodEnd: credited.currentPeriodEnd,
+            metadata: credited.metadata,
           };
         }
       }
-      // No period credited: a charge that moved money reports the unchanged schedule;
-      // a 0-amount verify reports none.
-      const nextPaymentDate =
+      // No period credited, so no window: a charge that moved money reports the unchanged
+      // schedule and the payment's declaration; a 0-amount verify reports neither.
+      const current =
         match.amountCharged === true
-          ? Option.getOrNull(
-              Option.map(
-                yield* payments.findById(paymentId),
-                (p) => p.nextPaymentDate,
-              ),
-            )
+          ? Option.getOrNull(yield* payments.findById(paymentId))
           : null;
       return {
         subscriptionId: paymentId,
         created: false,
         prolonged: false,
-        nextPaymentDate,
+        nextPaymentDate: current?.nextPaymentDate ?? null,
+        periodStart: null,
+        periodEnd: null,
+        metadata: current?.metadata ?? null,
       };
     });
 
@@ -675,6 +685,8 @@ const applyCheckout =
         // A multi-cycle renewal stacks that many periods; `amount`/`period` above stay one
         // cycle's, so the subscription keeps its base terms.
         cycles: match.cycles ?? 1,
+        // Absent when the caller declared none — `extend` then keeps what is stored.
+        metadata: match.metadata,
         source: event.source,
         recurringTokenRef: recToken(event.payload),
         paidAt: event.occurredAt,
@@ -693,6 +705,9 @@ const applyCheckout =
           ? {}
           : { reactivated: applied.reactivated }),
         nextPaymentDate,
+        periodStart: applied.periodStart,
+        periodEnd: applied.periodEnd,
+        metadata: applied.metadata,
       };
     }).pipe(
       payments.transaction,
@@ -726,18 +741,21 @@ export const makeCheckoutApplier =
     if (match.kind === 'recurring' && match.subscriptionId !== null) {
       const subscriptionId = match.subscriptionId;
       // A recurring match already has its payment (the scheduler advanced it before the
-      // incoming event re-entered the pipeline), so read its new next-charge date to
-      // report on the succeeded event.
+      // incoming event re-entered the pipeline), so its own row IS the prolongation this
+      // charge bought — and its stored metadata is the last intent the buyer declared,
+      // which is what a renewal must report rather than nothing.
       return Effect.gen(function* () {
-        const found = yield* payments.findById(subscriptionId);
-        const nextPaymentDate = Option.isSome(found)
-          ? found.value.nextPaymentDate
-          : null;
+        const found = Option.getOrNull(
+          yield* payments.findById(subscriptionId),
+        );
         return {
           subscriptionId,
           created: false,
           prolonged: false,
-          nextPaymentDate,
+          nextPaymentDate: found?.nextPaymentDate ?? null,
+          periodStart: found?.currentPeriodStart ?? null,
+          periodEnd: found?.currentPeriodEnd ?? null,
+          metadata: found?.metadata ?? null,
         };
       });
     }

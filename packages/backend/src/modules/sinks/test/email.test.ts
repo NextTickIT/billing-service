@@ -67,6 +67,7 @@ const fakeFetch =
 
 const event = (over: Partial<StoredEvent> = {}): StoredEvent => ({
   id: 'evt_1',
+  idempotencyKey: 'evt_1',
   name: 'initial_payment_succeeded',
   occurredAt: new Date('2026-10-02T05:45:15.000Z'),
   correlationId: 'wp:1|COMPLETE',
