@@ -1,8 +1,9 @@
 import {
   AuthKind,
+  SinkKind,
+  SinkKindCode,
   type Sink,
   type SinkAuth,
-  SinkKind,
   type SinkView,
   type UpdateSinkRequest,
 } from '@billing-service/shared';
@@ -10,6 +11,7 @@ import type { Effect, Option, Ref } from 'effect';
 
 import type { RateLimiter } from '@/infra/rate-limiter.js';
 import type { SinkConnector } from '@/infra/sinks.js';
+import { makeCrmConnector } from '@/modules/sinks/crm.js';
 import { type CachedToken, makeEmailConnector } from '@/modules/sinks/email.js';
 import {
   type FetchLike,
@@ -34,10 +36,34 @@ export interface ConnectorDeps {
   readonly resolveEmail: (
     externalUserId: string,
   ) => Effect.Effect<Option.Option<string>>;
+  /** The CRM's own limiter — a separate budget, so a CRM backlog cannot throttle the
+   * customer-facing SendPulse deliveries sharing this process. */
+  readonly crmRateLimiter: RateLimiter;
 }
 
+const emailConnector = (
+  sink: Extract<Sink, { kind: SinkKind.Email }>,
+  deps: ConnectorDeps,
+): SinkConnector =>
+  makeEmailConnector(
+    {
+      clientId: sink.config.clientId,
+      // The OAuth client SECRET reuses the existing write-only token slot; `clientId`
+      // is not secret and lives in plain config.
+      clientSecret: sink.auth.token,
+      apiUrl: deps.emailApiUrl,
+      from: sink.config.from,
+      replyTo: sink.config.replyTo,
+      fetch: deps.fetch,
+      rateLimiter: deps.emailRateLimiter,
+      tokenCache: deps.emailTokenCache,
+      resolveEmail: deps.resolveEmail,
+    },
+    sink.config.events,
+  );
+
 /**
- * Enabled sink rows → runtime connectors, narrowed on `sink.kind` (AC8).
+ * One enabled sink row → its runtime connector, narrowed on `sink.kind` (AC8).
  *
  * The switch is exhaustive on purpose — a new `SinkKind` fails to compile until it has a
  * branch here, which is cheaper than discovering at runtime that a configured sink
@@ -46,6 +72,40 @@ export interface ConnectorDeps {
  * rather than decoded) is dropped instead of returning `undefined` into the connector
  * list, which `outbox` would dereference and kill every event publish.
  */
+const buildConnector = (
+  sink: Sink,
+  deps: ConnectorDeps,
+): SinkConnector | null => {
+  switch (sink.kind) {
+    case SinkKind.SendPulse:
+      return makeSendPulseConnector(
+        {
+          token: sink.auth.token,
+          apiUrl: deps.apiUrl,
+          fetch: deps.fetch,
+          rateLimiter: deps.rateLimiter,
+        },
+        sink.config.flows,
+      );
+    case SinkKind.Crm:
+      return makeCrmConnector({
+        token: sink.auth.token,
+        url: sink.config.url,
+        fetch: deps.fetch,
+        rateLimiter: deps.crmRateLimiter,
+      });
+    case SinkKind.Email:
+      return emailConnector(sink, deps);
+    default: {
+      // Compile-time exhaustiveness survives: a NEW kind fails to assign to `never`.
+      const unknownKind: never = sink;
+      void unknownKind;
+      return null;
+    }
+  }
+};
+
+/** Enabled sink rows → runtime connectors (see `buildConnector`). */
 export const buildConnectors = (
   sinks: readonly Sink[],
   deps: ConnectorDeps,
@@ -54,50 +114,8 @@ export const buildConnectors = (
     if (!sink.enabled) {
       return [];
     }
-    switch (sink.kind) {
-      case SinkKind.SendPulse:
-        return [
-          makeSendPulseConnector(
-            {
-              token: sink.auth.token,
-              apiUrl: deps.apiUrl,
-              fetch: deps.fetch,
-              rateLimiter: deps.rateLimiter,
-            },
-            sink.config.flows,
-          ),
-        ];
-      case SinkKind.Email:
-        return [
-          makeEmailConnector(
-            {
-              clientId: sink.config.clientId,
-              // The OAuth client SECRET reuses the existing write-only token slot;
-              // `clientId` is not secret and lives in plain config.
-              clientSecret: sink.auth.token,
-              apiUrl: deps.emailApiUrl,
-              from: sink.config.from,
-              replyTo: sink.config.replyTo,
-              fetch: deps.fetch,
-              rateLimiter: deps.emailRateLimiter,
-              tokenCache: deps.emailTokenCache,
-              resolveEmail: deps.resolveEmail,
-            },
-            sink.config.events,
-          ),
-        ];
-      // Unreachable per the union, reachable in production: `listWithSecret` CASTS rows
-      // rather than decoding them, so a kind this image does not know about (a row
-      // written by another deploy line) arrives here. Falling through would return
-      // `undefined` into the connector list, and `outbox` reads `.name` off every
-      // entry — which would kill event publishing for EVERY event, not just this sink.
-      default: {
-        // Compile-time exhaustiveness survives: a NEW kind fails to assign to `never`.
-        const unknownKind: never = sink;
-        void unknownKind;
-        return [];
-      }
-    }
+    const connector = buildConnector(sink, deps);
+    return connector === null ? [] : [connector];
   });
 
 /** Public projection — strips the secret (`auth → { kind, hasToken }`). Narrowed per
@@ -107,6 +125,8 @@ export const toView = (sink: Sink): SinkView => {
   const common = { enabled: sink.enabled, auth, updatedAt: sink.updatedAt };
   switch (sink.kind) {
     case SinkKind.SendPulse:
+      return { kind: sink.kind, ...common, config: sink.config };
+    case SinkKind.Crm:
       return { kind: sink.kind, ...common, config: sink.config };
     case SinkKind.Email:
       return { kind: sink.kind, ...common, config: sink.config };
@@ -131,35 +151,62 @@ const mergeAuth = (
 /**
  * Apply an operator update onto the stored entity (write-only token merge).
  *
- * The config patch is accepted only when its SHAPE matches the row's kind, so a flows
- * map cannot be written onto the email sink (or vice versa) just because both arrive
- * through one route. A mismatched config is ignored rather than rejected — the route
- * has no error channel here; validating it there is a follow-up.
+ * The update body's `config` is an untagged union — the kind comes from the route path,
+ * not the body — so a `flows` map can arrive addressed to the CRM row and vice versa.
+ * That is rejected rather than coerced or ignored: writing it would store a config no
+ * connector reads, and the operator would have every reason to think the sink was
+ * configured. Returns the reason so the route can answer 422.
  */
-export const mergeUpdate = (current: Sink, patch: UpdateSinkRequest): Sink => {
-  const common = {
-    enabled: patch.enabled ?? current.enabled,
-    auth: mergeAuth(current.auth, patch.auth),
-    updatedAt: current.updatedAt, // the repo stamps `now()` on write
-  };
+export type MergeOutcome =
+  | { readonly ok: true; readonly sink: Sink }
+  | { readonly ok: false; readonly reason: string };
+
+/** The key that identifies each kind's config shape in the untagged update union. */
+const CONFIG_KEY: Readonly<Record<SinkKind, string>> = {
+  [SinkKind.SendPulse]: 'flows',
+  [SinkKind.Crm]: 'url',
+  [SinkKind.Email]: 'clientId',
+};
+
+/** Does this config match what the sink's kind expects? */
+const configFits = (kind: SinkKind, config: object): boolean =>
+  CONFIG_KEY[kind] in config;
+
+/** The row with `config` replaced by the patch's, which `configFits` already vetted. */
+const withConfig = (
+  current: Sink,
+  config: UpdateSinkRequest['config'],
+): Sink => {
+  if (config === undefined) {
+    return current;
+  }
   switch (current.kind) {
     case SinkKind.SendPulse:
-      return {
-        kind: current.kind,
-        ...common,
-        config:
-          patch.config !== undefined && 'flows' in patch.config
-            ? patch.config
-            : current.config,
-      };
+      return 'flows' in config ? { ...current, config } : current;
+    case SinkKind.Crm:
+      return 'url' in config ? { ...current, config } : current;
     case SinkKind.Email:
-      return {
-        kind: current.kind,
-        ...common,
-        config:
-          patch.config !== undefined && 'clientId' in patch.config
-            ? patch.config
-            : current.config,
-      };
+      return 'clientId' in config ? { ...current, config } : current;
   }
+};
+
+export const mergeUpdate = (
+  current: Sink,
+  patch: UpdateSinkRequest,
+): MergeOutcome => {
+  if (patch.config !== undefined && !configFits(current.kind, patch.config)) {
+    return {
+      ok: false,
+      reason: `config does not match sink kind ${SinkKindCode[current.kind]}`,
+    };
+  }
+  return {
+    ok: true,
+    sink: {
+      ...withConfig(current, patch.config),
+      enabled: patch.enabled ?? current.enabled,
+      auth: mergeAuth(current.auth, patch.auth),
+      updatedAt: current.updatedAt, // the repo stamps `now()` on write
+    },
+  };
 };

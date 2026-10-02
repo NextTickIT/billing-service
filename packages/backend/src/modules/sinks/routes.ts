@@ -1,13 +1,13 @@
 import { SqlClient } from '@effect/sql';
 import {
   Role,
+  type Sink,
   SinkFlowsResponse,
   SinkKind,
   SinkView,
   UpdateSinkRequest,
   codeToKind,
 } from '@billing-service/shared';
-import type { Sink } from '@billing-service/shared';
 import { Effect, Option, Redacted, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
@@ -49,6 +49,48 @@ const operatorActor = (request: FastifyRequest) => {
 
 const readCode = (request: FastifyRequest): string =>
   (request.params as { readonly code: string }).code;
+
+/**
+ * The stored sink the `:code` path segment names, or NotFound.
+ *
+ * Shared by update and flows: both need the same two-step resolve (code → numeric kind →
+ * row) and both must answer 404 identically for an unknown code and for a kind with no
+ * row, so duplicating it invites the two drifting apart.
+ */
+const resolveSink = (request: FastifyRequest) =>
+  Effect.gen(function* () {
+    const kind = codeToKind(readCode(request));
+    if (kind === undefined) {
+      return yield* Effect.fail(new NotFound({ resource: 'sink' }));
+    }
+    const sql = yield* SqlClient.SqlClient;
+    const found = yield* makeSinksRepo(sql).getWithSecret(kind);
+    if (Option.isNone(found)) {
+      return yield* Effect.fail(new NotFound({ resource: 'sink' }));
+    }
+    return found.value;
+  });
+
+/** What an operator actually changed, per kind. A URL is not a secret, but it IS the
+ * thing that changed, so the audit records where the CRM feed was pointed. */
+/** Per-kind audit facts: a flow map for the chatbot sink, the endpoint for the CRM, the
+ * declared event scope for email. */
+const configDetail = (sink: Sink): Record<string, unknown> => {
+  switch (sink.kind) {
+    case SinkKind.SendPulse:
+      return { flows: Object.keys(sink.config.flows) };
+    case SinkKind.Crm:
+      return { url: sink.config.url };
+    case SinkKind.Email:
+      return { events: sink.config.events };
+  }
+};
+
+const auditDetail = (sink: Sink): Record<string, unknown> => ({
+  enabled: sink.enabled,
+  tokenSet: sink.auth.token.length > 0,
+  ...configDetail(sink),
+});
 
 const list = (_input: unknown, request: FastifyRequest) =>
   Effect.gen(function* () {
@@ -100,32 +142,23 @@ const update = (body: UpdateBody, request: FastifyRequest) =>
   Effect.gen(function* () {
     assertBffSecret(request);
     const actor = yield* operatorActor(request);
-    const kind = codeToKind(readCode(request));
-    if (kind === undefined) {
-      return yield* Effect.fail(new NotFound({ resource: 'sink' }));
+    const current = yield* resolveSink(request);
+    const outcome = mergeUpdate(current, body);
+    if (!outcome.ok) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({ reason: outcome.reason }),
+      );
     }
+    const merged = outcome.sink;
     const sql = yield* SqlClient.SqlClient;
-    const repo = makeSinksRepo(sql);
-    const found = yield* repo.getWithSecret(kind);
-    if (Option.isNone(found)) {
-      return yield* Effect.fail(new NotFound({ resource: 'sink' }));
-    }
-    const merged = mergeUpdate(found.value, body);
     yield* assertEmailDeliverable(merged);
-    yield* repo.write(merged);
+    yield* makeSinksRepo(sql).write(merged);
     yield* makeChargeRepo(sql).insertAudit({
       actor: Role[actor.role],
       action: 'update_sink',
       targetType: 'sink',
       targetId: readCode(request),
-      detail: {
-        enabled: merged.enabled,
-        tokenSet: merged.auth.token.length > 0,
-        // Per-kind: a flow map for the chatbot sink, the declared event scope for email.
-        ...('flows' in merged.config
-          ? { flows: Object.keys(merged.config.flows) }
-          : { events: merged.config.events }),
-      },
+      detail: auditDetail(merged),
     });
     return toView(merged);
   });
@@ -134,16 +167,15 @@ const flows = (_input: unknown, request: FastifyRequest) =>
   Effect.gen(function* () {
     assertBffSecret(request);
     yield* operatorActor(request);
-    const kind = codeToKind(readCode(request));
-    if (kind === undefined) {
-      return yield* Effect.fail(new NotFound({ resource: 'sink' }));
+    const sink = yield* resolveSink(request);
+    // Flows are a SendPulse concept. Without this guard the CRM's own token would be sent
+    // to the SendPulse API — leaking one system's credential to another.
+    if (sink.kind !== SinkKind.SendPulse) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({ reason: 'sink has no flows' }),
+      );
     }
-    const sql = yield* SqlClient.SqlClient;
-    const found = yield* makeSinksRepo(sql).getWithSecret(kind);
-    if (Option.isNone(found)) {
-      return yield* Effect.fail(new NotFound({ resource: 'sink' }));
-    }
-    const token = found.value.auth.token;
+    const token = sink.auth.token;
     if (token.length === 0) {
       return yield* Effect.fail(
         new UnprocessableEntity({ reason: 'sink token not set' }),
