@@ -49,6 +49,9 @@ const priorReplay = (
       to: cmd.to,
       movedPayments: p.movedPayments,
       movedSessions: p.movedSessions,
+      // The RECORDED row's id, so a retried rename re-emits the same event key and the
+      // outbox collapses it. A fresh rename appends its own row below and keys on that.
+      changeId: p.id,
     }));
   });
 
@@ -127,7 +130,7 @@ export const renameExternalUser =
           }),
         );
       }
-      yield* deps.ledger.append({
+      const change = yield* deps.ledger.append({
         fromExternalUserId: cmd.from,
         toExternalUserId: cmd.to,
         source,
@@ -135,19 +138,39 @@ export const renameExternalUser =
         movedPayments,
         movedSessions,
       });
-      return { from: cmd.from, to: cmd.to, movedPayments, movedSessions };
+      return {
+        from: cmd.from,
+        to: cmd.to,
+        movedPayments,
+        movedSessions,
+        changeId: change.id,
+      };
     });
 
 /**
  * `external_user_id_changed` envelope (docs/31). `externalUserId` is the NEW id (the
- * go-forward contact); the id is deterministic on `from` → `to` so a redelivered
- * message dedupes in the outbox.
+ * go-forward contact).
+ *
+ * Keyed on `changeId` — the ledger row the database minted for THIS remap — not on the
+ * id pair. `evt_euidchg_{from}_{to}` collapsed a chain: a user renamed A→B, then back
+ * B→A, then A→B again produced one event ever, and every later remap of that pair was
+ * silently dropped by the outbox. The ledger is append-only, so its row id is unique per
+ * accepted rename while a retried call replays the recorded row and still dedupes.
+ *
+ * `changeId` is OPTIONAL for one release: messages enqueued by the previous image carry
+ * no such field, and requiring it would make them fail decode, die, and dead-letter —
+ * losing the very notify this fixes. An absent value falls back to the old pair-based id,
+ * which is exactly the key that message would have produced. Make it required once no
+ * pre-upgrade message can still be in flight.
  */
 export const externalUserIdChanged = (
   notify: ExternalUserIdChangeNotify,
   now: Date,
 ): ExternalUserIdChangedEvent => ({
-  id: `evt_euidchg_${notify.from}_${notify.to}`,
+  id:
+    notify.changeId === undefined || notify.changeId.length === 0
+      ? `evt_euidchg_${notify.from}_${notify.to}`
+      : `evt_euidchg_${notify.changeId}`,
   name: 'external_user_id_changed',
   occurredAt: now,
   correlationId: notify.to,

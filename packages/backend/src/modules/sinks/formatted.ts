@@ -26,17 +26,21 @@ const LOCALE = 'ru';
  * when an event gains a date field that is missing here, so a new event cannot ship
  * without its formatted twin.
  */
-const DATE_FIELDS: ReadonlySet<string> = new Set([
+export const DATE_FIELDS: ReadonlySet<string> = new Set([
   'nextPaymentDate',
   'nextRetryDate',
   'dueDate',
   'windowExpiresAt',
   'newPeriodEnd',
   'chargeDate',
+  // The window a successful charge bought. A flow saying "paid through 01.04.2026" needs
+  // the rendered end, not `2026-04-01T00:00:00.000Z`.
+  'periodStart',
+  'periodEnd',
 ]);
 
 /** Payload keys carrying an ISO-8601 duration. */
-const PERIOD_FIELDS: ReadonlySet<string> = new Set(['period']);
+export const PERIOD_FIELDS: ReadonlySet<string> = new Set(['period']);
 
 /**
  * DD.MM.YYYY in Kyiv. Built once: constructing an Intl formatter is expensive enough

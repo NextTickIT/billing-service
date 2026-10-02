@@ -2,6 +2,7 @@ import { Schema } from 'effect';
 
 import {
   CurrencySchema,
+  Metadata,
   PaymentMethod,
   PaymentMethodSchema,
 } from '@/schemas/payment.js';
@@ -87,6 +88,9 @@ export const CheckoutSession = Schema.Struct({
   // unique index enforces one session per key, so a retried/parallel create returns the
   // same session instead of minting a duplicate. Never exposed on the public session.
   idempotencyKey: Schema.NullOr(Schema.String),
+  // Opaque caller passthrough (see `Metadata`): stamped onto the payment when this
+  // session is paid and echoed on the events that follow. Null when the caller sent none.
+  metadata: Schema.NullOr(Metadata),
   expiresAt: Schema.Date,
   createdAt: Schema.Date,
 });
@@ -97,9 +101,13 @@ export type CheckoutSession = Schema.Schema.Type<typeof CheckoutSession>;
  * at creation (Card unless the create request said otherwise); optional so a session may
  * still be inserted without a preselected method (it is then chosen on the page). */
 export const NewCheckoutSession = CheckoutSession.pipe(
-  Schema.omit('method', 'status', 'createdAt'),
+  Schema.omit('method', 'status', 'createdAt', 'metadata'),
   Schema.extend(
-    Schema.Struct({ method: Schema.optional(PaymentMethodSchema) }),
+    Schema.Struct({
+      method: Schema.optional(PaymentMethodSchema),
+      // Optional AND nullable on insert: omitted or null both store NULL.
+      metadata: Schema.optional(Schema.NullOr(Metadata)),
+    }),
   ),
 );
 
@@ -130,6 +138,11 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       successUrl: Schema.optional(RedirectUrl),
       failureUrl: Schema.optional(RedirectUrl),
       promo: Schema.optional(CheckoutPromo),
+      // Opaque passthrough. ABSENT and `{}` are different instructions: absent leaves
+      // whatever the payment already carries, `{}` is a supplied value and replaces it.
+      // A client that defaults this to `{}` therefore wipes the stored intent — send
+      // nothing, not an empty object, when you mean "unchanged".
+      metadata: Schema.optional(Metadata),
     }),
   ),
   // A recurring checkout needs its renewal cadence; a one-time purchase never renews, so

@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'vitest';
 
-import { formattedFields } from '@/modules/sinks/formatted.js';
+import { DomainEvent } from '@billing-service/shared';
+
+import {
+  DATE_FIELDS,
+  PERIOD_FIELDS,
+  formattedFields,
+} from '@/modules/sinks/formatted.js';
 
 describe('dates render as DD.MM.YYYY in Kyiv', () => {
   test('formats each known date field', () => {
@@ -25,14 +31,7 @@ describe('dates render as DD.MM.YYYY in Kyiv', () => {
     });
   });
 
-  test.each([
-    'nextPaymentDate',
-    'nextRetryDate',
-    'dueDate',
-    'windowExpiresAt',
-    'newPeriodEnd',
-    'chargeDate',
-  ])('%s is covered', (field) => {
+  test.each([...DATE_FIELDS])('%s is covered', (field) => {
     expect(formattedFields({ [field]: '2026-03-09T10:00:00.000Z' })).toEqual({
       [`${field}_formatted`]: '09.03.2026',
     });
@@ -89,24 +88,86 @@ describe('renders nothing rather than something wrong', () => {
   });
 });
 
-describe('drift guard', () => {
-  // Mirrors the documented payload fields (domain-events.md "Quick reference"). If an
-  // event gains a date field, add it here AND to DATE_FIELDS — this test is what stops
-  // a new event shipping to SendPulse without its formatted twin.
-  const DOCUMENTED_DATE_FIELDS = [
-    'nextPaymentDate', // initial/recurring/one_time succeeded
-    'nextRetryDate', // charge_retry_failed
-    'dueDate', // payment_manual_required
-    'windowExpiresAt', // payment_manual_required
-    'newPeriodEnd', // payment_deferred
-    'chargeDate', // upcoming_charge
-  ];
+/**
+ * Every payload key in the event union, read off the schemas themselves.
+ *
+ * The previous version of this guard was a hand-written list of date fields, and its
+ * comment claimed it was "what stops a new event shipping to SendPulse without its
+ * formatted twin". It could not: a new field absent from both the list and
+ * `DATE_FIELDS` matched nothing and the test passed. `periodStart`/`periodEnd` shipped
+ * through exactly that gap. This version enumerates the real contract, so a key cannot
+ * exist without someone having classified it.
+ */
+const payloadKeys = (): readonly string[] => {
+  const keys = new Set<string>();
+  for (const member of DomainEvent.members) {
+    const payload = member.fields.payload as { fields?: object };
+    for (const key of Object.keys(payload.fields ?? {})) keys.add(key);
+  }
+  return [...keys].sort();
+};
 
-  test.each(DOCUMENTED_DATE_FIELDS)(
-    'documented date field %s produces a formatted twin',
+/**
+ * Payload keys that deliberately get NO formatted twin, each with the reason.
+ *
+ * Adding a key here is the explicit act of saying "a customer never reads this
+ * rendered". A new payload field matches neither set and fails the test below until
+ * it is either given a twin or listed here on purpose.
+ */
+const NOT_RENDERED: ReadonlyMap<string, string> = new Map([
+  ['amount', 'minor units; the flow formats money with its own currency rules'],
+  ['currency', 'numeric code, branched on rather than shown'],
+  ['method', 'numeric; the flow writes its own wording for card vs crypto'],
+  ['attempt', 'a number the flow branches on to escalate wording'],
+  ['noticeDays', 'the offset that fired this notice, not customer-facing'],
+  ['days', 'granted free days; the flow phrases its own sentence'],
+  ['movedPayments', 'operational count, never messaged'],
+  ['movedSessions', 'operational count, never messaged'],
+  ['recurring', 'boolean the flow branches on'],
+  ['source', 'provider label, internal'],
+  ['reason', 'provider decline text, passed through verbatim'],
+  ['paymentId', 'opaque id'],
+  ['quarantineId', 'opaque id'],
+  ['incomingEventId', 'opaque id'],
+  ['externalRef', 'provider order reference'],
+  ['from', 'an external user id, not prose'],
+  ['to', 'an external user id, not prose'],
+  ['checkoutUrl', 'a link, used as-is'],
+  ['metadata', "the caller's opaque object; we promise to echo it unchanged"],
+]);
+
+// Without this, a walk that silently returned nothing would make the check below pass
+// vacuously — the exact failure mode of the list it replaced.
+
+describe('drift guard', () => {
+  test('the walk actually reads the schemas', () => {
+    const keys = payloadKeys();
+    expect(keys.length).toBeGreaterThan(20);
+    expect(keys).toContain('periodEnd');
+    expect(keys).toContain('metadata');
+  });
+
+  test('every payload key is classified as rendered or deliberately not', () => {
+    const unclassified = payloadKeys().filter(
+      (k) =>
+        !DATE_FIELDS.has(k) && !PERIOD_FIELDS.has(k) && !NOT_RENDERED.has(k),
+    );
+    expect(unclassified).toEqual([]);
+  });
+
+  test.each([...DATE_FIELDS])(
+    'date field %s produces a formatted twin',
     (field) => {
       const out = formattedFields({ [field]: '2026-12-31T00:00:00.000Z' });
       expect(Object.keys(out)).toEqual([`${field}_formatted`]);
     },
   );
+
+  test('a key listed as not-rendered produces no twin', () => {
+    for (const key of NOT_RENDERED.keys()) {
+      expect(formattedFields({ [key]: '2026-12-31T00:00:00.000Z' })).toEqual(
+        {},
+      );
+    }
+  });
 });

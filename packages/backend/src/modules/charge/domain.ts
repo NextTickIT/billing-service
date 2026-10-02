@@ -22,6 +22,7 @@ import {
   PAYMENT_REBIND,
   type ChargeApplier,
   type ChargeMatcher,
+  type Prolongation,
   RebindPayload,
 } from '@/modules/charge/contracts.js';
 import {
@@ -43,19 +44,26 @@ const eventId = (idemKey: string, suffix: string): string =>
   `evt_${idemKey}:${suffix}`;
 
 /** Shared success payload for the initial/recurring variants (docs/07). `nextPaymentDate`
- * is the next scheduled charge (null for a one-time purchase), serialized ISO-8601 to match
- * the payload-date convention (`payment_deferred.newPeriodEnd`, `charge_retry_failed`). */
+ * is the next scheduled charge (null for a one-time purchase); `periodStart`/`periodEnd`
+ * are the window the money actually bought, which is NOT always `period` from the start —
+ * a promo bonus pushes the end further, and a buyer choosing a different duration at pay
+ * time would too. All serialized ISO-8601 to match the payload-date convention
+ * (`payment_deferred.newPeriodEnd`, `charge_retry_failed.nextRetryDate`). */
 const succeededPayload = (
   event: Charge,
   match: Match,
-  nextPaymentDate: Date | null,
+  prolongation: Prolongation,
 ) => ({
   amount: event.amount,
   currency: event.currency,
   method: match.method,
   period: match.period,
   source: event.source,
-  nextPaymentDate: nextPaymentDate?.toISOString() ?? null,
+  nextPaymentDate: prolongation.nextPaymentDate?.toISOString() ?? null,
+  periodStart: prolongation.periodStart?.toISOString() ?? null,
+  periodEnd: prolongation.periodEnd?.toISOString() ?? null,
+  recurring: match.recurring ?? true,
+  metadata: prolongation.metadata,
 });
 
 /** initial_payment_succeeded — a first checkout payment (match kind 'checkout'). */
@@ -63,7 +71,7 @@ export const initialPaymentSucceeded = (
   event: Charge,
   match: Match,
   subscriptionId: string,
-  nextPaymentDate: Date | null,
+  prolongation: Prolongation,
 ): InitialPaymentSucceededEvent => ({
   id: eventId(event.idemKey, 'succeeded'),
   name: 'initial_payment_succeeded',
@@ -71,7 +79,7 @@ export const initialPaymentSucceeded = (
   correlationId: event.idemKey,
   externalUserId: match.externalUserId,
   aggregateId: subscriptionId,
-  payload: succeededPayload(event, match, nextPaymentDate),
+  payload: succeededPayload(event, match, prolongation),
 });
 
 /** recurring_payment_succeeded — a renewal charge (match kind 'recurring'). */
@@ -79,7 +87,7 @@ export const recurringPaymentSucceeded = (
   event: Charge,
   match: Match,
   subscriptionId: string,
-  nextPaymentDate: Date | null,
+  prolongation: Prolongation,
 ): RecurringPaymentSucceededEvent => ({
   id: eventId(event.idemKey, 'succeeded'),
   name: 'recurring_payment_succeeded',
@@ -87,7 +95,7 @@ export const recurringPaymentSucceeded = (
   correlationId: event.idemKey,
   externalUserId: match.externalUserId,
   aggregateId: subscriptionId,
-  payload: succeededPayload(event, match, nextPaymentDate),
+  payload: succeededPayload(event, match, prolongation),
 });
 
 /** one_time_purchase_succeeded — a checkout the caller marked non-recurring (a single
@@ -96,6 +104,7 @@ export const oneTimePurchaseSucceeded = (
   event: Charge,
   match: Match,
   subscriptionId: string,
+  prolongation: Prolongation,
 ): OneTimePurchaseSucceededEvent => ({
   id: eventId(event.idemKey, 'succeeded'),
   name: 'one_time_purchase_succeeded',
@@ -103,8 +112,12 @@ export const oneTimePurchaseSucceeded = (
   correlationId: event.idemKey,
   externalUserId: match.externalUserId,
   aggregateId: subscriptionId,
-  // A one-time purchase never renews, so it has no next charge date.
-  payload: succeededPayload(event, match, null),
+  // A one-time purchase never renews, so it has no next charge date — but it DID buy a
+  // window, and that window is the whole of what the buyer got.
+  payload: succeededPayload(event, match, {
+    ...prolongation,
+    nextPaymentDate: null,
+  }),
 });
 
 /**
@@ -116,7 +129,7 @@ const paymentSucceeded = (
   event: Charge,
   match: Match,
   subscriptionId: string,
-  nextPaymentDate: Date | null,
+  prolongation: Prolongation,
 ):
   | InitialPaymentSucceededEvent
   | RecurringPaymentSucceededEvent
@@ -126,12 +139,12 @@ const paymentSucceeded = (
       event,
       match,
       subscriptionId,
-      nextPaymentDate,
+      prolongation,
     );
   }
   return match.recurring === false
-    ? oneTimePurchaseSucceeded(event, match, subscriptionId)
-    : initialPaymentSucceeded(event, match, subscriptionId, nextPaymentDate);
+    ? oneTimePurchaseSucceeded(event, match, subscriptionId, prolongation)
+    : initialPaymentSucceeded(event, match, subscriptionId, prolongation);
 };
 
 /** The provider decline reason for a failed charge (raw payload; string or code). */
@@ -181,6 +194,10 @@ export const paymentCreated = (
     currency: event.currency,
     method: match.method,
     period: match.period,
+    // The declaration the caller attached to the checkout that created this payment, so a
+    // consumer learns what was bought at the moment the payment is born rather than
+    // having to wait for — and join against — the succeeded event.
+    metadata: match.metadata ?? null,
   },
 });
 
@@ -228,8 +245,13 @@ export const boundPaymentSucceeded = (
     method: bind.method,
     period: bind.period,
     source: event.source,
-    // A bind reconciles a legacy/unknown payment; no scheduled next charge is known.
+    // A bind reconciles a legacy/unknown payment: no scheduled charge, no known window,
+    // and no checkout ever declared an intent for it.
     nextPaymentDate: null,
+    periodStart: null,
+    periodEnd: null,
+    recurring: true,
+    metadata: null,
   },
 });
 
@@ -311,12 +333,7 @@ const recordMatchedSuccess = (
       yield* deps.publish(paymentCreated(event, match, applied.subscriptionId));
     }
     yield* deps.publish(
-      paymentSucceeded(
-        event,
-        match,
-        applied.subscriptionId,
-        applied.nextPaymentDate,
-      ),
+      paymentSucceeded(event, match, applied.subscriptionId, applied),
     );
   });
 
@@ -356,7 +373,7 @@ const recordCardChange = (
           event,
           match,
           applied.subscriptionId,
-          applied.nextPaymentDate,
+          applied,
         ),
       );
     }

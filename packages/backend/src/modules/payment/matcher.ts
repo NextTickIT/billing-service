@@ -42,5 +42,7 @@ export const makeRecurringMatcher =
         externalUserId: sub.externalUserId,
         period: sub.period,
         method: sub.method,
+        // The last declaration made for this payment, so a renewal event carries intent.
+        metadata: sub.metadata,
       };
     });

@@ -267,15 +267,15 @@ const reactivatePayment = (_input: unknown, request: FastifyRequest) =>
     if (Option.isNone(found)) {
       return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
-    const ok = yield* repo.clearCancelRequest(id);
-    if (!ok) {
+    const reactivatedAt = yield* repo.clearCancelRequest(id);
+    if (Option.isNone(reactivatedAt)) {
       return yield* Effect.fail(
         new UnprocessableEntity({
           reason: 'payment is not pending cancellation',
         }),
       );
     }
-    const at = yield* Clock.currentTimeMillis;
+    const at = reactivatedAt.value.getTime();
     yield* makeChargeRepo(sql).insertAudit({
       actor: Role[actor.role],
       action: 'reactivate_payment',
@@ -285,7 +285,9 @@ const reactivatePayment = (_input: unknown, request: FastifyRequest) =>
     });
     yield* enqueue(sql)({
       messageType: PAYMENT_REACTIVATE,
-      idemKey: `reactivate:${id}:${at.toString()}`,
+      // The database's own stamp for this reactivation, so a redelivered message dedupes
+      // while a genuine cancel → reactivate → cancel → reactivate reports each one.
+      idemKey: `reactivate:${id}:${reactivatedAt.value.toISOString()}`,
       payload: {
         paymentId: id,
         externalUserId: found.value.externalUserId,
@@ -338,7 +340,11 @@ const applyDefer = (
     });
     yield* enqueue(sql)({
       messageType: PAYMENT_DEFER,
-      idemKey: `defer:${payment.id}:${at.toString()}`,
+      // Keyed on the anchor this deferral established — deterministic from (payment,
+      // days) — rather than on a wall-clock read. The HTTP idempotency ledger already
+      // collapses a resent request; this makes the QUEUE message dedupe on its own terms
+      // too, so a redelivery cannot grant a second message for one grant.
+      idemKey: `defer:${payment.id}:${newPeriodEnd.toISOString()}`,
       payload: {
         paymentId: payment.id,
         externalUserId: payment.externalUserId,

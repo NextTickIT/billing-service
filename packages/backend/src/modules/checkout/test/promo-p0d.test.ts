@@ -60,6 +60,7 @@ const sessionWith = (promo: CheckoutPromo | null): CheckoutSession => ({
   failureUrl: null,
   promo,
   idempotencyKey: null,
+  metadata: null,
   expiresAt: new Date(0),
   createdAt: new Date(0),
 });
@@ -105,6 +106,7 @@ const insertedFor = (promo: CheckoutPromo | null) =>
             ...input,
             id: 'sub_1',
             cancelRequestedAt: null,
+            metadata: null,
             createdAt: new Date(0),
             updatedAt: new Date(0),
           } satisfies Payment;

@@ -83,18 +83,23 @@ const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
   // jsonb bound as `${JSON.stringify(x)}::jsonb`; a bare null stays SQL NULL (no promo),
   // never the jsonb `'null'` literal — mirrors the queue/outbox jsonb convention.
   const promo = input.promo === null ? null : JSON.stringify(input.promo);
+  // Same convention: a SQL NULL for "none", never the jsonb `'null'` literal. `{}` is a
+  // real value here and must survive as `{}` — see `Metadata`.
+  const metadata =
+    input.metadata == null ? null : JSON.stringify(input.metadata);
   // ON CONFLICT keys on the partial unique index (idempotencyKey IS NOT NULL): a repeat
   // or concurrent create with the same key hits DO NOTHING and returns no row; a null key
   // is outside the index, so it never conflicts and always inserts.
   return sql<{ readonly id: string }>`
     INSERT INTO checkout_sessions
       (id, "externalUserId", amount, currency, period, method, kind, recurring,
-       "paymentId", "successUrl", "failureUrl", promo, "idempotencyKey", "expiresAt")
+       "paymentId", "successUrl", "failureUrl", promo, "idempotencyKey", metadata,
+       "expiresAt")
     VALUES
       (${input.id}, ${input.externalUserId}, ${input.amount}, ${input.currency},
        ${input.period}, ${input.method ?? null}, ${input.kind}, ${input.recurring},
        ${input.paymentId}, ${input.successUrl}, ${input.failureUrl},
-       ${promo}::jsonb, ${input.idempotencyKey}, ${input.expiresAt})
+       ${promo}::jsonb, ${input.idempotencyKey}, ${metadata}::jsonb, ${input.expiresAt})
     ON CONFLICT ("idempotencyKey") WHERE "idempotencyKey" IS NOT NULL DO NOTHING
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));

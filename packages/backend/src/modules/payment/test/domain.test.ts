@@ -39,6 +39,7 @@ const activePayment: Payment = {
   firstFailureAt: null,
   retryAttempt: 0,
   cancelRequestedAt: null,
+  metadata: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
 };
@@ -56,6 +57,7 @@ const makeFakeRepo = (existing: Payment | null) => {
           ...input,
           id: 'sub_new',
           cancelRequestedAt: null,
+          metadata: null,
           createdAt: new Date(0),
           updatedAt: new Date(0),
         };

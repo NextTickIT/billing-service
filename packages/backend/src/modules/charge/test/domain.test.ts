@@ -181,6 +181,9 @@ it.effect(
           subscriptionId: 'sub_1',
           created: false,
           nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+          periodStart: new Date('2026-01-01T00:00:00Z'),
+          periodEnd: new Date('2026-02-01T00:00:00Z'),
+          metadata: null,
         }),
         publish: pub.publish,
       })(encodedPayload('k2'));
@@ -218,6 +221,9 @@ it.effect('a checkout first charge also emits payment_created', () =>
         subscriptionId: 'sub_new',
         created: true,
         nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+        periodStart: new Date('2026-01-01T00:00:00Z'),
+        periodEnd: new Date('2026-02-01T00:00:00Z'),
+        metadata: null,
       }),
       publish: pub.publish,
     })(encodedPayload('k7'));
@@ -235,6 +241,9 @@ it.effect('a checkout first charge also emits payment_created', () =>
       currency: 0,
       method: 1,
       period: 'P1M',
+      // The match carried no declaration, so the event says so explicitly rather than
+      // omitting the key — a consumer reading `metadata` must not get `undefined`.
+      metadata: null,
     });
   }),
 );
@@ -263,6 +272,9 @@ it.effect(
           subscriptionId: 'pay_ot',
           created: true,
           nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+          periodStart: new Date('2026-01-01T00:00:00Z'),
+          periodEnd: new Date('2026-02-01T00:00:00Z'),
+          metadata: null,
         }),
         publish: pub.publish,
       })(encodedPayload('k_ot'));
@@ -376,7 +388,12 @@ it('recurringPaymentSucceeded carries the docs/07 required payload fields', () =
       method: 1,
     },
     'sub_9',
-    new Date('2026-02-01T00:00:00Z'),
+    {
+      nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+      periodStart: new Date('2026-01-01T00:00:00Z'),
+      periodEnd: new Date('2026-02-01T00:00:00Z'),
+      metadata: { plan: 'half_year' },
+    },
   );
   expect(event.payload).toEqual({
     amount: 30000,
@@ -385,6 +402,11 @@ it('recurringPaymentSucceeded carries the docs/07 required payload fields', () =
     period: 'P1M',
     source: 'test',
     nextPaymentDate: '2026-02-01T00:00:00.000Z',
+    // The window the money bought, and the caller's own declaration echoed back.
+    periodStart: '2026-01-01T00:00:00.000Z',
+    periodEnd: '2026-02-01T00:00:00.000Z',
+    recurring: true,
+    metadata: { plan: 'half_year' },
   });
   expect(event.aggregateId).toBe('sub_9');
 });
@@ -435,6 +457,9 @@ it.effect(
           subscriptionId: 'pay_1',
           created: false,
           nextPaymentDate: null,
+          periodStart: null,
+          periodEnd: null,
+          metadata: null,
         }),
         publish: pub.publish,
       })(encodedPayload('cc1'));
@@ -460,6 +485,9 @@ it.effect(
           subscriptionId: 'pay_1',
           created: false,
           nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+          periodStart: new Date('2026-01-01T00:00:00Z'),
+          periodEnd: new Date('2026-02-01T00:00:00Z'),
+          metadata: null,
         }),
         publish: pub.publish,
       })(encodedPayload('cc2'));

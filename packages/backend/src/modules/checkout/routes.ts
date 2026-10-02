@@ -192,6 +192,8 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
         failureUrl: input.failureUrl ?? null,
         // A one-time bonus period applied once, when this session is paid (see CheckoutPromo).
         promo: input.promo ?? null,
+        // Absent means "none declared"; a sent `{}` is a value and replaces on extend.
+        metadata: input.metadata ?? null,
         // Opt-in dedup key from the caller's header; null → always a fresh session.
         idempotencyKey: idempotencyKeyOf(request),
         expiresAt,
@@ -350,6 +352,39 @@ const isReissuable = (status: CheckoutSessionStatus): boolean =>
   status === CheckoutSessionStatus.Expired;
 
 /**
+ * A fresh session carrying an expired one's terms — the clone a re-issue inserts.
+ *
+ * Extracted from `resolvePayableSessionId` because that function's job is the DECISION
+ * (is this link live, is it re-issuable, is the user already subscribed?) while this is
+ * just the copy; the two had grown into each other.
+ */
+const reissueOf = (
+  session: CheckoutSession,
+  expiresAt: Date,
+): NewCheckoutSession => ({
+  id: `chk_${randomUUID()}`,
+  externalUserId: session.externalUserId,
+  amount: session.amount,
+  currency: session.currency,
+  period: session.period,
+  method: session.method ?? undefined,
+  kind: CheckoutSessionKind.Checkout,
+  recurring: session.recurring,
+  paymentId: null,
+  successUrl: session.successUrl,
+  failureUrl: session.failureUrl,
+  // The promo is unspent (this checkout was never paid) and the declaration describes the
+  // purchase being re-offered, so both ride along rather than being dropped because the
+  // first link expired.
+  promo: session.promo,
+  metadata: session.metadata,
+  // Never copied: the key is unique across live rows, and the clone is a new checkout,
+  // not a replay of the caller's original request.
+  idempotencyKey: null,
+  expiresAt,
+});
+
+/**
  * Resolve the session id we should actually charge, re-issuing when the one in the link
  * has lapsed.
  *
@@ -425,26 +460,9 @@ export const resolvePayableSessionId = (
     // clicking the same stale link repeatedly (their URL still carries the OLD id) gets
     // one order, not one per click. That reuse is also the rate bound: a user can hold
     // at most one live session at a time, so at most one provider order per TTL window.
-    return yield* repo.reissueLapsed({
-      id: `chk_${randomUUID()}`,
-      externalUserId: session.externalUserId,
-      amount: session.amount,
-      currency: session.currency,
-      period: session.period,
-      method: session.method ?? undefined,
-      kind: CheckoutSessionKind.Checkout,
-      recurring: session.recurring,
-      paymentId: null,
-      successUrl: session.successUrl,
-      failureUrl: session.failureUrl,
-      // The promo rode on the original intent and is still unspent — this checkout was
-      // never paid — so it carries over rather than being silently dropped.
-      promo: session.promo,
-      // Never copied: the key is unique across live rows, and the clone is a new
-      // checkout, not a replay of the caller's original request.
-      idempotencyKey: null,
-      expiresAt: new Date(nowMillis + ttlSeconds * 1000),
-    });
+    return yield* repo.reissueLapsed(
+      reissueOf(session, new Date(nowMillis + ttlSeconds * 1000)),
+    );
   });
 
 const pay = (input: SelectMethod, request: FastifyRequest) =>
@@ -566,6 +584,9 @@ const changeSession = (
   successUrl: null,
   failureUrl: null,
   promo: null,
+  // A method change re-tokenizes an existing payment rather than declaring a purchase, so
+  // it supplies none and the payment keeps whatever it already carries.
+  metadata: null,
   idempotencyKey: null,
   expiresAt,
 });

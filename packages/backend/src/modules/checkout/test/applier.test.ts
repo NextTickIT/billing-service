@@ -72,6 +72,7 @@ it.effect(
               ...input,
               id: 'sub_1',
               cancelRequestedAt: null,
+              metadata: null,
               createdAt: new Date(0),
               updatedAt: new Date(0),
             };
@@ -99,6 +100,10 @@ it.effect(
         subscriptionId: 'sub_1',
         created: true,
         nextPaymentDate: addPeriod(event.occurredAt, 'P1M'),
+        // The window this charge bought: paid-at through paid-at + period.
+        periodStart: event.occurredAt,
+        periodEnd: addPeriod(event.occurredAt, 'P1M'),
+        metadata: null,
       });
       expect(insertedToken).toBe('tok');
       expect(completed).toBe(true);
@@ -123,6 +128,7 @@ it.effect(
               ...input,
               id: 'pay_ot',
               cancelRequestedAt: null,
+              metadata: null,
               createdAt: new Date(0),
               updatedAt: new Date(0),
             };
@@ -150,6 +156,9 @@ it.effect(
         subscriptionId: 'pay_ot',
         created: true,
         nextPaymentDate: addPeriod(event.occurredAt, 'P1M'),
+        periodStart: event.occurredAt,
+        periodEnd: addPeriod(event.occurredAt, 'P1M'),
+        metadata: null,
       });
       expect(insertedRecurring).toBe(false);
       // The provider returned a recToken; a one-time payment must not store it.
@@ -178,6 +187,7 @@ it.effect(
       firstFailureAt: null,
       retryAttempt: 0,
       cancelRequestedAt: null,
+      metadata: null,
       createdAt: new Date(0),
       updatedAt: new Date(0),
     };
@@ -198,6 +208,11 @@ it.effect(
           subscriptionId: 'sub_x',
           created: false,
           nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+          // Read off the payment the scheduler already advanced — a renewal reports the
+          // window it is in and the intent the buyer last declared, not nothing.
+          periodStart: new Date('2026-02-01T00:00:00Z'),
+          periodEnd: new Date('2026-03-01T00:00:00Z'),
+          metadata: null,
         });
       }),
     );
@@ -221,6 +236,7 @@ const owingPayment: Payment = {
   firstFailureAt: new Date('2026-01-01T00:00:00Z'),
   retryAttempt: 2,
   cancelRequestedAt: null,
+  metadata: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
 };

@@ -67,6 +67,7 @@ const existingPayment: Payment = {
   firstFailureAt: null,
   retryAttempt: 0,
   cancelRequestedAt: null,
+  metadata: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
 };
@@ -156,6 +157,9 @@ it.effect('remaps live records and appends the change to the ledger', () =>
       to: 'sp:new',
       movedPayments: 2,
       movedSessions: 1,
+      // The id of the ledger row this rename just appended — what the emitted event keys
+      // on, so a later A→B→A→B chain reports four changes instead of collapsing to one.
+      changeId: 'euc_1',
     });
     expect(log.appends).toHaveLength(1);
     expect(log.appends[0]).toMatchObject({
@@ -259,6 +263,9 @@ it.effect(
         to: 'sp:new',
         movedPayments: 3,
         movedSessions: 1,
+        // The RECORDED row, not a new one: a retried call must re-emit the same event key
+        // so the outbox collapses it. This is what keeps the fix idempotent.
+        changeId: 'euc_prior',
       });
       expect(log.appends).toHaveLength(0);
     }),

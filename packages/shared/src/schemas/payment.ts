@@ -63,6 +63,22 @@ export const PaymentStatusSchema = Schema.Enums(PaymentStatus);
  * `recurringTokenRef` points at the stored provider token (null for crypto or
  * before tokenization); `firstFailureAt`/`retryAttempt` drive the FR-005 retries.
  */
+/**
+ * Caller-supplied passthrough. Billing never reads, validates or branches on it: the
+ * external system declares what a purchase MEANS to it (a plan code, a campaign, a chosen
+ * duration) and we hand that back on every event the purchase produces, so a consumer
+ * does not have to re-derive intent from an amount.
+ *
+ * Opaque by design — `Schema.Unknown` values, so a shape change upstream never fails a
+ * decode here, and no billing logic can start depending on a key.
+ */
+export const Metadata = Schema.Record({
+  key: Schema.String,
+  value: Schema.Unknown,
+});
+
+export type Metadata = Schema.Schema.Type<typeof Metadata>;
+
 export const Payment = Schema.Struct({
   id: Schema.String,
   externalUserId: Schema.String,
@@ -85,15 +101,27 @@ export const Payment = Schema.Struct({
   // currentPeriodEnd) and the scheduler lapses it at the due date instead of
   // charging. Null in normal operation. See docs/23.
   cancelRequestedAt: Schema.NullOr(Schema.Date),
+  // The most recently DECLARED purchase intent, carried onto every event this payment
+  // emits. Re-stamped whenever a checkout supplies one (create or extend), so a renewal
+  // reports what the buyer last chose rather than a stale first purchase; a checkout that
+  // supplies none leaves it untouched. Null when no checkout ever supplied one.
+  metadata: Schema.NullOr(Metadata),
   createdAt: Schema.Date,
   updatedAt: Schema.Date,
 });
 
 export type Payment = Schema.Schema.Type<typeof Payment>;
 
-/** Create params: the server owns `id`, the timestamps, and the cancel flag. */
+/** Create params: the server owns `id`, the timestamps, and the cancel flag. `metadata` is
+ * optional here — most payments are born without a declaration, and the column stores
+ * NULL for them; only a checkout that carried one passes it. */
 export const CreatePayment = Payment.pipe(
-  Schema.omit('id', 'createdAt', 'updatedAt', 'cancelRequestedAt'),
+  Schema.omit('id', 'createdAt', 'updatedAt', 'cancelRequestedAt', 'metadata'),
+  // Optional AND nullable: callers express "none declared" either by omitting the field
+  // or by passing null, and both store NULL.
+  Schema.extend(
+    Schema.Struct({ metadata: Schema.optional(Schema.NullOr(Metadata)) }),
+  ),
 );
 
 export type CreatePayment = Schema.Schema.Type<typeof CreatePayment>;

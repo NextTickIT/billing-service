@@ -53,12 +53,17 @@ export type RenameExternalUserRequest = Schema.Schema.Type<
   typeof RenameExternalUserRequest
 >;
 
-/** POST /api/payment/rename-external-user response: the ids and how many records moved. */
+/** POST /api/payment/rename-external-user response: the ids and how many records moved.
+ * `changeId` is the ledger row this rename appended — the identity of THIS remap, which
+ * the `external_user_id_changed` event keys on. A retried call replays the recorded
+ * row's id (so the event dedupes); a genuine re-rename of the same pair appends a new
+ * row and gets a new id (so A→B→A→B reports four changes, not one). */
 export const RenameAccepted = Schema.Struct({
   from: Schema.String,
   to: Schema.String,
   movedPayments: Schema.Int,
   movedSessions: Schema.Int,
+  changeId: Schema.String,
 });
 
 export type RenameAccepted = Schema.Schema.Type<typeof RenameAccepted>;

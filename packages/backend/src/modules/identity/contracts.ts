@@ -12,6 +12,10 @@ export const ExternalUserIdChangeNotify = Schema.Struct({
   to: Schema.String,
   movedPayments: Schema.Int,
   movedSessions: Schema.Int,
+  // The ledger row id this remap appended — what the emitted event keys on. Optional for
+  // one release so a message enqueued by the previous image still decodes instead of
+  // dead-lettering; `externalUserIdChanged` falls back to the old pair-based id.
+  changeId: Schema.optional(Schema.String),
 });
 
 export type ExternalUserIdChangeNotify = Schema.Schema.Type<

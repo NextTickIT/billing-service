@@ -30,17 +30,20 @@ const serviceActor = (request: FastifyRequest) => {
     : authenticateToken(presented);
 };
 
-/** Enqueue the opt-in `external_user_id_changed` notify (docs/31). A deterministic
- * idemKey dedupes a retried rename, so the event fires exactly once. */
+/** Enqueue the opt-in `external_user_id_changed` notify (docs/31). Keyed on the ledger
+ * row this rename appended, so a retried call (which replays that row) dedupes while a
+ * genuine re-rename of the same pair is its own message — the id pair alone collapsed
+ * every remap after the first. */
 const enqueueChange = (sql: SqlClient.SqlClient, result: RenameAccepted) =>
   enqueue(sql)({
     messageType: EXTERNAL_USER_ID_CHANGE,
-    idemKey: `euidchg:${result.from}|${result.to}`,
+    idemKey: `euidchg:${result.changeId}`,
     payload: {
       from: result.from,
       to: result.to,
       movedPayments: result.movedPayments,
       movedSessions: result.movedSessions,
+      changeId: result.changeId,
     },
   }).pipe(Effect.asVoid);
 

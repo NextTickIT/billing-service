@@ -33,6 +33,7 @@ const session = (over: Partial<CheckoutSession> = {}): CheckoutSession => ({
   failureUrl: null,
   promo: { additionalFreePeriod: 'P7D' },
   idempotencyKey: 'sp:1',
+  metadata: null,
   expiresAt: new Date(NOW - HOUR), // lapsed an hour ago
   createdAt: new Date(NOW - 2 * HOUR),
   ...over,

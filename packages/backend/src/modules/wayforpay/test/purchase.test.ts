@@ -36,6 +36,7 @@ const session = (expiresAt: Date) => ({
   failureUrl: null,
   promo: null,
   idempotencyKey: null,
+  metadata: null,
   expiresAt,
   createdAt: new Date(0),
 });
@@ -58,6 +59,7 @@ describe('buildPurchase', () => {
       failureUrl: null,
       promo: null,
       idempotencyKey: null,
+      metadata: null,
       expiresAt: new Date(0),
       createdAt: new Date(0),
     },
