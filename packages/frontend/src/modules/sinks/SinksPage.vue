@@ -30,6 +30,14 @@ const enabled = ref(false);
 const token = ref('');
 const flowMap = ref<SinkFlowMap>({});
 
+// The CRM feed is a second, independent sink: its own enable, token and endpoint. It runs
+// alongside SendPulse rather than replacing it, so it gets its own form and its own save.
+const crmEnabled = ref(false);
+const crmToken = ref('');
+const crmUrl = ref('');
+
+const crmHasToken = computed(() => store.crm?.auth.hasToken ?? false);
+
 const hasToken = computed(() => store.sink?.auth.hasToken ?? false);
 const selectorsEnabled = computed(() => hasToken.value && !store.flowsError);
 
@@ -45,6 +53,16 @@ watch(
     enabled.value = sink?.enabled ?? false;
     token.value = '';
     flowMap.value = { ...(sink?.config.flows ?? {}) };
+  },
+  { immediate: true },
+);
+
+watch(
+  () => store.crm,
+  (crm) => {
+    crmEnabled.value = crm?.enabled ?? false;
+    crmToken.value = '';
+    crmUrl.value = crm?.config.url ?? '';
   },
   { immediate: true },
 );
@@ -89,6 +107,21 @@ function buildPatch(): UpdateSinkRequest {
 async function onSave(): Promise<void> {
   const ok = await store.save(buildPatch());
   if (ok) token.value = '';
+}
+
+function buildCrmPatch(): UpdateSinkRequest {
+  return {
+    enabled: crmEnabled.value,
+    ...(crmToken.value
+      ? { auth: { kind: AuthKind.Bearer, token: crmToken.value } }
+      : {}),
+    config: { url: crmUrl.value.trim() },
+  };
+}
+
+async function onSaveCrm(): Promise<void> {
+  const ok = await store.saveCrm(buildCrmPatch());
+  if (ok) crmToken.value = '';
 }
 </script>
 
@@ -153,6 +186,48 @@ async function onSave(): Promise<void> {
         />
       </template>
     </BasePanel>
+
+    <BasePanel :title="t('sinks.crm.title')">
+      <div v-if="store.loading" class="state-center"><BaseSpinner /></div>
+      <template v-else>
+        <p class="form-hint">{{ t('sinks.crm.about') }}</p>
+
+        <div class="form-field">
+          <label class="form-label">{{ t('sinks.enabled') }}</label>
+          <label class="toggle">
+            <input v-model="crmEnabled" type="checkbox" class="toggle__input" />
+            <span class="toggle__text">
+              {{ crmEnabled ? t('sinks.on') : t('sinks.off') }}
+            </span>
+          </label>
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">{{ t('sinks.crm.url') }}</label>
+          <BaseInput v-model="crmUrl" :placeholder="t('sinks.crm.urlEnter')" />
+          <p v-if="crmEnabled && !crmUrl" class="form-warn">
+            {{ t('sinks.crm.urlMissing') }}
+          </p>
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">{{ t('sinks.token') }}</label>
+          <p v-if="crmHasToken" class="form-hint">{{ t('sinks.tokenSet') }}</p>
+          <BaseInput
+            v-model="crmToken"
+            type="password"
+            :placeholder="crmHasToken ? MASKED_TOKEN : t('sinks.tokenEnter')"
+          />
+        </div>
+
+        <p v-if="store.crmError" class="state-error">{{ store.crmError }}</p>
+        <BaseButton
+          :label="t('common.save')"
+          :loading="store.savingCrm"
+          @click="onSaveCrm"
+        />
+      </template>
+    </BasePanel>
   </div>
 </template>
 
@@ -160,7 +235,7 @@ async function onSave(): Promise<void> {
 .sinks-page {
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: 16px;
 }
 
 .state-center {

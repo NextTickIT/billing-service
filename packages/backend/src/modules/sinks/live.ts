@@ -29,6 +29,9 @@ export interface SinksLiveConfig {
      * is enforced by its 429, which the client treats as transient and retries. */
     readonly rateLimitRps: number;
   };
+  readonly crm: {
+    readonly rateLimitRps: number;
+  };
 }
 
 interface CacheState {
@@ -47,6 +50,9 @@ export const SinksLive = (
       const emailRateLimiter = yield* makeRateLimiter(
         config.email.rateLimitRps,
       );
+      // Its own limiter, built once here with the others: a shared one would let a CRM
+      // backlog delay the customer-facing SendPulse deliveries.
+      const crmRateLimiter = yield* makeRateLimiter(config.crm.rateLimitRps);
       const repo = makeSinksRepo(sql);
       // Built once, outside `rebuild`, for the same reason as the limiters: a config
       // rebuild every cache TTL must not discard a live OAuth token.
@@ -54,6 +60,7 @@ export const SinksLive = (
       const deps: ConnectorDeps = {
         fetch: (url, init) => globalThis.fetch(url, init),
         rateLimiter,
+        crmRateLimiter,
         apiUrl: config.sendpulse.apiUrl,
         emailApiUrl: config.email.apiUrl,
         emailRateLimiter,
