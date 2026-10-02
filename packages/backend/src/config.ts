@@ -163,6 +163,11 @@ export interface SinksConfig {
     readonly apiUrl: string;
     readonly rateLimitRps: number;
   };
+  /** The CRM sink's client-side rate limit. Its endpoint and token are operator config
+   * (a `sinks` row), not environment — only the limiter is built once per process. */
+  readonly crm: {
+    readonly rateLimitRps: number;
+  };
 }
 
 export interface AppConfig {
@@ -373,6 +378,11 @@ const loadContactsSyncConfig = (): AppConfig['contactsSync'] => ({
   batchSize: Number(process.env['CONTACTS_SYNC_BATCH_SIZE'] ?? '500'),
 });
 
+/** The CRM sink's client-side rate limit. Its URL and token are operator config. */
+const loadCrmSinkConfig = (): { readonly rateLimitRps: number } => ({
+  rateLimitRps: Number(process.env['CRM_RATE_LIMIT_RPS'] ?? '10'),
+});
+
 export const loadConfig = (): AppConfig => ({
   host: process.env['HOST'] ?? '0.0.0.0',
   port: Number(process.env['PORT'] ?? '3000'),
@@ -394,6 +404,7 @@ export const loadConfig = (): AppConfig => ({
       cancelTags: loadSendPulseCancelTags(),
     },
     email: loadEmailConfig(),
+    crm: loadCrmSinkConfig(),
   },
   contactsSync: loadContactsSyncConfig(),
   bffSecret: Redacted.make(process.env['BFF_SECRET'] ?? ''),
