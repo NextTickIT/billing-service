@@ -27,7 +27,7 @@ it('mergeUpdate keeps the stored token when the patch omits auth', () => {
   });
   expect(merged.auth.token).toBe('stored-token');
   expect(merged.enabled).toBe(true);
-  expect(merged.config.flows).toEqual({ renewal_failed: 'f2' });
+  expect(merged.config).toEqual({ flows: { renewal_failed: 'f2' } });
 });
 
 it('mergeUpdate keeps the stored token when the patch token is empty', () => {

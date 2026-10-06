@@ -42,6 +42,11 @@ export interface AdvanceAnchor {
  * Success` reset the retry state (a good payment restores standing).
  */
 export interface PaymentRepo {
+  /** Backfill the receipt address for an existing payer; resolves to the row count. */
+  readonly setEmail: (
+    externalUserId: string,
+    email: string,
+  ) => Effect.Effect<number, SqlError.SqlError>;
   /**
    * The user's live RECURRING payment that create-or-extend acts on: Active, or PastDue
    * (a renewal mid-retry — incl. a crypto manual-renewal prompt that flipped it to
@@ -428,7 +433,22 @@ const renameExternalUser =
       RETURNING id
     `.pipe(Effect.map((rows) => rows.length));
 
+/**
+ * Stamp the receipt address onto every payment this id owns. Returns the row count, so
+ * a backfill can tell "not a payer" (0) from "done" (>0). Preferred over the checkout
+ * session as a source because `rename-external-user` moves payments, so the address
+ * follows a remapped payer; a completed session does not move.
+ */
+const setEmail =
+  (sql: SqlClient.SqlClient) => (externalUserId: string, email: string) =>
+    sql<{ readonly id: string }>`
+      UPDATE payments SET email = ${email}
+      WHERE "externalUserId" = ${externalUserId} AND email <> ${email}
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length));
+
 export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
+  setEmail: setEmail(sql),
   findActiveRecurringByExternalUser: findActiveRecurringByExternalUser(sql),
   findUpcomingForNotice: findUpcomingForNotice(sql),
   findById: findById(sql),

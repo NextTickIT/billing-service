@@ -146,6 +146,13 @@ export interface SinksConfig {
      * for case-insensitive matching. */
     readonly cancelTags: readonly string[];
   };
+  /** Transactional email (receipts). Endpoint only — the OAuth client id lives in the
+   * sink row's `config` and the secret in its write-only `auth.token`, so credentials
+   * are operator-editable and never read from env. */
+  readonly email: {
+    readonly apiUrl: string;
+    readonly rateLimitRps: number;
+  };
 }
 
 export interface AppConfig {
@@ -330,6 +337,27 @@ const loadDatabaseConfig = (): DatabaseConfig => ({
 /** Parse the SendPulse "cancelled upstream" tag list (env, comma-separated),
  * lowercased for case-insensitive matching. Its own loader so `loadConfig` stays
  * within the complexity budget. */
+/**
+ * A positive number from an env override, or the default. Guarded because the value
+ * feeds `makeRateLimiter`, which DIES on a non-positive/NaN rate — inside the Sinks
+ * layer, so one fat-fingered override stops every sink from delivering anything.
+ */
+const positiveNumber = (raw: string | undefined, fallback: number): number => {
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+/**
+ * Transactional email. The REST root differs from the chatbot base, and the credentials
+ * differ too: the email API is OAuth client-credentials, with the client id in the
+ * sink's `config` and the secret in its write-only `auth.token`, so neither belongs in
+ * env — only the endpoint and a burst guard do.
+ */
+const loadEmailConfig = (): SinksConfig['email'] => ({
+  apiUrl: process.env['SENDPULSE_REST_API_URL'] ?? 'https://api.sendpulse.com',
+  rateLimitRps: positiveNumber(process.env['EMAIL_RATE_LIMIT_RPS'], 2),
+});
+
 const loadSendPulseCancelTags = (): readonly string[] =>
   (process.env['SENDPULSE_CANCEL_TAGS'] ?? 'карантин,скасували підписку')
     .split(',')
@@ -365,6 +393,7 @@ export const loadConfig = (): AppConfig => ({
       rateLimitRps: Number(process.env['SENDPULSE_RATE_LIMIT_RPS'] ?? '5'),
       cancelTags: loadSendPulseCancelTags(),
     },
+    email: loadEmailConfig(),
   },
   contactsSync: loadContactsSyncConfig(),
   bffSecret: Redacted.make(process.env['BFF_SECRET'] ?? ''),

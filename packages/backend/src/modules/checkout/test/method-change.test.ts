@@ -169,6 +169,7 @@ const recordingRepo = () => {
       Effect.sync(() => {
         calls.clearedToken = true;
       }),
+    setEmail: () => Effect.succeed(0),
     renameExternalUser: die,
   };
   return { calls, repo };

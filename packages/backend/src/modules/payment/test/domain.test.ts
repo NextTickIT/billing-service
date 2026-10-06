@@ -81,6 +81,7 @@ const makeFakeRepo = (existing: Payment | null) => {
     updateToken: () => Effect.die('unused'),
     setMethod: () => Effect.die('unused'),
     clearToken: () => Effect.die('unused'),
+    setEmail: () => Effect.succeed(0),
     renameExternalUser: () => Effect.die('unused'),
   };
   return { repo, getInserted: () => inserted, getExtended: () => extended };

@@ -43,6 +43,9 @@ export const manualRenewalSession = (
   currency: sub.currency,
   period: sub.period,
   method: sub.method,
+  // Server-minted: no form was filled. The email sink resolves the address at delivery
+  // time from the payment or an earlier session, so '' here loses nothing.
+  email: '',
   kind: CheckoutSessionKind.Checkout,
   recurring: true,
   paymentId: null,

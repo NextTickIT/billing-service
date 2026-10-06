@@ -2,6 +2,8 @@ import { SqlClient } from '@effect/sql';
 import {
   RenameAccepted,
   RenameExternalUserRequest,
+  SetPaymentEmailAccepted,
+  SetPaymentEmailRequest,
 } from '@billing-service/shared';
 import { Effect } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -69,6 +71,23 @@ const rename = (input: RenameExternalUserRequest, request: FastifyRequest) =>
     );
   });
 
+/**
+ * Attach a receipt address to an existing payer (backfill). Same service-token surface
+ * as the rename — a local client runs it with a minted token, so it is deliberately NOT
+ * BFF-gated. No event is emitted: this changes where a FUTURE receipt goes, it does not
+ * assert that anything happened to the payment.
+ */
+const setEmail = (input: SetPaymentEmailRequest, request: FastifyRequest) =>
+  Effect.gen(function* () {
+    yield* serviceActor(request);
+    const sql = yield* SqlClient.SqlClient;
+    const updated = yield* makePaymentRepo(sql).setEmail(
+      input.externalUserId,
+      input.email,
+    );
+    return { externalUserId: input.externalUserId, updated };
+  });
+
 export default function identity(fastify: FastifyInstance): void {
   route(fastify, {
     method: 'POST',
@@ -76,5 +95,13 @@ export default function identity(fastify: FastifyInstance): void {
     input: RenameExternalUserRequest,
     output: RenameAccepted,
     handler: rename,
+  });
+
+  route(fastify, {
+    method: 'POST',
+    path: '/api/payment/set-email',
+    input: SetPaymentEmailRequest,
+    output: SetPaymentEmailAccepted,
+    handler: setEmail,
   });
 }

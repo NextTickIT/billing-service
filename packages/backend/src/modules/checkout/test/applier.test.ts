@@ -43,6 +43,7 @@ const unusedSubs: PaymentRepo = {
   updateToken: () => Effect.die('unused'),
   setMethod: () => Effect.die('unused'),
   clearToken: () => Effect.die('unused'),
+  setEmail: () => Effect.succeed(0),
   renameExternalUser: () => Effect.die('unused'),
 };
 const unusedCheckout: CheckoutRepo = {

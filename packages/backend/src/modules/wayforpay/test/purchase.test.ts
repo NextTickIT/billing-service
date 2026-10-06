@@ -37,6 +37,7 @@ const session = (expiresAt: Date) => ({
   promo: null,
   idempotencyKey: null,
   expiresAt,
+  email: '',
   createdAt: new Date(0),
 });
 
@@ -59,6 +60,7 @@ describe('buildPurchase', () => {
       promo: null,
       idempotencyKey: null,
       expiresAt: new Date(0),
+      email: '',
       createdAt: new Date(0),
     },
     1700000000,

@@ -39,6 +39,7 @@ const session: CheckoutSession = {
   promo: null,
   idempotencyKey: null,
   expiresAt: new Date(0),
+  email: '',
   createdAt: new Date(0),
 };
 

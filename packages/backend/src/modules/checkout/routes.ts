@@ -194,6 +194,9 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
         promo: input.promo ?? null,
         // Opt-in dedup key from the caller's header; null → always a fresh session.
         idempotencyKey: idempotencyKeyOf(request),
+        // Where the receipt goes. '' when the caller sent none: no address, no email —
+        // and the email sink then fails loudly rather than pretending it delivered.
+        email: input.email ?? '',
         expiresAt,
       },
       request.server.appConfig.checkoutBaseUrl,
@@ -350,6 +353,36 @@ const isReissuable = (status: CheckoutSessionStatus): boolean =>
   status === CheckoutSessionStatus.Expired;
 
 /**
+ * A fresh purchase intent cloned from a lapsed one. Everything that belongs to the
+ * BUYER's intent carries over; everything that identifies the old request does not.
+ */
+const clonedIntent = (
+  session: CheckoutSession,
+  expiresAt: Date,
+): NewCheckoutSession => ({
+  id: `chk_${randomUUID()}`,
+  externalUserId: session.externalUserId,
+  amount: session.amount,
+  currency: session.currency,
+  period: session.period,
+  method: session.method ?? undefined,
+  kind: CheckoutSessionKind.Checkout,
+  recurring: session.recurring,
+  paymentId: null,
+  successUrl: session.successUrl,
+  failureUrl: session.failureUrl,
+  // The promo rode on the original intent and is still unspent — this checkout was
+  // never paid — so it carries over rather than being silently dropped.
+  promo: session.promo,
+  // Carried like the promo: a re-issued link must still reach the buyer.
+  email: session.email,
+  // Never copied: the key is unique across live rows, and the clone is a new checkout,
+  // not a replay of the caller's original request.
+  idempotencyKey: null,
+  expiresAt,
+});
+
+/**
  * Resolve the session id we should actually charge, re-issuing when the one in the link
  * has lapsed.
  *
@@ -406,10 +439,9 @@ export const resolvePayableSessionId = (
         new Conflict({ field: 'checkout session (not re-issuable)' }),
       );
     }
-    // Only a plain recurring checkout is re-issuable. A one-time purchase has no
-    // subscription to check against, so an immortal link would be unlimited repeat
-    // charges; a card-change session acts on an existing payment and is minted by its
-    // own endpoint.
+    // Only a plain recurring checkout is re-issuable: a one-time purchase has no
+    // subscription to check against (an immortal link would be unlimited repeat
+    // charges), and a card-change session is minted by its own endpoint.
     if (!session.recurring || session.kind !== CheckoutSessionKind.Checkout) {
       return yield* Effect.fail(
         new Conflict({ field: 'checkout session (expired)' }),
@@ -425,26 +457,9 @@ export const resolvePayableSessionId = (
     // clicking the same stale link repeatedly (their URL still carries the OLD id) gets
     // one order, not one per click. That reuse is also the rate bound: a user can hold
     // at most one live session at a time, so at most one provider order per TTL window.
-    return yield* repo.reissueLapsed({
-      id: `chk_${randomUUID()}`,
-      externalUserId: session.externalUserId,
-      amount: session.amount,
-      currency: session.currency,
-      period: session.period,
-      method: session.method ?? undefined,
-      kind: CheckoutSessionKind.Checkout,
-      recurring: session.recurring,
-      paymentId: null,
-      successUrl: session.successUrl,
-      failureUrl: session.failureUrl,
-      // The promo rode on the original intent and is still unspent — this checkout was
-      // never paid — so it carries over rather than being silently dropped.
-      promo: session.promo,
-      // Never copied: the key is unique across live rows, and the clone is a new
-      // checkout, not a replay of the caller's original request.
-      idempotencyKey: null,
-      expiresAt: new Date(nowMillis + ttlSeconds * 1000),
-    });
+    return yield* repo.reissueLapsed(
+      clonedIntent(session, new Date(nowMillis + ttlSeconds * 1000)),
+    );
   });
 
 const pay = (input: SelectMethod, request: FastifyRequest) =>
@@ -558,6 +573,9 @@ const changeSession = (
   currency: payment.currency,
   period: payment.period,
   method: targetMethod,
+  // Server-initiated re-tokenization, not a purchase form: the email sink resolves the
+  // address at delivery time from the payment or an earlier session.
+  email: '',
   // Reused for ALL method-change sessions (card- and crypto-target): the callback matcher
   // routes on this kind, while the applier keys on the event source, not this label.
   kind: CheckoutSessionKind.CardChange,

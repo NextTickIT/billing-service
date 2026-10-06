@@ -60,6 +60,7 @@ const sessionWith = (promo: CheckoutPromo | null): CheckoutSession => ({
   failureUrl: null,
   promo,
   idempotencyKey: null,
+  email: '',
   expiresAt: new Date(0),
   createdAt: new Date(0),
 });
@@ -86,6 +87,7 @@ const deadPayments: PaymentRepo = {
   updateToken: () => Effect.die('unused'),
   setMethod: () => Effect.die('unused'),
   clearToken: () => Effect.die('unused'),
+  setEmail: () => Effect.succeed(0),
   renameExternalUser: () => Effect.die('unused'),
 };
 

@@ -36,6 +36,7 @@ const unusedPayments: PaymentRepo = {
   updateToken: die,
   setMethod: die,
   clearToken: die,
+  setEmail: () => Effect.succeed(0),
   renameExternalUser: die,
 };
 

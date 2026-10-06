@@ -62,3 +62,35 @@ export const RenameAccepted = Schema.Struct({
 });
 
 export type RenameAccepted = Schema.Schema.Type<typeof RenameAccepted>;
+
+/**
+ * POST /api/payment/set-email — attach a receipt address to an EXISTING payer.
+ *
+ * Backfill only. New checkouts carry `email` on the create, so this exists for the
+ * payers who bought before the field did: a local client reads the address out of
+ * SendPulse (where a post-payment flow collected it) and posts it here. Idempotent, and
+ * a no-op for a non-payer (`updated: 0`), so the caller can simply post everything it
+ * has rather than first working out who is missing one.
+ */
+export const SetPaymentEmailRequest = Schema.Struct({
+  externalUserId: Schema.String,
+  email: Schema.String.pipe(
+    Schema.filter((s) => /^[^\s@]+@[^\s@.]+\.[^\s@]{2,}$/.test(s), {
+      message: () => 'must be an email address',
+    }),
+  ),
+});
+
+export type SetPaymentEmailRequest = Schema.Schema.Type<
+  typeof SetPaymentEmailRequest
+>;
+
+/** How many payment rows now carry the address (0 = this id owns no payment). */
+export const SetPaymentEmailAccepted = Schema.Struct({
+  externalUserId: Schema.String,
+  updated: Schema.Int,
+});
+
+export type SetPaymentEmailAccepted = Schema.Schema.Type<
+  typeof SetPaymentEmailAccepted
+>;

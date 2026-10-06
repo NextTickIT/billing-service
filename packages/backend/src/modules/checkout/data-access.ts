@@ -89,12 +89,14 @@ const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
   return sql<{ readonly id: string }>`
     INSERT INTO checkout_sessions
       (id, "externalUserId", amount, currency, period, method, kind, recurring,
-       "paymentId", "successUrl", "failureUrl", promo, "idempotencyKey", "expiresAt")
+       "paymentId", "successUrl", "failureUrl", promo, "idempotencyKey", email,
+       "expiresAt")
     VALUES
       (${input.id}, ${input.externalUserId}, ${input.amount}, ${input.currency},
        ${input.period}, ${input.method ?? null}, ${input.kind}, ${input.recurring},
        ${input.paymentId}, ${input.successUrl}, ${input.failureUrl},
-       ${promo}::jsonb, ${input.idempotencyKey}, ${input.expiresAt})
+       ${promo}::jsonb, ${input.idempotencyKey}, ${input.email},
+       ${input.expiresAt})
     ON CONFLICT ("idempotencyKey") WHERE "idempotencyKey" IS NOT NULL DO NOTHING
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));

@@ -11,6 +11,15 @@ import { Context, Data, Effect, Layer } from 'effect';
 export class SinkError extends Data.TaggedError('SinkError')<{
   readonly sink: string;
   readonly reason: string;
+  /**
+   * Human-readable text for the error RECORD, not for control flow.
+   *
+   * `Data.TaggedError` passes `props.message` to `Error`, and the queue's
+   * `describeError` takes its `instanceof Error` branch first and returns
+   * `error.message` verbatim — so without this a stored `SinkError` is `{ message: '' }`
+   * and a dead delivery says nothing about why. Set it to `${sink}: ${reason}`.
+   */
+  readonly message?: string;
   readonly cause?: unknown;
 }> {}
 

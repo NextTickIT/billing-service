@@ -45,7 +45,15 @@ interface HttpFail {
 }
 
 const toSinkError = (f: HttpFail): SinkError =>
-  new SinkError({ sink: SINK_NAME, reason: f.message, cause: f.cause });
+  new SinkError({
+    sink: SINK_NAME,
+    reason: f.message,
+    // Without this the queue's `describeError` stores `{ message: '' }` and a dead
+    // chatbot delivery says nothing about why — the exact blindness that kept the
+    // original incident invisible for three weeks. See `SinkError.message`.
+    message: `${SINK_NAME}: ${f.message}`,
+    cause: f.cause,
+  });
 
 /** One rate-limited call; transient failures retry, then any failure is an `HttpFail`. */
 const call = (

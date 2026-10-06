@@ -40,6 +40,12 @@ export const CheckoutSessionKindSchema = Schema.Enums(CheckoutSessionKind);
  * other scheme) open-redirect the return page would navigate to. Persisted rows read
  * back as a plain string — the scheme is enforced on write, not on every read.
  */
+export const EmailAddress = Schema.String.pipe(
+  Schema.filter((s) => /^[^\s@]+@[^\s@.]+\.[^\s@]{2,}$/.test(s), {
+    message: () => 'must be an email address',
+  }),
+);
+
 export const RedirectUrl = Schema.String.pipe(
   Schema.filter((s) => /^https?:\/\//i.test(s), {
     message: () => 'must be an http(s) URL',
@@ -87,6 +93,14 @@ export const CheckoutSession = Schema.Struct({
   // unique index enforces one session per key, so a retried/parallel create returns the
   // same session instead of minting a duplicate. Never exposed on the public session.
   idempotencyKey: Schema.NullOr(Schema.String),
+  // The payer's email, captured at checkout, for the transactional receipt. Empty
+  // string when the caller did not supply one — the column is NOT NULL DEFAULT ''.
+  //
+  // It lives on the purchase rather than on the contact cache because a receipt must
+  // reach a FIRST-TIME buyer: they have no SendPulse chatbot contact (one exists only
+  // after they message the bot, and no API can create it), so the id billing holds is
+  // unreachable at exactly the moment they have paid. Email needs only an address.
+  email: Schema.String,
   expiresAt: Schema.Date,
   createdAt: Schema.Date,
 });
@@ -130,6 +144,10 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       successUrl: Schema.optional(RedirectUrl),
       failureUrl: Schema.optional(RedirectUrl),
       promo: Schema.optional(CheckoutPromo),
+      // Optional: the receipt is sent only when an address was captured. Validated for
+      // FORM at the boundary — a malformed address is worse than an absent one, because
+      // it looks delivered and bounces silently.
+      email: Schema.optional(EmailAddress),
     }),
   ),
   // A recurring checkout needs its renewal cadence; a one-time purchase never renews, so

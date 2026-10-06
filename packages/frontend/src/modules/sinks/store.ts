@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
+import { SinkKind } from '@billing-service/shared';
 import type {
+  SendPulseSinkView,
   SinkView,
   UpdateSinkRequest,
   SinkFlow,
@@ -8,13 +10,15 @@ import type {
 
 import { getSinks, updateSink, getSinkFlows } from './api.js';
 
-// One sink kind today (SendPulse), so the list holds a single record.
-function pickSendpulse(sinks: SinkView[]): SinkView | null {
-  return sinks[0] ?? null;
+// `sinks` holds one row per kind (SendPulse and email). This page edits the SendPulse
+// one, so select it by kind: position would quietly hand over whichever row sorted
+// first, and saving would then overwrite the other sink's secret.
+function pickSendpulse(sinks: SinkView[]): SendPulseSinkView | null {
+  return sinks.find((s) => s.kind === SinkKind.SendPulse) ?? null;
 }
 
 export const useSinksStore = defineStore('sinks', () => {
-  const sink = ref<SinkView | null>(null);
+  const sink = ref<SendPulseSinkView | null>(null);
   const flows = ref<SinkFlow[]>([]);
   const loading = ref(false);
   const saving = ref(false);
@@ -52,8 +56,8 @@ export const useSinksStore = defineStore('sinks', () => {
     saving.value = true;
     error.value = null;
     try {
-      sink.value = await updateSink(patch);
-      if (sink.value.auth.hasToken) await loadFlows();
+      sink.value = pickSendpulse([await updateSink(patch)]);
+      if (sink.value?.auth.hasToken) await loadFlows();
       return true;
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Error';
