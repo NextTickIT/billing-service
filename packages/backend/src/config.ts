@@ -1,6 +1,16 @@
 import { Redacted } from 'effect';
 
 /**
+ * A positive number from an env override, or the default. Guarded because these values
+ * feed `makeRateLimiter`, which DIES on a non-positive/NaN rate — inside the layer that
+ * builds every sink, so one fat-fingered override stops everything from delivering.
+ */
+const positiveNumber = (raw: string | undefined, fallback: number): number => {
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+/**
  * Application configuration shape and loader.
  * Values come from the environment; the DB host defaults to the
  * project-specific loopback (see README / docker-compose).
@@ -247,7 +257,7 @@ const loadWhitePayConfig = (): WhitePayConfig => ({
   failureLink:
     process.env['WHITEPAY_FAILURE_LINK'] ??
     'https://bill.nexttick.it/checkout/{sessionId}',
-  rateLimitRps: Number(process.env['WHITEPAY_RATE_LIMIT_RPS'] ?? '2'),
+  rateLimitRps: positiveNumber(process.env['WHITEPAY_RATE_LIMIT_RPS'], 2),
 });
 
 /** Parse a seconds env var to a finite positive number, else the fallback. Guards a bad
@@ -301,7 +311,7 @@ const loadWayForPayConfig = (): WayForPayConfig => ({
     process.env['W4P_REGULAR_API_URL'] ??
     'https://api.wayforpay.com/regularApi',
   merchantDomainName: process.env['W4P_DOMAIN_NAME'] ?? '',
-  rateLimitRps: Number(process.env['W4P_RATE_LIMIT_RPS'] ?? '2'),
+  rateLimitRps: positiveNumber(process.env['W4P_RATE_LIMIT_RPS'], 2),
   cardVerifyEnabled: process.env['W4P_CARD_VERIFY_ENABLED'] === 'true',
   cardChangeChargeMinor: Number(
     process.env['W4P_CARD_CHANGE_CHARGE_MINOR'] ?? '0',
@@ -337,16 +347,6 @@ const loadDatabaseConfig = (): DatabaseConfig => ({
 /** Parse the SendPulse "cancelled upstream" tag list (env, comma-separated),
  * lowercased for case-insensitive matching. Its own loader so `loadConfig` stays
  * within the complexity budget. */
-/**
- * A positive number from an env override, or the default. Guarded because the value
- * feeds `makeRateLimiter`, which DIES on a non-positive/NaN rate — inside the Sinks
- * layer, so one fat-fingered override stops every sink from delivering anything.
- */
-const positiveNumber = (raw: string | undefined, fallback: number): number => {
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-};
-
 /**
  * Transactional email. The REST root differs from the chatbot base, and the credentials
  * differ too: the email API is OAuth client-credentials, with the client id in the
@@ -390,7 +390,7 @@ export const loadConfig = (): AppConfig => ({
       apiUrl:
         process.env['SENDPULSE_API_URL'] ??
         'https://api.sendpulse.com/telegram',
-      rateLimitRps: Number(process.env['SENDPULSE_RATE_LIMIT_RPS'] ?? '5'),
+      rateLimitRps: positiveNumber(process.env['SENDPULSE_RATE_LIMIT_RPS'], 5),
       cancelTags: loadSendPulseCancelTags(),
     },
     email: loadEmailConfig(),

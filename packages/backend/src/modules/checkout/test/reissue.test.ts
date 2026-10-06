@@ -33,7 +33,7 @@ const session = (over: Partial<CheckoutSession> = {}): CheckoutSession => ({
   failureUrl: null,
   promo: { additionalFreePeriod: 'P7D' },
   idempotencyKey: 'sp:1',
-  email: '',
+  email: 'buyer@example.com',
   expiresAt: new Date(NOW - HOUR), // lapsed an hour ago
   createdAt: new Date(NOW - 2 * HOUR),
   ...over,
@@ -99,6 +99,9 @@ describe('a lapsed link is re-issued instead of refused', () => {
     expect(fresh.recurring).toBe(true);
     // The promo was never spent — this checkout was never paid — so it carries over.
     expect(fresh.promo).toEqual({ additionalFreePeriod: 'P7D' });
+    // Same reasoning as the promo: it belongs to the buyer's intent, and a re-issued
+    // link must still be able to send them a receipt.
+    expect(fresh.email).toBe('buyer@example.com');
     // The key is unique across live rows and this is a new checkout, not a replay.
     expect(fresh.idempotencyKey).toBeNull();
     expect(fresh.expiresAt.getTime()).toBe(NOW + TTL_SECONDS * 1000);

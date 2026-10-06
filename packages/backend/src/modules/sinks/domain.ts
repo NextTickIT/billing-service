@@ -37,9 +37,14 @@ export interface ConnectorDeps {
 }
 
 /**
- * Enabled sink rows → runtime connectors, narrowed on `sink.kind` (AC8). The switch is
- * exhaustive on purpose: a new `SinkKind` fails to compile until it has a branch here,
- * which is cheaper than discovering at runtime that a configured sink delivers nothing.
+ * Enabled sink rows → runtime connectors, narrowed on `sink.kind` (AC8).
+ *
+ * The switch is exhaustive on purpose — a new `SinkKind` fails to compile until it has a
+ * branch here, which is cheaper than discovering at runtime that a configured sink
+ * delivers nothing. The `default` does not weaken that: it asserts `never`, so adding a
+ * kind still breaks the build, while a kind this IMAGE does not know about (rows are cast
+ * rather than decoded) is dropped instead of returning `undefined` into the connector
+ * list, which `outbox` would dereference and kill every event publish.
  */
 export const buildConnectors = (
   sinks: readonly Sink[],
@@ -86,8 +91,12 @@ export const buildConnectors = (
       // written by another deploy line) arrives here. Falling through would return
       // `undefined` into the connector list, and `outbox` reads `.name` off every
       // entry — which would kill event publishing for EVERY event, not just this sink.
-      default:
+      default: {
+        // Compile-time exhaustiveness survives: a NEW kind fails to assign to `never`.
+        const unknownKind: never = sink;
+        void unknownKind;
         return [];
+      }
     }
   });
 
