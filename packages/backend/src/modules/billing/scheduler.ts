@@ -110,9 +110,14 @@ const promptManual = (deps: SchedulerDeps, sub: Payment, now: Date) =>
     // Still within the ladder: mint our checkout link and prompt. Publish BEFORE
     // recordRetry so the event carries this attempt's due date (recordRetry moves it).
     const checkout = yield* deps.createManualCheckout(sub, now);
-    yield* deps.publish(
-      paymentManualRequired(sub, checkout, now, plan.attempt),
-    );
+    // `plan.nextPaymentDate` is non-null here (the final/null case returned above), and it
+    // is the date recordRetry is about to write — so the prompt names the same next date
+    // the ladder will actually use.
+    const ladder = {
+      attempt: plan.attempt,
+      nextRetryDate: plan.nextPaymentDate,
+    };
+    yield* deps.publish(paymentManualRequired(sub, checkout, now, ladder));
     yield* deps.subs.recordRetry(sub.id, {
       firstFailureAt,
       retryAttempt: plan.attempt,

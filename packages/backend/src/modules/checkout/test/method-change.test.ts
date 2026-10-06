@@ -43,6 +43,7 @@ const paymentWith = (status: PaymentStatus): Payment => ({
   firstFailureAt: null,
   retryAttempt: 0,
   cancelRequestedAt: null,
+  metadata: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
 });
@@ -210,7 +211,12 @@ it.effect(
       expect(result).toEqual({
         subscriptionId: 'sub_1',
         created: false,
+        // A 0-amount verify changes the card, not the schedule: no window was bought, so
+        // the applier reports none rather than inventing one.
         nextPaymentDate: null,
+        periodStart: null,
+        periodEnd: null,
+        metadata: null,
       });
     }),
 );

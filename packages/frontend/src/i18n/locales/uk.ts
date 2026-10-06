@@ -128,6 +128,14 @@ export default {
     noMatch: 'Нічого не знайдено.',
   },
   sinks: {
+    crm: {
+      title: 'Канал CRM',
+      about:
+        'Окремий незалежний приймач: кожна подія надсилається в CRM у snake_case, паралельно з потоками SendPulse. Його вимкнення не впливає на повідомлення клієнтам.',
+      url: 'Точка приймання',
+      urlEnter: 'https://crm.example/api/v1/billing-events',
+      urlMissing: 'Увімкнено без адреси — нічого не надсилатиметься.',
+    },
     title: 'Приймачі',
     enabled: 'Увімкнено',
     on: 'Увімк',

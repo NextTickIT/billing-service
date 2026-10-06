@@ -15,50 +15,49 @@ import {
 
 const die = () => Effect.die('unused on the notice path');
 
-const sub = (over: Partial<Payment> = {}): Payment =>
-  ({
-    id: 'sub-1',
-    externalUserId: 'sp:1',
-    amount: 5000,
-    currency: 1,
-    method: 0,
-    period: 'P1M',
-    status: PaymentStatus.Active,
-    recurring: true,
-    nextPaymentDate: new Date('2026-10-02T09:00:00.000Z'),
-    recurringTokenRef: 'tok_1',
-    firstFailureAt: null,
-    retryAttempt: 0,
-    cancelRequestedAt: null,
-    currentPeriodStart: new Date('2026-09-02T09:00:00.000Z'),
-    currentPeriodEnd: new Date('2026-10-02T09:00:00.000Z'),
-    createdAt: new Date('2026-09-02T09:00:00.000Z'),
-    updatedAt: new Date('2026-09-02T09:00:00.000Z'),
-    ...over,
-  }) as Payment;
+const sub = (over: Partial<Payment> = {}): Payment => ({
+  id: 'sub-1',
+  externalUserId: 'sp:1',
+  amount: 5000,
+  currency: 1,
+  method: 0,
+  period: 'P1M',
+  status: PaymentStatus.Active,
+  recurring: true,
+  nextPaymentDate: new Date('2026-10-02T09:00:00.000Z'),
+  recurringTokenRef: 'tok_1',
+  firstFailureAt: null,
+  retryAttempt: 0,
+  cancelRequestedAt: null,
+  metadata: null,
+  currentPeriodStart: new Date('2026-09-02T09:00:00.000Z'),
+  currentPeriodEnd: new Date('2026-10-02T09:00:00.000Z'),
+  createdAt: new Date('2026-09-02T09:00:00.000Z'),
+  updatedAt: new Date('2026-09-02T09:00:00.000Z'),
+  ...over,
+});
 
 /** Nothing is due to charge; the tick exists only to run the notice sweep. */
 const deps = (
   upcoming: Record<number, readonly Payment[]>,
   published: DomainEvent[],
-): SchedulerDeps =>
-  ({
-    subs: {
-      findDue: () => Effect.succeed([]),
-      findUpcomingForNotice: (days: number) =>
-        Effect.succeed(upcoming[days] ?? []),
-    } as unknown as PaymentRepo,
-    client: { charge: die },
-    ingest: die,
-    publish: (event: DomainEvent) =>
-      Effect.sync(() => {
-        published.push(event);
-      }),
-    lapse: die,
-    upstreamCancelled: () => Effect.succeed(false),
-    cancelUpstream: die,
-    createManualCheckout: die,
-  }) as unknown as SchedulerDeps;
+): SchedulerDeps => ({
+  subs: {
+    findDue: () => Effect.succeed([]),
+    findUpcomingForNotice: (days: number) =>
+      Effect.succeed(upcoming[days] ?? []),
+  } as unknown as PaymentRepo,
+  client: { charge: die },
+  ingest: die,
+  publish: (event: DomainEvent) =>
+    Effect.sync(() => {
+      published.push(event);
+    }),
+  lapse: die,
+  upstreamCancelled: () => Effect.succeed(false),
+  cancelUpstream: die,
+  createManualCheckout: die,
+});
 
 const cfg = (days: readonly number[]) => ({
   intervalSeconds: 60,

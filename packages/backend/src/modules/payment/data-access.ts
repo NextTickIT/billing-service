@@ -20,6 +20,13 @@ export interface ExtendPayment {
   readonly currentPeriodEnd: Date;
   readonly nextPaymentDate: Date;
   readonly recurringTokenRef: string | null;
+  /**
+   * Absent/null means KEEP the stored value, never clear it — the extend query COALESCEs
+   * rather than assigning. Every other field here is a flat overwrite, so writing this one
+   * the obvious way (`metadata = ${input.metadata}`) would null the payment's intent on
+   * every renewal, which supplies none.
+   */
+  readonly metadata?: Record<string, unknown> | null | undefined;
 }
 
 /** Retry state after a failed recurring charge (FR-005). */
@@ -128,10 +135,16 @@ export interface PaymentRepo {
   readonly requestCancel: (
     id: string,
   ) => Effect.Effect<Option.Option<Date>, SqlError.SqlError>;
-  /** Reverse a pending cancel within the grace window; false if none pending. */
+  /**
+   * Reverse a pending cancel within the grace window; None if none was pending.
+   * Returns the row's new `updatedAt` — the instant the DATABASE recorded this
+   * reactivation — so the caller keys its queue message on the occurrence rather than on
+   * its own `Date.now()`, which differs per request and would make a redelivery a second
+   * event. Same rule as the cancel path's `cancelRequestedAt`.
+   */
   readonly clearCancelRequest: (
     id: string,
-  ) => Effect.Effect<boolean, SqlError.SqlError>;
+  ) => Effect.Effect<Option.Option<Date>, SqlError.SqlError>;
   /**
    * At the due date, flip a cancel-pending payment to `cancelled` (idempotent).
    * Returns false when the row was no longer cancel-pending — a reactivation landed
@@ -239,18 +252,29 @@ const insert = (sql: SqlClient.SqlClient) => (input: CreatePayment) =>
     INSERT INTO payments
       ("externalUserId", amount, currency, method, period, status, recurring,
        "currentPeriodStart", "currentPeriodEnd", "nextPaymentDate",
-       "recurringTokenRef", "firstFailureAt", "retryAttempt")
+       "recurringTokenRef", "firstFailureAt", "retryAttempt", metadata)
     VALUES
       (${input.externalUserId}, ${input.amount}, ${input.currency}, ${input.method},
        ${input.period}, ${input.status}, ${input.recurring}, ${input.currentPeriodStart},
        ${input.currentPeriodEnd}, ${input.nextPaymentDate},
-       ${input.recurringTokenRef}, ${input.firstFailureAt}, ${input.retryAttempt})
+       ${input.recurringTokenRef}, ${input.firstFailureAt}, ${input.retryAttempt},
+       ${input.metadata == null ? null : JSON.stringify(input.metadata)}::jsonb)
     RETURNING ${sql.unsafe(COLUMNS)}
   `.pipe(Effect.flatMap(requireRow));
 
 const extend =
-  (sql: SqlClient.SqlClient) => (id: string, input: ExtendPayment) =>
-    sql`
+  (sql: SqlClient.SqlClient) => (id: string, input: ExtendPayment) => {
+    // COALESCE below, not assignment — and this value is what decides which. A renewal
+    // supplies no metadata and must leave the declared intent standing, so absent/null
+    // becomes a SQL NULL meaning KEEP. An explicitly supplied object (including an empty
+    // one) is a declaration and replaces what is stored. Every other column in this
+    // statement is a flat overwrite; writing this one the same way would wipe the payment's
+    // intent on every renewal.
+    const metadata =
+      input.metadata === undefined || input.metadata === null
+        ? null
+        : JSON.stringify(input.metadata);
+    return sql`
       UPDATE payments
       SET amount = ${input.amount}, currency = ${input.currency}, method = ${input.method},
           period = ${input.period}, status = ${PaymentStatus.Active},
@@ -258,9 +282,11 @@ const extend =
           "currentPeriodEnd" = ${input.currentPeriodEnd},
           "nextPaymentDate" = ${input.nextPaymentDate},
           "recurringTokenRef" = ${input.recurringTokenRef},
+          metadata = COALESCE(${metadata}::jsonb, metadata),
           "firstFailureAt" = NULL, "retryAttempt" = 0, "updatedAt" = now()
       WHERE id = ${id}
     `.pipe(Effect.asVoid);
+  };
 
 const advanceAfterSuccess =
   (sql: SqlClient.SqlClient) => (id: string, anchor: AdvanceAnchor) =>
@@ -378,13 +404,13 @@ const requestCancel = (sql: SqlClient.SqlClient) => (id: string) =>
   `.pipe(Effect.map((rows) => Option.fromNullable(rows[0]?.cancelRequestedAt)));
 
 const clearCancelRequest = (sql: SqlClient.SqlClient) => (id: string) =>
-  sql<{ readonly id: string }>`
+  sql<{ readonly updatedAt: Date }>`
     UPDATE payments SET "cancelRequestedAt" = NULL, "updatedAt" = now()
     WHERE id = ${id}
       AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
       AND "cancelRequestedAt" IS NOT NULL
-    RETURNING id
-  `.pipe(Effect.map((rows) => rows.length > 0));
+    RETURNING "updatedAt"
+  `.pipe(Effect.map((rows) => Option.fromNullable(rows[0]?.updatedAt)));
 
 // Returns whether it actually lapsed the row. The caller must not announce a lapse it
 // did not perform: a buyer who reactivates inside the grace window clears

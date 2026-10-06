@@ -27,6 +27,11 @@ export interface ApplyPaymentParams {
    * so the bonus lands exactly once — on the charge that earned it.
    */
   readonly promoBonus?: string | null;
+  /**
+   * Opaque caller declaration. ABSENT (or null) means leave the stored value alone — only
+   * a checkout that actually supplied one re-stamps the payment. See `Metadata`.
+   */
+  readonly metadata?: Record<string, unknown> | null | undefined;
 }
 
 export interface ApplyPaymentResult {
@@ -36,6 +41,11 @@ export interface ApplyPaymentResult {
   /** The next scheduled charge date established by this charge (the paid-through anchor).
    * Carried out so the succeeded event can report it. */
   readonly nextPaymentDate: Date;
+  /** The window this charge bought (promo bonus already folded into the end). */
+  readonly periodStart: Date;
+  readonly periodEnd: Date;
+  /** What the payment carries after this charge — supplied value, else the stored one. */
+  readonly metadata: Record<string, unknown> | null;
 }
 
 /** The period a successful charge pays for; the next charge anchors on its end. */
@@ -86,12 +96,16 @@ const insertNew =
         recurringTokenRef: params.recurring ? params.recurringTokenRef : null,
         firstFailureAt: null,
         retryAttempt: 0,
+        metadata: params.metadata ?? null,
       })
       .pipe(
         Effect.map((created) => ({
           subscriptionId: created.id,
           created: true,
           nextPaymentDate: anchors.nextPaymentDate,
+          periodStart: anchors.currentPeriodStart,
+          periodEnd: anchors.currentPeriodEnd,
+          metadata: created.metadata,
         })),
       );
 
@@ -118,11 +132,17 @@ export const createOrExtend =
           period: params.period,
           ...anchors,
           recurringTokenRef: params.recurringTokenRef,
+          metadata: params.metadata,
         });
         return {
           subscriptionId: existing.value.id,
           created: false,
           nextPaymentDate: anchors.nextPaymentDate,
+          periodStart: anchors.currentPeriodStart,
+          periodEnd: anchors.currentPeriodEnd,
+          // Mirrors what `extend`'s COALESCE just wrote: the supplied declaration, or the
+          // stored one when this charge supplied none.
+          metadata: params.metadata ?? existing.value.metadata,
         };
       }
       return yield* insertNew(repo)(params, anchors);

@@ -24,9 +24,13 @@ export const chargeIncomingEvent = (
   response: W4pChargeResponse,
   now: Date,
 ): Charge => {
-  const createdDate = String(
-    response.createdDate ?? Math.floor(now.getTime() / 1000),
-  );
+  // Absent `createdDate` falls back to the EMPTY segment, never a wall-clock read.
+  // `transactionExternalId` — the scheme the poller derives — renders a missing
+  // createdDate as '', so this produces the identical key for the identical row and the
+  // promised FR-006 dedupe actually holds. A `Date.now()` here instead made the key
+  // differ on every emission, so a retried charge booked twice under two keys: the one
+  // defect this module's own comment claimed was impossible.
+  const createdDate = String(response.createdDate ?? '');
   return {
     source: 'wayforpay_charge',
     // Same scheme the poller derives, so a later journal read dedupes (FR-006).
@@ -124,11 +128,18 @@ export interface ManualCheckout {
  * again at our internal checkout (docs/28). The id keys on the due date so an at-least-once
  * redelivery of the same attempt dedupes; a later attempt (a new due date) is its own event.
  */
+/** Where this prompt sits on the retry ladder: which attempt, and when the next is due
+ * (null on the last one). Grouped so the builder keeps a readable argument list. */
+export interface ManualLadder {
+  readonly attempt: number;
+  readonly nextRetryDate: Date | null;
+}
+
 export const paymentManualRequired = (
   sub: Payment,
   checkout: ManualCheckout,
   now: Date,
-  attempt: number,
+  ladder: ManualLadder,
 ): PaymentManualRequiredEvent => ({
   id: `evt_sub_${sub.id}_manual_${sub.nextPaymentDate.getTime().toString()}`,
   name: 'payment_manual_required',
@@ -144,7 +155,8 @@ export const paymentManualRequired = (
     checkoutUrl: checkout.checkoutUrl,
     dueDate: sub.nextPaymentDate.toISOString(),
     windowExpiresAt: checkout.windowExpiresAt.toISOString(),
-    attempt,
+    attempt: ladder.attempt,
+    nextRetryDate: ladder.nextRetryDate?.toISOString() ?? null,
   },
 });
 

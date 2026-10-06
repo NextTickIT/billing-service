@@ -49,6 +49,9 @@ export const manualRenewalSession = (
   successUrl: null,
   failureUrl: null,
   promo: null,
+  // A renewal prompt re-charges terms the buyer already declared; it adds no declaration
+  // of its own, so paying it leaves the payment's stored metadata standing.
+  metadata: null,
   // One session per renewal cycle: re-prompts on the retry ladder reuse the SAME link
   // (the unique idempotencyKey collapses re-inserts), so a user can never hold several
   // independently-payable links for one cycle and double-pay.
@@ -156,6 +159,8 @@ export const makeCheckoutMatcher =
         recurring: session.recurring,
         // A one-time bonus period the session carried; applied once on the create path.
         promoBonus: session.promo?.additionalFreePeriod ?? null,
+        // The caller's declaration for THIS purchase; stamped on the payment when applied.
+        metadata: session.metadata,
       };
     });
 
@@ -191,6 +196,9 @@ export const makeCardChangeMatcher =
         period: session.period,
         method: session.method ?? PaymentMethod.Card,
         owed: session.amount > 0,
+        // Usually null — a card change re-tokenizes rather than declaring a purchase — so
+        // the extend COALESCE leaves the payment's existing declaration standing.
+        metadata: session.metadata,
       };
     });
 
@@ -241,6 +249,11 @@ const applyCardChange =
       // The next charge date this change establishes: for an owed change it advances the
       // anchor (below); otherwise the payment's existing schedule is unchanged.
       let nextPaymentDate: Date | null = null;
+      // Only the OWED branch establishes a window (and is the only branch that emits a
+      // succeeded-payment event); a 0-amount verify changes the card, not the schedule.
+      let periodStart: Date | null = null;
+      let periodEnd: Date | null = null;
+      let metadata: Record<string, unknown> | null = null;
       if (owed) {
         const found = yield* payments.findById(paymentId);
         // Guard the advance on the payment still OWING (past_due/renewal_failed):
@@ -257,10 +270,20 @@ const applyCardChange =
             nextPaymentDate: currentPeriodEnd,
           });
           nextPaymentDate = currentPeriodEnd;
+          periodStart = p.currentPeriodEnd;
+          periodEnd = currentPeriodEnd;
+          metadata = p.metadata;
         }
       }
       yield* checkout.markCompleted(event.externalRef);
-      return { subscriptionId: paymentId, created: false, nextPaymentDate };
+      return {
+        subscriptionId: paymentId,
+        created: false,
+        nextPaymentDate,
+        periodStart,
+        periodEnd,
+        metadata,
+      };
     });
 
 /**
@@ -288,10 +311,26 @@ export const makeCheckoutApplier =
       // report on the succeeded event.
       return Effect.gen(function* () {
         const found = yield* payments.findById(subscriptionId);
-        const nextPaymentDate = Option.isSome(found)
-          ? found.value.nextPaymentDate
-          : null;
-        return { subscriptionId, created: false, nextPaymentDate };
+        // The scheduler already advanced this payment, so its own row IS the prolongation
+        // this charge bought — and its stored metadata is the last intent the buyer
+        // declared, which is what a renewal must report rather than nothing.
+        return Option.isSome(found)
+          ? {
+              subscriptionId,
+              created: false,
+              nextPaymentDate: found.value.nextPaymentDate,
+              periodStart: found.value.currentPeriodStart,
+              periodEnd: found.value.currentPeriodEnd,
+              metadata: found.value.metadata,
+            }
+          : {
+              subscriptionId,
+              created: false,
+              nextPaymentDate: null,
+              periodStart: null,
+              periodEnd: null,
+              metadata: null,
+            };
       });
     }
     return createOrExtend(payments)({
@@ -305,6 +344,8 @@ export const makeCheckoutApplier =
       recurring: match.recurring ?? true,
       // One-time bonus period from the session; extends the paid-through anchor once.
       promoBonus: match.promoBonus ?? null,
+      // Absent when the caller declared none — `extend` then keeps what is stored.
+      metadata: match.metadata,
       recurringTokenRef: recToken(event.payload),
       paidAt: event.occurredAt,
     }).pipe(Effect.tap(() => checkout.markCompleted(event.externalRef)));

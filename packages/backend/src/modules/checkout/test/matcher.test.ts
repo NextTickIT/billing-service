@@ -26,6 +26,7 @@ const session: CheckoutSession = {
   failureUrl: null,
   promo: null,
   idempotencyKey: null,
+  metadata: null,
   expiresAt: new Date(0),
   createdAt: new Date(0),
 };

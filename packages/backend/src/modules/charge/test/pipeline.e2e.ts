@@ -81,21 +81,100 @@ const registerHandlers = Effect.gen(function* () {
   );
 });
 
-/** Run the dispatch loop for `seconds`, then stop (the loop is `Effect<never>`). */
-const runFor = (seconds: number) =>
-  Effect.gen(function* () {
-    const queue = yield* Queue;
-    yield* Effect.race(
-      queue.run({
-        workerId: 'e2e',
-        pollIntervalMillis: 50,
-        batchSize: 10,
-        visibilityTimeoutMillis: 300_000,
-        retry: defaultRetryConfig,
-      }),
-      Effect.sleep(Duration.seconds(seconds)),
+/**
+ * Upper bound on a drain, not an expected duration. Nothing should come close; if a drain
+ * hits this, the queue is genuinely stuck and the test says so rather than asserting
+ * against a half-processed database.
+ */
+const DRAIN_DEADLINE_SECONDS = 30;
+
+/**
+ * Is there any work the dispatcher could pick up right now?
+ *
+ * `retry` with a FUTURE `retryAt` does not count: a scenario that deliberately leaves a
+ * failed delivery in backoff is quiescent, and waiting for it would hang until the
+ * deadline. Only work that is claimable now keeps the drain going.
+ */
+const claimableNow = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ readonly count: number }>`
+    SELECT count(*)::int AS count FROM messages
+    WHERE status IN ('pending', 'in_progress')
+       OR (status = 'retry' AND "retryAt" <= now())
+  `;
+  return rows[0]?.count ?? 1;
+});
+
+/** What is still outstanding, for a deadline failure that names the problem. */
+const outstanding = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    readonly messageType: string;
+    readonly status: string;
+    readonly count: number;
+  }>`
+    SELECT "messageType", status, count(*)::int AS count FROM messages
+    WHERE status IN ('pending', 'in_progress')
+       OR (status = 'retry' AND "retryAt" <= now())
+    GROUP BY "messageType", status
+  `;
+  return rows
+    .map((r) => `${r.messageType}/${r.status}=${r.count.toString()}`)
+    .join(' ');
+});
+
+/**
+ * Wait until the queue has nothing claimable, twice in a row.
+ *
+ * Two consecutive readings rather than one: a handler enqueues its follow-up in the same
+ * transaction that completes it, so a single zero is almost certainly real — but the
+ * second reading costs 50ms and removes the "almost".
+ */
+const untilDrained = Effect.gen(function* () {
+  let consecutiveZeros = 0;
+  while (consecutiveZeros < 2) {
+    yield* Effect.sleep(Duration.millis(50));
+    consecutiveZeros = (yield* claimableNow) === 0 ? consecutiveZeros + 1 : 0;
+  }
+});
+
+/**
+ * Run the dispatch loop until the queue is drained, then stop (the loop is
+ * `Effect<never>`).
+ *
+ * This used to race the loop against a fixed `Effect.sleep(2)`. That is a global
+ * wall-clock budget, not a completion condition: the loop polls every 50ms and each
+ * scenario shells out to `psql`, so on a loaded machine two seconds stopped the dispatcher
+ * mid-queue and the assertions then read a half-processed database. Three consecutive runs
+ * failed in three different places. Draining on the queue's own state makes a green run
+ * mean the work finished, and makes a red run a real failure rather than a slow machine.
+ */
+const drain = Effect.gen(function* () {
+  const queue = yield* Queue;
+  const result = yield* Effect.race(
+    queue.run({
+      workerId: 'e2e',
+      pollIntervalMillis: 50,
+      batchSize: 10,
+      visibilityTimeoutMillis: 300_000,
+      retry: defaultRetryConfig,
+    }),
+    Effect.race(
+      untilDrained.pipe(Effect.as('drained' as const)),
+      Effect.sleep(Duration.seconds(DRAIN_DEADLINE_SECONDS)).pipe(
+        Effect.as('deadline' as const),
+      ),
+    ),
+  );
+  if (result === 'deadline') {
+    const left = yield* outstanding;
+    return yield* Effect.die(
+      new Error(
+        `queue did not drain within ${DRAIN_DEADLINE_SECONDS.toString()}s; outstanding: ${left}`,
+      ),
     );
-  });
+  }
+});
 
 const eq = async (
   query: EffectE2eContext['query'],
@@ -114,7 +193,7 @@ const driveQuarantine = Effect.gen(function* () {
   const pipeline = yield* ChargePipeline;
   yield* pipeline.ingest(charge(IDEM_KEY));
   yield* pipeline.ingest(charge(IDEM_KEY)); // duplicate receipt
-  yield* runFor(3);
+  yield* drain;
 });
 
 const assertQuarantine = async (
@@ -175,7 +254,7 @@ const driveBind = Effect.gen(function* () {
   const pipeline = yield* ChargePipeline;
 
   yield* pipeline.ingest(charge(BIND_KEY));
-  yield* runFor(2); // quarantine + deliver
+  yield* drain; // quarantine + deliver
 
   const open = yield* repo.listOpenQuarantine();
   const record = open[0];
@@ -201,7 +280,7 @@ const driveBind = Effect.gen(function* () {
       method: 0,
     },
   });
-  yield* runFor(2); // reprocess + deliver
+  yield* drain; // reprocess + deliver
 });
 
 const assertBind = async (query: EffectE2eContext['query']): Promise<void> => {
@@ -292,7 +371,7 @@ const drivePoller = Effect.gen(function* () {
       maxWindowSeconds: 21600,
     },
   );
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertPoller = async (
@@ -351,6 +430,7 @@ const driveCheckout = Effect.gen(function* () {
     failureUrl: null,
     promo: null,
     idempotencyKey: null,
+    metadata: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -364,7 +444,7 @@ const driveCheckout = Effect.gen(function* () {
       createdDate: '1700000000',
     }),
   );
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertCheckout = async (
@@ -470,7 +550,7 @@ const driveScheduler = Effect.gen(function* () {
     },
     { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertScheduler = async (
@@ -550,7 +630,7 @@ const driveCancel = Effect.gen(function* () {
       cancelRequestedAt,
     },
   });
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertCancel = async (
@@ -653,7 +733,7 @@ const driveLapse = Effect.gen(function* () {
     },
     { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertLapse = async (query: EffectE2eContext['query']): Promise<void> => {
@@ -736,6 +816,7 @@ const driveCardChangeOwed = Effect.gen(function* () {
     failureUrl: null,
     promo: null,
     idempotencyKey: null,
+    metadata: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -750,7 +831,7 @@ const driveCardChangeOwed = Effect.gen(function* () {
     occurredAt: new Date('2026-01-05T00:00:00Z'),
     payload: { recToken: 'new' },
   });
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertCardChangeOwed = async (
@@ -850,6 +931,7 @@ const driveCardChangeDecline = Effect.gen(function* () {
     failureUrl: null,
     promo: null,
     idempotencyKey: null,
+    metadata: null,
     expiresAt: new Date('2030-01-01T00:00:00Z'),
   });
   const pipeline = yield* ChargePipeline;
@@ -864,7 +946,7 @@ const driveCardChangeDecline = Effect.gen(function* () {
     occurredAt: new Date('2026-01-05T00:00:00Z'),
     payload: { recToken: 'new', reason: 'Insufficient funds' },
   });
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertCardChangeDecline = async (
@@ -1076,7 +1158,7 @@ const driveCancelPastDue = Effect.gen(function* () {
     },
     { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
-  yield* runFor(2);
+  yield* drain;
 });
 
 const cancelPastDueLapses: EffectScenario = {
@@ -1212,7 +1294,7 @@ const driveCancelUpstream = Effect.gen(function* () {
     },
     { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
   );
-  yield* runFor(2);
+  yield* drain;
 });
 
 const assertCancelUpstream = async (
