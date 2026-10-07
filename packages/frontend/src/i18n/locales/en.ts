@@ -62,10 +62,13 @@ export default {
     typeOneTime: 'One-time payment',
     linkValidUntil: 'Payment link valid until {date}',
     redirecting: 'Redirecting to card verification…',
-    legalNote: 'By paying, you accept:',
-    legalOffer: 'Offer',
-    legalPrivacy: 'Privacy Policy',
-    legalConsent: 'Data Consent',
+    consentMarketing: 'I agree to receive marketing materials',
+    consentLegal:
+      'I have read and agree to the {offer}, {privacy}, {consent} and {refund}.',
+    consentOffer: 'Public Offer',
+    consentPrivacy: 'Privacy Policy',
+    consentDataProcessing: 'Personal Data Processing Consent',
+    consentRefund: 'refund rules',
   },
   session: {
     loginTitle: 'Operator login',

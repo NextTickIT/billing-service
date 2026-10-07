@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
-import { useI18n } from 'vue-i18n';
+import { I18nT, useI18n } from 'vue-i18n';
 import {
   CheckoutSessionKind,
   CheckoutSessionStatus,
@@ -127,13 +127,22 @@ async function onPay(): Promise<void> {
   await store.pay(id, selectedMethod.value);
 }
 
-// Legal documents (Offer / Privacy / Data consent), hosted on the marketing site,
-// linked below the Pay button so the buyer accepts them at the point of payment.
-const legalLinks = [
-  { key: 'checkout.legalOffer', url: 'https://nexttick.it/offer.html' },
-  { key: 'checkout.legalPrivacy', url: 'https://nexttick.it/privacy.html' },
-  { key: 'checkout.legalConsent', url: 'https://nexttick.it/consent.html' },
-] as const;
+// Consents the buyer must give at the point of payment. Both are required: the
+// marketing one by the client's decision, the legal one because the documents it
+// names are the terms of the purchase. Pay stays disabled until both are ticked.
+// The documents are hosted on the marketing site. The refund rules have no page of
+// their own (they are §13 of the Offer), so that part of the sentence is plain text.
+const legalUrls = {
+  offer: 'https://nexttick.it/offer.html',
+  privacy: 'https://nexttick.it/privacy.html',
+  consent: 'https://nexttick.it/consent.html',
+} as const;
+
+const marketingConsent = ref(false);
+const legalConsent = ref(false);
+const consentsGiven = computed(
+  () => marketingConsent.value && legalConsent.value,
+);
 </script>
 
 <template>
@@ -200,6 +209,58 @@ const legalLinks = [
               })
             }}
           </p>
+          <div class="checkout__consents">
+            <label class="checkout__consent">
+              <input
+                v-model="marketingConsent"
+                type="checkbox"
+                class="checkout__consent-box"
+                required
+              />
+              <span class="checkout__consent-text">
+                {{ t('checkout.consentMarketing') }}
+                <span class="checkout__required" aria-hidden="true">*</span>
+              </span>
+            </label>
+            <label class="checkout__consent">
+              <input
+                v-model="legalConsent"
+                type="checkbox"
+                class="checkout__consent-box"
+                required
+              />
+              <span class="checkout__consent-text">
+                <I18nT keypath="checkout.consentLegal" tag="span" scope="global">
+                  <template #offer>
+                    <a
+                      :href="legalUrls.offer"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      >{{ t('checkout.consentOffer') }}</a
+                    >
+                  </template>
+                  <template #privacy>
+                    <a
+                      :href="legalUrls.privacy"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      >{{ t('checkout.consentPrivacy') }}</a
+                    >
+                  </template>
+                  <template #consent>
+                    <a
+                      :href="legalUrls.consent"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      >{{ t('checkout.consentDataProcessing') }}</a
+                    >
+                  </template>
+                  <template #refund>{{ t('checkout.consentRefund') }}</template>
+                </I18nT>
+                <span class="checkout__required" aria-hidden="true">*</span>
+              </span>
+            </label>
+          </div>
           <div class="checkout__pay">
             <div
               v-if="methods.length > 1"
@@ -220,19 +281,9 @@ const legalLinks = [
               class="checkout__paybtn"
               :label="t('checkout.pay')"
               :loading="store.submitting"
+              :disabled="!consentsGiven"
               @click="onPay()"
             />
-          </div>
-          <div class="checkout__legal">
-            <p class="checkout__legal-note">{{ t('checkout.legalNote') }}</p>
-            <p class="checkout__legal-links">
-              <template v-for="(l, i) in legalLinks" :key="l.url">
-                <a :href="l.url" target="_blank" rel="noopener noreferrer">{{
-                  t(l.key)
-                }}</a
-                ><span v-if="i < legalLinks.length - 1"> · </span>
-              </template>
-            </p>
           </div>
         </div>
       </template>
@@ -334,24 +385,40 @@ const legalLinks = [
   margin-left: auto;
 }
 
-.checkout__legal {
+/* The consents sit between the figures and the Pay button: the buyer reads what they
+   agree to, ticks it, and only then can pay. Body-sized text, not a footnote, because
+   it gates the action. */
+.checkout__consents {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   margin-top: 14px;
-  font-size: 12px;
-  line-height: 1.6;
-  text-align: center;
-  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--txt);
 }
-.checkout__legal-note {
-  margin: 0;
+.checkout__consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
 }
-.checkout__legal-links {
+.checkout__consent-box {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
   margin: 2px 0 0;
+  accent-color: var(--green);
+  cursor: pointer;
 }
-.checkout__legal a {
-  color: var(--dim);
+.checkout__consent a {
+  color: var(--txt);
   text-decoration: underline;
 }
-.checkout__legal a:hover {
-  color: var(--txt);
+.checkout__consent a:hover {
+  color: var(--green);
+}
+.checkout__required {
+  color: var(--red);
 }
 </style>

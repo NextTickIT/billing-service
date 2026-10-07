@@ -60,10 +60,13 @@ export default {
     typeOneTime: 'Разовый платёж',
     linkValidUntil: 'Ссылка на оплату действительна до {date}',
     redirecting: 'Перенаправление на проверку карты…',
-    legalNote: 'Оплачивая, вы принимаете:',
-    legalOffer: 'Оферта',
-    legalPrivacy: 'Конфиденциальность',
-    legalConsent: 'Согласие на обработку данных',
+    consentMarketing: 'Согласен(-на) получать маркетинговые материалы',
+    consentLegal:
+      'Я ознакомился(-ась) и согласен(-на) с условиями {offer}, {privacy}, {consent} и {refund}.',
+    consentOffer: 'Публичной оферты',
+    consentPrivacy: 'Политики конфиденциальности',
+    consentDataProcessing: 'Согласия на обработку персональных данных',
+    consentRefund: 'правилами возврата средств',
   },
   session: {
     loginTitle: 'Вход для операторов',

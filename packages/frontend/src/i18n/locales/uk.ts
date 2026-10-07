@@ -62,10 +62,13 @@ export default {
     typeOneTime: 'Одноразовий платіж',
     linkValidUntil: 'Посилання на оплату дійсне до {date}',
     redirecting: 'Перенаправлення на перевірку картки…',
-    legalNote: 'Оплачуючи, ви приймаєте:',
-    legalOffer: 'Оферта',
-    legalPrivacy: 'Конфіденційність',
-    legalConsent: 'Згода на обробку даних',
+    consentMarketing: 'Погоджуюсь отримувати маркетингові матеріали',
+    consentLegal:
+      'Я ознайомився та погоджуюся з умовами {offer}, {privacy}, {consent} і {refund}.',
+    consentOffer: 'Публічної оферти',
+    consentPrivacy: 'Політики конфіденційності',
+    consentDataProcessing: 'Згоди на обробку персональних даних',
+    consentRefund: 'правилами повернення коштів',
   },
   session: {
     loginTitle: 'Вхід для операторів',
