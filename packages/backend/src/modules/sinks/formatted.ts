@@ -1,4 +1,8 @@
-import { formatPeriod, isRenderablePeriod } from '@billing-service/shared';
+import {
+  Currency,
+  formatPeriod,
+  isRenderablePeriod,
+} from '@billing-service/shared';
 
 /**
  * Human-readable twins of payload fields, added ONLY on the way into SendPulse.
@@ -37,6 +41,33 @@ const DATE_FIELDS: ReadonlySet<string> = new Set([
 
 /** Payload keys carrying an ISO-8601 duration. */
 const PERIOD_FIELDS: ReadonlySet<string> = new Set(['period']);
+
+/**
+ * How each currency is written in a customer message. Symbol currencies lead
+ * (`$50`), the hryvnia trails with its abbreviation (`1400 грн.`). Whole amounts
+ * drop the cents — `$50`, not `$50.00` — while a fractional one keeps both digits
+ * so `50.30` never reads as `50.3`.
+ */
+const CURRENCY_STYLE: Readonly<
+  Record<Currency, { readonly prefix: string; readonly suffix: string }>
+> = {
+  [Currency.UAH]: { prefix: '', suffix: ' грн.' },
+  [Currency.USD]: { prefix: '$', suffix: '' },
+  [Currency.EUR]: { prefix: '€', suffix: '' },
+};
+
+const isCurrency = (x: unknown): x is Currency =>
+  typeof x === 'number' && Object.hasOwn(CURRENCY_STYLE, x);
+
+/** `amount` is minor units; a non-integer or unknown currency renders nothing. */
+const formatAmount = (amount: unknown, currency: unknown): string | null => {
+  if (typeof amount !== 'number' || !Number.isInteger(amount)) return null;
+  if (!isCurrency(currency)) return null;
+  const major = amount / 100;
+  const digits = amount % 100 === 0 ? String(major) : major.toFixed(2);
+  const { prefix, suffix } = CURRENCY_STYLE[currency];
+  return `${prefix}${digits}${suffix}`;
+};
 
 /**
  * DD.MM.YYYY in Kyiv. Built once: constructing an Intl formatter is expensive enough
@@ -79,5 +110,9 @@ export const formattedFields = (
       out[`${key}_formatted`] = formatPeriod(value, LOCALE);
     }
   }
+  // Money needs two fields to render (`amount` is minor units, `currency` says which
+  // unit), so it is composed here rather than per key.
+  const amount = formatAmount(payload['amount'], payload['currency']);
+  if (amount !== null) out['amount_formatted'] = amount;
   return out;
 };

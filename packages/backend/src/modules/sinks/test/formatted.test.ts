@@ -72,13 +72,13 @@ describe('renders nothing rather than something wrong', () => {
   });
 
   test('leaves unrelated fields alone', () => {
-    expect(
-      formattedFields({
-        amount: 5000,
-        currency: 1,
-        reason: 'Insufficient funds',
-      }),
-    ).toEqual({});
+    expect(formattedFields({ reason: 'Insufficient funds' })).toEqual({});
+  });
+
+  test('an amount without a known currency renders nothing', () => {
+    expect(formattedFields({ amount: 5000 })).toEqual({});
+    expect(formattedFields({ amount: 5000, currency: 7 })).toEqual({});
+    expect(formattedFields({ amount: 50.5, currency: 1 })).toEqual({});
   });
 
   test('a field that merely looks date-ish is not formatted', () => {
@@ -86,6 +86,23 @@ describe('renders nothing rather than something wrong', () => {
     expect(
       formattedFields({ source: '2026-10-02', reason: '2026-10-02' }),
     ).toEqual({});
+  });
+});
+
+describe('amounts render as money a customer would write', () => {
+  test.each([
+    [5000, 1, '$50'],
+    [5030, 1, '$50.30'],
+    [140000, 0, '1400 грн.'],
+    [150072, 0, '1500.72 грн.'],
+    [5000, 2, '€50'],
+    [5005, 2, '€50.05'],
+    [0, 0, '0 грн.'],
+    [99, 1, '$0.99'],
+  ])('%i minor units of currency %i -> %s', (amount, currency, expected) => {
+    expect(formattedFields({ amount, currency })).toEqual({
+      amount_formatted: expected,
+    });
   });
 });
 
