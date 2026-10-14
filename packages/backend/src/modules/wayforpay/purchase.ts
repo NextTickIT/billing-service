@@ -3,6 +3,7 @@ import { Redacted } from 'effect';
 
 import type { W4pConfigService } from '@/modules/wayforpay/config.js';
 import { signPurchase, signVerify } from '@/modules/wayforpay/signature.js';
+import { productNameFor } from '@/modules/wayforpay/product.js';
 
 /** A ready-to-submit WayForPay Purchase form: POST `fields` to `action`. `kind`
  * discriminates it from a crypto redirect in the shared `PayInstruction` union. */
@@ -50,7 +51,7 @@ export const buildPurchase = (
 ): PurchaseForm => {
   const amount = session.amount / 100;
   const currency = CurrencyCode[session.currency];
-  const productName = `Payment ${session.period}`;
+  const productName = productNameFor(session);
   const merchantSignature = signPurchase(
     {
       merchantAccount: config.merchantAccount,

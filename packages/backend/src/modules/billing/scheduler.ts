@@ -16,6 +16,7 @@ import {
   upcomingCharge,
   renewalFailed,
 } from '@/modules/billing/events.js';
+import { productNameFor } from '@/modules/wayforpay/product.js';
 
 /**
  * The recurring billing scheduler (docs/00 §5.3, FR-004/005/006). Each tick finds
@@ -129,7 +130,7 @@ const chargeCard = (deps: SchedulerDeps, sub: Payment, now: Date) =>
       currency: sub.currency,
       recToken: sub.recurringTokenRef ?? '',
       orderDate: Math.floor(now.getTime() / 1000),
-      productName: `Payment ${sub.period}`,
+      productName: productNameFor(sub),
     });
     if (response.transactionStatus === 'Approved') {
       const newEnd = addPeriod(sub.currentPeriodEnd, sub.period);
