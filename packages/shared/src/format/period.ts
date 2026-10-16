@@ -8,7 +8,7 @@
 // Lives in `shared` because two surfaces render it — the checkout page and the SendPulse
 // sink's `period_formatted` — and two copies would eventually disagree about what the
 // customer is being told they bought.
-const DURATION = /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?$/;
+import { DURATION } from '@/period.js';
 
 // Capture-group order in DURATION — the index carries the unit, so the two must match.
 const UNITS = ['year', 'month', 'week', 'day'] as const;

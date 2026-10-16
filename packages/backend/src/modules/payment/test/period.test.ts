@@ -2,7 +2,11 @@ import { describe, expect, test } from 'vitest';
 import type { Payment } from '@billing-service/shared';
 import { PaymentStatus } from '@billing-service/shared';
 
-import { addPeriod } from '@/modules/payment/period.js';
+import {
+  addPeriod,
+  isValidPeriod,
+  samePeriod,
+} from '@/modules/payment/period.js';
 import { computeDeferral } from '@/modules/payment/domain.js';
 
 const iso = (date: Date): string => date.toISOString().slice(0, 10);
@@ -88,5 +92,42 @@ describe('computeDeferral', () => {
     const originalEnd = basePayment.currentPeriodEnd.getTime();
     computeDeferral(basePayment, 30);
     expect(basePayment.currentPeriodEnd.getTime()).toBe(originalEnd);
+  });
+});
+
+// One validator for the wire schemas and this arithmetic: whatever `isValidPeriod`
+// (shared) accepts, `addPeriod` must compute, and whatever it rejects, `addPeriod` throws.
+describe('isValidPeriod parity with addPeriod', () => {
+  test.each([
+    'P1M',
+    'P4W',
+    'P0D',
+    'P1Y2M3W4D',
+    'P',
+    'PT0S',
+    '4W',
+    '',
+    '1 month',
+  ])('%j', (period) => {
+    const computes = (): Date => addPeriod(new Date(0), period);
+    if (isValidPeriod(period)) {
+      expect(computes).not.toThrow();
+    } else {
+      expect(computes).toThrow();
+    }
+  });
+});
+
+describe('samePeriod', () => {
+  test.each([
+    ['P4W', 'P28D', true],
+    ['P1M', 'P1M', true],
+    ['P1Y', 'P12M', true],
+    ['P1M', 'P30D', false],
+    ['P1M', 'P31D', false],
+    ['P4W', 'P1M', false],
+  ])('%s vs %s → %s', (a, b, same) => {
+    expect(samePeriod(a, b)).toBe(same);
+    expect(samePeriod(b, a)).toBe(same);
   });
 });

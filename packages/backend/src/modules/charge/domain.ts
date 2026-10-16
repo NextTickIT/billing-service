@@ -8,6 +8,7 @@ import type {
   InitialPaymentSucceededEvent,
   OneTimePurchaseSucceededEvent,
   PaymentCreatedEvent,
+  RecurringPaymentFailedEvent,
   RecurringPaymentSucceededEvent,
   UnknownPaymentQuarantinedEvent,
 } from '@billing-service/shared';
@@ -18,6 +19,9 @@ import type { EnqueueInput, EnqueueResult } from '@/infra/queue/store.js';
 import {
   Charge,
   type Match,
+  type RefusedCharge,
+  type SettledCharge,
+  settlementAnomaly,
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
   type ChargeApplier,
@@ -29,6 +33,7 @@ import {
   type ChargeRepo,
 } from '@/modules/charge/data-access.js';
 import { Outbox } from '@/modules/outbox/domain.js';
+import { paymentReactivated } from '@/modules/payment/cancel.js';
 
 /**
  * Charge pipeline (FR-007). A source `ingest`s a normalized charge onto the queue;
@@ -110,18 +115,24 @@ export const oneTimePurchaseSucceeded = (
 /**
  * Pick the success variant: a recurring renewal (non-checkout match) → recurring; a
  * checkout the caller opted out of recurrence (`match.recurring === false`) → one-time
- * purchase; any other checkout → the initial (subscription) success.
+ * purchase; a checkout that prolonged a live sub, or any manual renewal (even one paid
+ * after its sub died, AC 25) → recurring; any other checkout → the initial
+ * (subscription) success.
  */
 const paymentSucceeded = (
   event: Charge,
   match: Match,
-  subscriptionId: string,
-  nextPaymentDate: Date | null,
+  applied: SettledCharge,
 ):
   | InitialPaymentSucceededEvent
   | RecurringPaymentSucceededEvent
   | OneTimePurchaseSucceededEvent => {
-  if (match.kind !== 'checkout') {
+  const { subscriptionId, nextPaymentDate } = applied;
+  if (
+    match.kind !== 'checkout' ||
+    (match.recurring !== false &&
+      (applied.prolonged || match.origin === 'manual_renewal'))
+  ) {
     return recurringPaymentSucceeded(
       event,
       match,
@@ -164,6 +175,32 @@ export const initialPaymentFailed = (
   },
 });
 
+/**
+ * recurring_payment_failed — a declined prolongation: a recurring checkout whose contact
+ * holds a live sub (`prolongOf`), or any manual renewal (AC 25). Nothing was written, so
+ * the session stays payable. The aggregate is the live sub, else the sub the session
+ * renews, else (no attribution) the session, like `initial_payment_failed`.
+ */
+export const recurringPaymentFailed = (
+  event: Charge,
+  match: Match,
+): RecurringPaymentFailedEvent => ({
+  id: eventId(event.idemKey, 'failed'),
+  name: 'recurring_payment_failed',
+  occurredAt: event.occurredAt,
+  correlationId: event.idemKey,
+  externalUserId: match.externalUserId,
+  aggregateId: match.prolongOf ?? match.renewalOf ?? event.externalRef,
+  payload: {
+    amount: event.amount,
+    currency: event.currency,
+    method: match.method,
+    period: match.period,
+    reason: declineReason(event.payload),
+    source: event.source,
+  },
+});
+
 /** payment_created envelope for a brand-new gateway payment (docs/07). */
 export const paymentCreated = (
   event: Charge,
@@ -181,6 +218,7 @@ export const paymentCreated = (
     currency: event.currency,
     method: match.method,
     period: match.period,
+    renewal: match.renewal ?? null,
   },
 });
 
@@ -288,6 +326,32 @@ interface HandleDeps {
   ) => Effect.Effect<void, SqlError.SqlError>;
 }
 
+/** Quarantine an unmatched charge (FR-009): the operator binds or refunds it. */
+const quarantine = (deps: HandleDeps, event: Charge, incomingId: string) =>
+  Effect.gen(function* () {
+    const quarantineId = yield* deps.repo.upsertQuarantine(incomingId);
+    yield* deps.repo.setMatchResult(incomingId, 'quarantined');
+    yield* deps.publish(quarantined(event, quarantineId, incomingId));
+  });
+
+/** Why each refusal is a refund candidate, as the watchdog's marker line reads it. */
+const REFUSAL_REASON: Record<RefusedCharge['refused'], string> = {
+  already_applied: 'charge: session already settled',
+  intro_on_live: 'checkout: intro-priced payment on a live subscription',
+};
+
+/** The applier refused the charge and wrote nothing: quarantine it, loudly. */
+const quarantineRefused = (
+  deps: HandleDeps,
+  event: Charge,
+  incomingId: string,
+  refusal: RefusedCharge,
+) =>
+  Effect.gen(function* () {
+    yield* settlementAnomaly(REFUSAL_REASON[refusal.refused], event);
+    yield* quarantine(deps, event, incomingId);
+  });
+
 /** Record a matched, succeeded charge: apply, fix the payment, emit created?/succeeded. */
 const recordMatchedSuccess = (
   deps: HandleDeps,
@@ -297,6 +361,9 @@ const recordMatchedSuccess = (
 ) =>
   Effect.gen(function* () {
     const applied = yield* deps.applier(event, match);
+    if ('refused' in applied) {
+      return yield* quarantineRefused(deps, event, incomingId, applied);
+    }
     yield* deps.repo.insertPayment({
       incomingEventId: incomingId,
       paymentId: applied.subscriptionId,
@@ -306,27 +373,34 @@ const recordMatchedSuccess = (
       source: event.source,
       occurredAt: event.occurredAt,
     });
-    yield* deps.repo.setMatchResult(incomingId, 'matched');
     if (applied.created) {
       yield* deps.publish(paymentCreated(event, match, applied.subscriptionId));
     }
-    yield* deps.publish(
-      paymentSucceeded(
-        event,
-        match,
-        applied.subscriptionId,
-        applied.nextPaymentDate,
-      ),
-    );
+    if (applied.reactivated === true) {
+      // A paid prolongation un-cancels (AC 19): the same event an operator un-cancel
+      // emits, its id keyed on the charge time so a retry dedupes.
+      yield* deps.publish(
+        paymentReactivated(
+          {
+            paymentId: applied.subscriptionId,
+            externalUserId: match.externalUserId,
+            at: event.occurredAt.getTime(),
+          },
+          event.occurredAt,
+        ),
+      );
+    }
+    yield* deps.publish(paymentSucceeded(event, match, applied));
+    yield* deps.repo.setMatchResult(incomingId, 'matched');
   });
 
 /**
  * A card-change callback (docs/23). The applier has updated the stored token (and,
- * for an owed change, advanced the existing payment — never create-or-extend, so the
- * one-active-payment invariant holds). An owed change collected real money, so it
- * records the fixation and emits `recurring_payment_succeeded` like any renewal; both
- * the verify and owed cases emit `card_change_succeeded`. A decline emits
- * `card_change_failed` and leaves the payment untouched.
+ * for an arrears change, advanced the existing payment — never create-or-extend, so the
+ * one-active-payment invariant holds). A charge that moved money records the fixation
+ * and emits `recurring_payment_succeeded` like any renewal; every success emits
+ * `card_change_succeeded`. A decline emits `card_change_failed` and leaves the payment
+ * untouched.
  */
 const recordCardChange = (
   deps: HandleDeps,
@@ -335,13 +409,16 @@ const recordCardChange = (
   incomingId: string,
 ) =>
   Effect.gen(function* () {
-    yield* deps.repo.setMatchResult(incomingId, 'matched');
     if (event.status !== 'succeeded') {
       yield* deps.publish(cardChangeFailed(event, match));
+      yield* deps.repo.setMatchResult(incomingId, 'matched');
       return;
     }
     const applied = yield* deps.applier(event, match);
-    if (match.owed === true) {
+    if ('refused' in applied) {
+      return yield* quarantineRefused(deps, event, incomingId, applied);
+    }
+    if (match.amountCharged === true) {
       yield* deps.repo.insertPayment({
         incomingEventId: incomingId,
         paymentId: applied.subscriptionId,
@@ -361,31 +438,53 @@ const recordCardChange = (
       );
     }
     yield* deps.publish(cardChangeSucceeded(event, match));
+    yield* deps.repo.setMatchResult(incomingId, 'matched');
   });
 
+/**
+ * Settle one incoming charge, atomically: everything after the raw upsert runs in ONE
+ * transaction (claim, subscription write, fixation, events, match result), with the
+ * outbox publish and the queue enqueue as savepoints on the same client. Its first
+ * statement locks the charge's `matchResult`; a charge already `'matched'` (a queue
+ * retry or reaper requeue of a settled attempt) does nothing, and a concurrent attempt
+ * waits here for the first to commit. `'matched'` is the LAST write of every settled
+ * path, so it is never seen without the rest. A `'quarantined'` charge re-runs; its
+ * writes are idempotent.
+ */
 const process = (deps: HandleDeps, event: Charge) =>
   Effect.gen(function* () {
+    // Outside the transaction, so the raw receipt survives a failed settlement.
     const incomingId = yield* deps.repo.upsertIncomingCharge(event);
-    const match = yield* deps.matcher(event);
-    if (!match.matched) {
-      const quarantineId = yield* deps.repo.upsertQuarantine(incomingId);
-      yield* deps.repo.setMatchResult(incomingId, 'quarantined');
-      yield* deps.publish(quarantined(event, quarantineId, incomingId));
-      return;
-    }
-    if (match.kind === 'card_change') {
-      return yield* recordCardChange(deps, event, match, incomingId);
-    }
-    if (event.status !== 'succeeded') {
-      // Matched a known checkout session but the charge did not succeed → a declined
-      // first payment (FR-003). No retry ladder — the customer re-initiates checkout;
-      // the session stays open for another attempt. Recurring failures never reach the
-      // pipeline (the scheduler emits them), so a matched non-success is a checkout one.
-      yield* deps.repo.setMatchResult(incomingId, 'matched');
-      yield* deps.publish(initialPaymentFailed(event, match));
-      return;
-    }
-    yield* recordMatchedSuccess(deps, event, match, incomingId);
+    yield* deps.repo.transaction(
+      Effect.gen(function* () {
+        if ((yield* deps.repo.lockMatchResult(incomingId)) === 'matched') {
+          return;
+        }
+        const match = yield* deps.matcher(event);
+        if (!match.matched) {
+          return yield* quarantine(deps, event, incomingId);
+        }
+        if (match.kind === 'card_change') {
+          return yield* recordCardChange(deps, event, match, incomingId);
+        }
+        if (event.status !== 'succeeded') {
+          // Matched a known checkout session but the charge did not succeed. No retry
+          // ladder — the customer re-initiates checkout; the session stays open for
+          // another attempt. Recurring failures never reach the pipeline (the scheduler
+          // emits them), so a matched non-success is a checkout one: a failed
+          // prolongation when the contact holds a live sub or it is a manual renewal
+          // (AC 25), else a declined first payment (FR-003).
+          yield* deps.publish(
+            match.prolongOf != null || match.origin === 'manual_renewal'
+              ? recurringPaymentFailed(event, match)
+              : initialPaymentFailed(event, match),
+          );
+          yield* deps.repo.setMatchResult(incomingId, 'matched');
+          return;
+        }
+        yield* recordMatchedSuccess(deps, event, match, incomingId);
+      }),
+    );
   });
 
 /** The `payment_event_received` handler: decode the queue payload, then process. */

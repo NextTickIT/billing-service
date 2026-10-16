@@ -35,6 +35,7 @@ export default {
   },
   checkout: {
     title: 'Оплата',
+    titleProlong: 'Продление подписки',
     method: 'Способ оплаты',
     methodCard: 'Карта',
     methodCrypto: 'Крипто',
@@ -55,7 +56,12 @@ export default {
       unavailable: 'Способ оплаты временно недоступен. Попробуйте чуть позже.',
       generic: 'Не удалось обработать запрос. Попробуйте ещё раз.',
     },
+    notices: {
+      methodChanged:
+        'Способ оплаты по этой ссылке изменился — он указан ниже. Нажмите «Оплатить» ещё раз.',
+    },
     periodLabel: 'Расчётный период',
+    renewalThen: 'Далее {amount} за {period}',
     typeSubscription: 'Подписка',
     typeOneTime: 'Разовый платёж',
     linkValidUntil: 'Ссылка на оплату действительна до {date}',
@@ -144,6 +150,7 @@ export default {
       initial_payment_succeeded: 'Первый платёж успешен',
       recurring_payment_succeeded: 'Повторный платёж успешен',
       initial_payment_failed: 'Первый платёж не удался',
+      recurring_payment_failed: 'Повторный платёж не удался',
       charge_retry_failed: 'Повтор списания не удался',
       renewal_failed: 'Обновление не удалось',
       payment_manual_required: 'Требуется ручная оплата',

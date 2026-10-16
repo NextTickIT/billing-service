@@ -175,6 +175,15 @@ const COPY: Readonly<Record<string, Copy>> = {
     actionLabel: 'Повторить оплату',
     actionFrom: 'failure',
   },
+  // A declined prolongation (checkout on a live sub, `/prolong`, manual renewal). The
+  // payload carries no `failureUrl`, so in practice this renders without a button.
+  recurring_payment_failed: {
+    subject: `${BRAND} — платёж не прошёл`,
+    heading: 'Продление не прошло',
+    lead: 'Списание не удалось, подписка не изменилась. Ссылка на оплату действует до конца срока — можно попробовать снова.',
+    actionLabel: 'Повторить оплату',
+    actionFrom: 'failure',
+  },
   renewal_failed: {
     subject: `${BRAND} — не удалось продлить подписку`,
     heading: 'Не удалось продлить подписку',

@@ -42,6 +42,10 @@ export interface AdvanceAnchor {
  * Success` reset the retry state (a good payment restores standing).
  */
 export interface PaymentRepo {
+  /** Run `effect` in one transaction; nested calls become savepoints. */
+  readonly transaction: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | SqlError.SqlError, R>;
   /** Backfill the receipt address for an existing payer; resolves to the row count. */
   readonly setEmail: (
     externalUserId: string,
@@ -82,6 +86,15 @@ export interface PaymentRepo {
   readonly findById: (
     id: string,
   ) => Effect.Effect<Option.Option<Payment>, SqlError.SqlError>;
+  /**
+   * `findById` under a row lock (`FOR UPDATE`), held until the surrounding transaction
+   * ends. Every writer of `currentPeriodEnd` that computes a new end in code re-reads
+   * the row through this first, so two writers can never both build on the same stale
+   * end and lose one's paid time. Meaningless outside a transaction.
+   */
+  readonly lockById: (
+    id: string,
+  ) => Effect.Effect<Option.Option<Payment>, SqlError.SqlError>;
   /** Payments due to be charged now (active or in the retry window). */
   readonly findDue: (
     now: Date,
@@ -90,6 +103,11 @@ export interface PaymentRepo {
   readonly insert: (
     input: CreatePayment,
   ) => Effect.Effect<Payment, SqlError.SqlError>;
+  /**
+   * The stack write of a paid prolongation: adopt the new terms, method and token, make
+   * the row Active, reset dunning, and clear a pending cancel (a paid prolongation
+   * un-cancels). The anchors are computed by the caller from a `lockById` read.
+   */
   readonly extend: (
     id: string,
     input: ExtendPayment,
@@ -134,24 +152,38 @@ export interface PaymentRepo {
   readonly clearCancelRequest: (
     id: string,
   ) => Effect.Effect<boolean, SqlError.SqlError>;
-  /** At the due date, flip a cancel-pending payment to `cancelled` (idempotent). */
+  /**
+   * At the due date, flip a cancel-pending live payment to `cancelled`. Returns true
+   * iff it flipped. Guarded on the row still being due: a lapse enqueued before a paid
+   * prolongation or defer moved the due date is a no-op. With `dueAtMs` (the due date the
+   * lapse was enqueued for) the guard is "still due on exactly that date", which holds
+   * whatever the DB clock says; without it (a message from before `dueAt` existed) it
+   * falls back to `nextPaymentDate <= now()`.
+   */
   readonly markCancelledLapsed: (
     id: string,
-  ) => Effect.Effect<void, SqlError.SqlError>;
+    dueAtMs?: number,
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
   /**
    * Terminal cancel driven by an upstream (SendPulse) signal at charge time: flip
    * an Active/PastDue payment straight to `cancelled` (no lapse tick needed).
-   * Returns false if it was already terminal.
+   * Returns false if it was already terminal, or if it is no longer due at `now` (a
+   * prolongation moved it after the scheduler's snapshot).
    */
   readonly cancelUpstream: (
     id: string,
+    now: Date,
   ) => Effect.Effect<boolean, SqlError.SqlError>;
-  /** Deferral: push the anchor + re-derived next date on an active payment. */
+  /**
+   * Deferral: push the paid-through anchor of an active payment by `days` whole UTC days
+   * and re-derive the next date from it. Relative in SQL, so it needs no lock and never
+   * erases time another writer added. Returns the new `currentPeriodEnd`, or None when
+   * the payment is not active.
+   */
   readonly defer: (
     id: string,
-    newPeriodEnd: Date,
-    newNextPaymentDate: Date,
-  ) => Effect.Effect<void, SqlError.SqlError>;
+    days: number,
+  ) => Effect.Effect<Option.Option<Date>, SqlError.SqlError>;
   /** Rewrite only the stored token — a card change must not shift any date. */
   readonly updateToken: (
     id: string,
@@ -221,6 +253,11 @@ const findById = (sql: SqlClient.SqlClient) => (id: string) =>
     SELECT ${sql.unsafe(COLUMNS)} FROM payments WHERE id = ${id}
   `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
+const lockById = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql<Payment>`
+    SELECT ${sql.unsafe(COLUMNS)} FROM payments WHERE id = ${id} FOR UPDATE
+  `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
+
 const findDue = (sql: SqlClient.SqlClient) => (now: Date, limit: number) =>
   sql<Payment>`
     SELECT ${sql.unsafe(COLUMNS)} FROM payments
@@ -256,7 +293,8 @@ const extend =
           "currentPeriodEnd" = ${input.currentPeriodEnd},
           "nextPaymentDate" = ${input.nextPaymentDate},
           "recurringTokenRef" = ${input.recurringTokenRef},
-          "firstFailureAt" = NULL, "retryAttempt" = 0, "updatedAt" = now()
+          "firstFailureAt" = NULL, "retryAttempt" = 0, "cancelRequestedAt" = NULL,
+          "updatedAt" = now()
       WHERE id = ${id}
     `.pipe(Effect.asVoid);
 
@@ -379,31 +417,50 @@ const clearCancelRequest = (sql: SqlClient.SqlClient) => (id: string) =>
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
 
-const markCancelledLapsed = (sql: SqlClient.SqlClient) => (id: string) =>
-  sql`
-    UPDATE payments SET status = ${PaymentStatus.Cancelled}, "updatedAt" = now()
-    WHERE id = ${id} AND "cancelRequestedAt" IS NOT NULL
-  `.pipe(Effect.asVoid);
+// The lapse key `lapse:{id}:{dueMs}` dedupes forever, so the guard must never depend on
+// the DB clock having reached a due date the app clock already passed: compare to the
+// enqueued due date itself, at the millisecond precision a JS Date carries.
+const markCancelledLapsed =
+  (sql: SqlClient.SqlClient) => (id: string, dueAtMs?: number) =>
+    sql<{ readonly id: string }>`
+      UPDATE payments SET status = ${PaymentStatus.Cancelled}, "updatedAt" = now()
+      WHERE id = ${id} AND "cancelRequestedAt" IS NOT NULL
+        AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+        AND ${
+          dueAtMs === undefined
+            ? sql`"nextPaymentDate" <= now()`
+            : sql`date_trunc('milliseconds', "nextPaymentDate") = ${new Date(dueAtMs)}`
+        }
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length > 0));
 
-const cancelUpstream = (sql: SqlClient.SqlClient) => (id: string) =>
+const cancelUpstream = (sql: SqlClient.SqlClient) => (id: string, now: Date) =>
   sql<{ readonly id: string }>`
-    UPDATE payments
-    SET status = ${PaymentStatus.Cancelled}, "cancelRequestedAt" = now(),
-        "updatedAt" = now()
-    WHERE id = ${id}
-      AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
-    RETURNING id
-  `.pipe(Effect.map((rows) => rows.length > 0));
-
-const defer =
-  (sql: SqlClient.SqlClient) =>
-  (id: string, newPeriodEnd: Date, newNextPaymentDate: Date) =>
-    sql`
       UPDATE payments
-      SET "currentPeriodEnd" = ${newPeriodEnd},
-          "nextPaymentDate" = ${newNextPaymentDate}, "updatedAt" = now()
-      WHERE id = ${id} AND status = ${PaymentStatus.Active}
-    `.pipe(Effect.asVoid);
+      SET status = ${PaymentStatus.Cancelled}, "cancelRequestedAt" = now(),
+          "updatedAt" = now()
+      WHERE id = ${id}
+        AND status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+        AND "nextPaymentDate" <= ${now}
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length > 0));
+
+// Both SETs read the pre-update "currentPeriodEnd", so the next date is derived from the
+// same old anchor as the new end. `hours => 24 * days` is UTC-day arithmetic, matching
+// `computeDeferral`; `days =>` would follow the session time zone across DST.
+const defer = (sql: SqlClient.SqlClient) => (id: string, days: number) =>
+  sql<{ readonly currentPeriodEnd: Date }>`
+    UPDATE payments
+    SET "currentPeriodEnd" = "currentPeriodEnd" + make_interval(hours => 24 * ${days}::int),
+        "nextPaymentDate" = "currentPeriodEnd" + make_interval(hours => 24 * ${days}::int),
+        "updatedAt" = now()
+    WHERE id = ${id} AND status = ${PaymentStatus.Active}
+    RETURNING "currentPeriodEnd"
+  `.pipe(
+    Effect.map((rows) =>
+      Option.map(Option.fromNullable(rows[0]), (row) => row.currentPeriodEnd),
+    ),
+  );
 
 const updateToken =
   (sql: SqlClient.SqlClient) => (id: string, recToken: string) =>
@@ -448,10 +505,12 @@ const setEmail =
     `.pipe(Effect.map((rows) => rows.length));
 
 export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
+  transaction: (effect) => sql.withTransaction(effect),
   setEmail: setEmail(sql),
   findActiveRecurringByExternalUser: findActiveRecurringByExternalUser(sql),
   findUpcomingForNotice: findUpcomingForNotice(sql),
   findById: findById(sql),
+  lockById: lockById(sql),
   findDue: findDue(sql),
   insert: insert(sql),
   extend: extend(sql),

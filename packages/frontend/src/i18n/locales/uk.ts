@@ -35,6 +35,7 @@ export default {
   },
   checkout: {
     title: 'Оплата',
+    titleProlong: 'Продовження підписки',
     method: 'Спосіб оплати',
     methodCard: 'Картка',
     methodCrypto: 'Крипто',
@@ -57,7 +58,12 @@ export default {
         'Спосіб оплати тимчасово недоступний. Спробуйте трохи пізніше.',
       generic: 'Не вдалося обробити запит. Спробуйте ще раз.',
     },
+    notices: {
+      methodChanged:
+        'Спосіб оплати за цим посиланням змінився — його вказано нижче. Натисніть «Сплатити» ще раз.',
+    },
     periodLabel: 'Розрахунковий період',
+    renewalThen: 'Далі {amount} за {period}',
     typeSubscription: 'Підписка',
     typeOneTime: 'Одноразовий платіж',
     linkValidUntil: 'Посилання на оплату дійсне до {date}',
@@ -145,6 +151,7 @@ export default {
       initial_payment_succeeded: 'Перший платіж успішний',
       recurring_payment_succeeded: 'Повторний платіж успішний',
       initial_payment_failed: 'Перший платіж не вдався',
+      recurring_payment_failed: 'Повторний платіж не вдався',
       charge_retry_failed: 'Повтор списання не вдався',
       renewal_failed: 'Поновлення не вдалось',
       payment_manual_required: 'Потрібна ручна оплата',

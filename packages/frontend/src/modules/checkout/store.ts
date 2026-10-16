@@ -17,16 +17,53 @@ import {
  */
 const errorKeyFor = (e: unknown): string => {
   if (e instanceof CheckoutApiError) {
-    // Checked before the status: this is a 409, but telling a paying customer their
-    // link is invalid reads as us being broken.
-    if (e.code === 'already_subscribed')
-      return 'checkout.errors.alreadySubscribed';
     if (e.status === 404) return 'checkout.errors.notFound';
     if (e.status === 409 || e.status === 410) return 'checkout.errors.unusable';
     if (e.status === 422) return 'checkout.errors.rejected';
     if (e.status === 503) return 'checkout.errors.unavailable';
   }
   return 'checkout.errors.generic';
+};
+
+/**
+ * A refused pay the buyer can act on without the page giving up on them. `key` is an
+ * i18n key, like `error`; `retryable` keeps the Pay button, because a locked method has
+ * already been switched in and pressing Pay again is the fix.
+ */
+interface Notice {
+  readonly key: string;
+  readonly retryable: boolean;
+}
+
+/**
+ * The refused pays the page recovers from instead of giving up: the notice to show and
+ * the session to show it on (switched to the method the server named, when it named
+ * one). Null for every other failure, which stays a page-level error.
+ */
+const recoverableRefusal = (
+  e: unknown,
+  session: CheckoutSessionPublic | null,
+): { notice: Notice; session: CheckoutSessionPublic | null } | null => {
+  if (!(e instanceof CheckoutApiError)) return null;
+  // The link is locked to one method and the server says which: the subscription's
+  // method changed since the link was minted. Switch the page to it and let the buyer
+  // confirm with a second press — never auto-submit a method they did not see.
+  if (e.code === 'method_locked' && e.method !== null)
+    return {
+      notice: { key: 'checkout.notices.methodChanged', retryable: true },
+      session:
+        session === null
+          ? null
+          : { ...session, method: e.method, methodLocked: true },
+    };
+  // A 409, but telling a paying customer their link is invalid reads as us being
+  // broken. Nothing to retry: they are already covered.
+  if (e.code === 'already_subscribed')
+    return {
+      notice: { key: 'checkout.errors.alreadySubscribed', retryable: false },
+      session,
+    };
+  return null;
 };
 
 export const useCheckoutStore = defineStore('checkout', () => {
@@ -42,6 +79,8 @@ export const useCheckoutStore = defineStore('checkout', () => {
   /** Provider-written detail worth showing verbatim (422 only); otherwise null. */
   const errorDetail = ref<string | null>(null);
   const instruction = ref<PayInstruction | null>(null);
+  /** A recoverable refusal, shown above the pay controls rather than replacing them. */
+  const notice = ref<Notice | null>(null);
 
   function fail(e: unknown): void {
     error.value = errorKeyFor(e);
@@ -52,6 +91,7 @@ export const useCheckoutStore = defineStore('checkout', () => {
     loading.value = true;
     error.value = null;
     errorDetail.value = null;
+    notice.value = null;
     try {
       session.value = await getCheckoutSession(id);
     } catch (e) {
@@ -73,13 +113,20 @@ export const useCheckoutStore = defineStore('checkout', () => {
     submitting.value = true;
     error.value = null;
     errorDetail.value = null;
+    notice.value = null;
     try {
       // On success we leave `submitting` true: the caller immediately hands off (form
       // POST or redirect) to the provider, so the button stays busy through the
       // navigation (no re-enable, no double submit).
       instruction.value = await payApi(id, method);
     } catch (e) {
-      fail(e);
+      const refusal = recoverableRefusal(e, session.value);
+      if (refusal === null) {
+        fail(e);
+      } else {
+        notice.value = refusal.notice;
+        session.value = refusal.session;
+      }
       submitting.value = false;
     }
   }
@@ -91,6 +138,7 @@ export const useCheckoutStore = defineStore('checkout', () => {
     error,
     errorDetail,
     instruction,
+    notice,
     load,
     pay,
   };

@@ -116,7 +116,10 @@ export const makeWorkerLayer = (config: AppConfig) => {
     (sql) =>
       makeCompositeMatcher([
         makeCardChangeMatcher(makeCheckoutRepo(sql)),
-        makeCheckoutMatcher(makeCheckoutRepo(sql)),
+        makeCheckoutMatcher(
+          makeCheckoutRepo(sql),
+          makePaymentRepo(sql).findActiveRecurringByExternalUser,
+        ),
         makeRecurringMatcher(makePaymentRepo(sql)),
       ]),
     (sql) => makeCheckoutApplier(makePaymentRepo(sql), makeCheckoutRepo(sql)),

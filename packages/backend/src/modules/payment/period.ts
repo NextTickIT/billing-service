@@ -5,7 +5,11 @@
  * into the following month. Days/weeks are added after, as plain day offsets.
  */
 
-const DURATION = /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?$/;
+import { DURATION, isValidPeriod } from '@billing-service/shared';
+
+// The validator lives in shared so the wire schemas and this arithmetic agree on what a
+// period is; re-exported for the callers that already import it from here.
+export { isValidPeriod };
 
 /** Advance `date` by whole months in place, clamping the day to the month's last. */
 const addMonthsClamped = (date: Date, monthSpan: number): void => {
@@ -15,10 +19,6 @@ const addMonthsClamped = (date: Date, monthSpan: number): void => {
   const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
   date.setUTCFullYear(year, month, Math.min(date.getUTCDate(), lastDay));
 };
-
-/** Whether `period` is an ISO-8601 duration `addPeriod` accepts (a non-empty `P…`). */
-export const isValidPeriod = (period: string): boolean =>
-  DURATION.test(period) && period !== 'P';
 
 /**
  * Add whole days to a date in UTC — used by deferral (docs/23), which pushes the
@@ -49,3 +49,22 @@ export const addPeriod = (date: Date, period: string): Date => {
   }
   return result;
 };
+
+// Fixed UTC instants whose following month and year differ in length (31 vs 28 days,
+// 365 vs 366), so no day count matches a month or a year on all of them.
+const PERIOD_ANCHORS = [
+  new Date(Date.UTC(2001, 0, 1)),
+  new Date(Date.UTC(2001, 1, 1)),
+  new Date(Date.UTC(2003, 2, 1)),
+];
+
+/**
+ * Whether two valid periods add the same time: 'P28D' equals 'P4W' and 'P12M' equals
+ * 'P1Y', but 'P1M' never equals any day count. Compared over fixed anchors, so it is a
+ * pure function of the two strings.
+ */
+export const samePeriod = (a: string, b: string): boolean =>
+  PERIOD_ANCHORS.every(
+    (anchor) =>
+      addPeriod(anchor, a).getTime() === addPeriod(anchor, b).getTime(),
+  );

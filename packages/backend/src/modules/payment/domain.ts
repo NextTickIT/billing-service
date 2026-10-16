@@ -1,9 +1,17 @@
 import type { SqlError } from '@effect/sql';
-import { type Payment, PaymentStatus } from '@billing-service/shared';
+import {
+  type CheckoutRenewal,
+  type Payment,
+  PaymentMethod,
+  PaymentStatus,
+} from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
-import type { PaymentRepo } from '@/modules/payment/data-access.js';
-import { addDays, addPeriod } from '@/modules/payment/period.js';
+import type {
+  AdvanceAnchor,
+  PaymentRepo,
+} from '@/modules/payment/data-access.js';
+import { addDays, addPeriod, samePeriod } from '@/modules/payment/period.js';
 
 /**
  * The billing terms a successful charge establishes for a user (FR-003). A recurring
@@ -27,12 +35,30 @@ export interface ApplyPaymentParams {
    * so the bonus lands exactly once — on the charge that earned it.
    */
   readonly promoBonus?: string | null;
+  /**
+   * The terms the scheduler charges from now on, when they differ from this first charge
+   * (`amount`/`period`). Stored on the row in their place; the first charge itself is
+   * kept in the charge fixation.
+   */
+  readonly renewal?: CheckoutRenewal | null;
+  /** The charge's source; picks the token and method a prolongation keeps (`tokenRule`). */
+  readonly source?: string;
 }
 
 export interface ApplyPaymentResult {
   readonly subscriptionId: string;
   /** true when a new payment was created (drives `payment_created`). */
   readonly created: boolean;
+  /** true when the charge stacked onto the user's live recurring payment. */
+  readonly prolonged: boolean;
+  /** Set on a prolongation that cleared a pending cancel. */
+  readonly reactivated?: boolean;
+  /**
+   * Set when nothing was written because an intro-priced charge met a live payment (Q8):
+   * stacking would credit the intro period at the intro price on top of the paid time.
+   * `subscriptionId` is that live payment; the caller refuses the settlement.
+   */
+  readonly introOnLive?: boolean;
   /** The next scheduled charge date established by this charge (the paid-through anchor).
    * Carried out so the succeeded event can report it. */
   readonly nextPaymentDate: Date;
@@ -76,10 +102,11 @@ const insertNew =
     repo
       .insert({
         externalUserId: params.externalUserId,
-        amount: params.amount,
+        // The scheduler charges the renewal terms; the first charge only set the anchors.
+        amount: params.renewal?.amount ?? params.amount,
         currency: params.currency,
         method: params.method,
-        period: params.period,
+        period: params.renewal?.period ?? params.period,
         status: PaymentStatus.Active,
         recurring: params.recurring,
         ...anchors,
@@ -91,10 +118,79 @@ const insertNew =
         Effect.map((created) => ({
           subscriptionId: created.id,
           created: true,
+          prolonged: false,
           nextPaymentDate: anchors.nextPaymentDate,
         })),
       );
 
+/**
+ * The anchors of a period stacked onto a live row: the new end is the old end plus
+ * `period`, never `paidAt` plus it, so paid time is never lost. A row still inside its
+ * period keeps its start; a row already past its end (PastDue) starts the new period at
+ * the old end. No promo: a live contact never stacks free time. Compared by `getTime()`,
+ * so equal-valued distinct Dates count as equal.
+ */
+export const stackAnchors = (
+  row: Pick<Payment, 'currentPeriodStart' | 'currentPeriodEnd'>,
+  period: string,
+  paidAt: Date,
+): AdvanceAnchor => {
+  const end = addPeriod(row.currentPeriodEnd, period);
+  return {
+    currentPeriodStart:
+      row.currentPeriodEnd.getTime() <= paidAt.getTime()
+        ? row.currentPeriodEnd
+        : row.currentPeriodStart,
+    currentPeriodEnd: end,
+    nextPaymentDate: end,
+  };
+};
+
+/**
+ * The token and method a prolongation leaves on the row, keyed on the charge SOURCE like
+ * the card-change applier: WhitePay (crypto) never yields a reusable token, so the row
+ * goes manual crypto; a card charge stores the new token when the callback returned one
+ * and otherwise keeps the stored one (an Approved WayForPay charge can omit it, docs/14).
+ */
+export const tokenRule = (
+  source: string | undefined,
+  newToken: string | null,
+  locked: Pick<Payment, 'recurringTokenRef'>,
+): { readonly recurringTokenRef: string | null; readonly method: number } =>
+  source === 'whitepay_callback'
+    ? { recurringTokenRef: null, method: PaymentMethod.Crypto }
+    : {
+        recurringTokenRef: newToken ?? locked.recurringTokenRef,
+        method: PaymentMethod.Card,
+      };
+
+/** A payment that still renews: Active, or PastDue inside its retry window. */
+export const isLive = (payment: Pick<Payment, 'status'>): boolean =>
+  payment.status === PaymentStatus.Active ||
+  payment.status === PaymentStatus.PastDue;
+
+/** The contact's live (Active/PastDue) recurring payment, if any. */
+export type FindActiveRecurring =
+  PaymentRepo['findActiveRecurringByExternalUser'];
+
+/** An intro offer: the first charge differs from the terms it renews on (Q8). */
+export const isIntroPriced = (terms: {
+  readonly amount: number;
+  readonly period: string;
+  readonly renewal?: CheckoutRenewal | null;
+}): boolean =>
+  terms.renewal != null &&
+  (terms.renewal.amount !== terms.amount ||
+    !samePeriod(terms.renewal.period, terms.period));
+
+/**
+ * Apply a successful checkout charge. A one-time charge always inserts. A recurring one
+ * stacks onto the user's live (Active/PastDue) recurring payment, re-read under a row
+ * lock so a concurrent writer's time is never lost; with no live payment (none, or it
+ * died meanwhile) it inserts a fresh, auto-charging one anchored at `paidAt`. An
+ * intro-priced charge never stacks: it writes nothing and reports `introOnLive`. Must run in
+ * the caller's transaction (the settlement), which holds the lock to commit.
+ */
 export const createOrExtend =
   (repo: PaymentRepo) =>
   (
@@ -110,28 +206,75 @@ export const createOrExtend =
       const existing = yield* repo.findActiveRecurringByExternalUser(
         params.externalUserId,
       );
-      if (Option.isSome(existing)) {
-        yield* repo.extend(existing.value.id, {
-          amount: params.amount,
+      const locked = Option.isSome(existing)
+        ? yield* repo.lockById(existing.value.id)
+        : Option.none<Payment>();
+      if (Option.isSome(locked) && isLive(locked.value)) {
+        const row = locked.value;
+        // `/pay` refuses an intro link on a live sub, but links claimed before the sub
+        // existed still settle here: re-check under the lock, write nothing.
+        if (isIntroPriced(params)) {
+          return {
+            subscriptionId: row.id,
+            created: false,
+            prolonged: false,
+            introOnLive: true,
+            nextPaymentDate: row.nextPaymentDate,
+          };
+        }
+        // The promo is dropped here: a live contact paying a promo link stacks the paid
+        // period only, never free time.
+        const stacked = stackAnchors(row, params.period, params.paidAt);
+        yield* repo.extend(row.id, {
+          amount: params.renewal?.amount ?? params.amount,
           currency: params.currency,
-          method: params.method,
-          period: params.period,
-          ...anchors,
-          recurringTokenRef: params.recurringTokenRef,
+          period: params.renewal?.period ?? params.period,
+          ...tokenRule(params.source, params.recurringTokenRef, row),
+          ...stacked,
         });
         return {
-          subscriptionId: existing.value.id,
+          subscriptionId: row.id,
           created: false,
-          nextPaymentDate: anchors.nextPaymentDate,
+          prolonged: true,
+          reactivated: row.cancelRequestedAt !== null,
+          nextPaymentDate: stacked.nextPaymentDate,
         };
       }
       return yield* insertNew(repo)(params, anchors);
     });
 
 /**
+ * Credit `period` to a payment from its locked anchor (a renewal or an arrears card
+ * change). Locks the row, skips unless `guard` accepts it, then advances by
+ * `stackAnchors`, which also resets dunning and sets Active. Runs in the caller's
+ * transaction when there is one (as a savepoint), else in its own. Returns the new next
+ * charge date, or None when the row is gone or the guard refused.
+ */
+export const advanceLocked =
+  (repo: PaymentRepo) =>
+  (
+    id: string,
+    period: string,
+    at: Date,
+    guard: (locked: Payment) => boolean,
+  ): Effect.Effect<Option.Option<Date>, SqlError.SqlError> =>
+    repo.transaction(
+      Effect.gen(function* () {
+        const locked = yield* repo.lockById(id);
+        if (Option.isNone(locked) || !guard(locked.value)) {
+          return Option.none();
+        }
+        const anchors = stackAnchors(locked.value, period, at);
+        yield* repo.advanceAfterSuccess(id, anchors);
+        return Option.some(anchors.nextPaymentDate);
+      }),
+    );
+
+/**
  * Deferral (docs/23): grant N free days by pushing the paid-through anchor. The
  * next charge date is re-derived FROM the new anchor (`currentPeriodEnd`), never
  * hand-set — so drift stays structurally impossible (CLAUDE.md §6).
+ * Test oracle only: the defer route now uses the relative SQL `defer` (RETURNING the new end).
  */
 export const computeDeferral = (
   payment: Payment,

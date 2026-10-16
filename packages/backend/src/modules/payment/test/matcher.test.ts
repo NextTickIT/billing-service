@@ -29,6 +29,8 @@ const sub: Payment = {
 
 const die = () => Effect.die('unused');
 const repo = (found: Payment | null): PaymentRepo => ({
+  transaction: (effect) => effect,
+  lockById: () => Effect.die('unused'),
   findById: () =>
     Effect.succeed(found === null ? Option.none() : Option.some(found)),
   findActiveRecurringByExternalUser: die,

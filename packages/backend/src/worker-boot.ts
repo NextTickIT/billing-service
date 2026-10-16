@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 
 import { SqlClient } from '@effect/sql';
-import { SinkKind, type Payment } from '@billing-service/shared';
+import {
+  type CheckoutSession,
+  SinkKind,
+  type Payment,
+} from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
 import type { AppConfig } from '@/config.js';
@@ -23,7 +27,11 @@ import {
   type ChargePipelineService,
 } from '@/modules/charge/domain.js';
 import { sinkCancelled } from '@/modules/billing/events.js';
-import { runScheduler } from '@/modules/billing/scheduler.js';
+import {
+  ForeignManualCheckout,
+  ledgerClaimAdvance,
+  runScheduler,
+} from '@/modules/billing/scheduler.js';
 import { makeContactsRepo } from '@/modules/contacts/data-access.js';
 import { runContactsSync } from '@/modules/contacts/sync.js';
 import { makeSinksRepo } from '@/modules/sinks/data-access.js';
@@ -129,13 +137,21 @@ const startPoller = (config: AppConfig, ingest: Ingest) =>
     yield* Effect.logInfo('w4p migration poller started');
   });
 
+/** Whether the session under a `manual:{subId}:{anchorMs}` key is this sub's own manual
+ * renewal: the key embeds the sub's id, and the row renews no other sub for no other
+ * purpose (NULL on both is a pre-deploy row the 0021 backfill did not label). */
+const ownsManualKey = (session: CheckoutSession, sub: Payment): boolean =>
+  session.idempotencyKey?.split(':')[1] === sub.id &&
+  (session.renewalOf === null || session.renewalOf === sub.id) &&
+  (session.origin === null || session.origin === 'manual_renewal');
+
 /**
  * Mint (or reuse) OUR internal checkout session for a token-less (crypto) renewal prompt
  * (docs/28) and return its link + live window. ONE session per renewal cycle — keyed on the
  * cycle anchor (firstFailureAt, stable across the ladder), so the day-1/3/5 re-prompts reuse
  * the SAME link instead of minting a new independently-payable one each tick.
  */
-const manualCheckoutMinter =
+export const manualCheckoutMinter =
   (sql: SqlClient.SqlClient, config: AppConfig) => (sub: Payment, now: Date) =>
     Effect.gen(function* () {
       const repo = makeCheckoutRepo(sql);
@@ -152,14 +168,30 @@ const manualCheckoutMinter =
       if (inserted) {
         return { checkoutUrl: checkoutPath(baseUrl, id), windowExpiresAt };
       }
-      // A prior prompt this cycle already minted it — reuse that session/link.
+      // A prior prompt this cycle already minted it — reuse that session/link. Ownership
+      // is the key itself (it embeds this sub's id), not the contact: a docs/31 remap
+      // renames only open sessions, and a pre-deploy session the 0021 backfill skipped has
+      // no origin, so neither may stall the ladder. A row under the key that names another
+      // sub or another purpose was planted through the shared key column: never send it.
       const existing = yield* repo.findByIdempotencyKey(idempotencyKey);
-      return Option.isSome(existing)
-        ? {
-            checkoutUrl: checkoutPath(baseUrl, existing.value.id),
-            windowExpiresAt: existing.value.expiresAt,
-          }
-        : { checkoutUrl: checkoutPath(baseUrl, id), windowExpiresAt };
+      if (Option.isNone(existing) || !ownsManualKey(existing.value, sub)) {
+        yield* Effect.logError(
+          'SETTLEMENT_ANOMALY manual checkout: idempotency key held by a foreign session',
+        ).pipe(
+          Effect.annotateLogs({
+            paymentId: sub.id,
+            idempotencyKey,
+            sessionId: Option.isSome(existing) ? existing.value.id : null,
+          }),
+        );
+        return yield* Effect.fail(
+          new ForeignManualCheckout({ paymentId: sub.id, idempotencyKey }),
+        );
+      }
+      return {
+        checkoutUrl: checkoutPath(baseUrl, existing.value.id),
+        windowExpiresAt: existing.value.expiresAt,
+      };
     });
 
 /**
@@ -233,30 +265,38 @@ const startScheduler = (
           client,
           ingest,
           publish,
+          // Keyed on the due date it lapses: a lapse made stale by a defer is a no-op,
+          // and the real one at the moved due date gets a key of its own.
           lapse: (sub) =>
             enqueue(sql)({
               messageType: PAYMENT_LAPSE,
-              idemKey: `lapse:${sub.id}`,
+              idemKey: `lapse:${sub.id}:${sub.nextPaymentDate.getTime().toString()}`,
               payload: {
                 paymentId: sub.id,
                 externalUserId: sub.externalUserId,
+                dueAt: sub.nextPaymentDate.getTime(),
               },
             }).pipe(Effect.asVoid),
           upstreamCancelled,
           // Contact cancelled upstream: flip to cancelled + record payment_cancelled
           // (unmapped to a flow → no echo back to a user who already cancelled).
+          // One transaction, like the lapse: a publish failure rolls the cancel back, so
+          // the terminal event can never be lost after the flip commits.
           cancelUpstream: (sub, now) =>
-            subs
-              .cancelUpstream(sub.id)
-              .pipe(
-                Effect.flatMap((cancelled) =>
-                  cancelled
-                    ? publish(sinkCancelled(sub, 'sendpulse_cancelled', now))
-                    : Effect.void,
+            subs.transaction(
+              subs
+                .cancelUpstream(sub.id, now)
+                .pipe(
+                  Effect.flatMap((cancelled) =>
+                    cancelled
+                      ? publish(sinkCancelled(sub, 'sendpulse_cancelled', now))
+                      : Effect.void,
+                  ),
                 ),
-              ),
+            ),
           // Token-less (crypto) renewal prompt (docs/28): mint/reuse our internal checkout.
           createManualCheckout: manualCheckoutMinter(sql, config),
+          claimAdvance: ledgerClaimAdvance(sql),
         },
         {
           intervalSeconds: config.scheduler.intervalSeconds,

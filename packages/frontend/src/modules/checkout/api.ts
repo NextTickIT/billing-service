@@ -1,4 +1,4 @@
-import type { PaymentMethod } from '@billing-service/shared';
+import { PaymentMethod } from '@billing-service/shared';
 import type {
   CheckoutSessionPublic,
   PayInstruction,
@@ -18,19 +18,26 @@ export class CheckoutApiError extends Error {
   readonly serverMessage: string | null;
   /** Machine-readable discriminator where the status alone is too coarse. */
   readonly code: string | null;
+  /** The method the server will accept, sent with `method_locked`; else null. */
+  readonly method: PaymentMethod | null;
 
   constructor(
     status: number,
     serverMessage: string | null,
     code: string | null = null,
+    method: PaymentMethod | null = null,
   ) {
     super(`HTTP ${String(status)}`);
     this.name = 'CheckoutApiError';
     this.status = status;
     this.serverMessage = serverMessage;
     this.code = code;
+    this.method = method;
   }
 }
+
+const asPaymentMethod = (value: unknown): PaymentMethod | null =>
+  value === PaymentMethod.Card || value === PaymentMethod.Crypto ? value : null;
 
 export async function getCheckoutSession(
   id: string,
@@ -57,13 +64,21 @@ export async function pay(
   if (!res.ok) {
     // 422 is the one status whose body explains something the buyer can act on (e.g.
     // WhitePay's below-minimum amount), so keep it. Everything else is translated from
-    // the status — see CheckoutApiError.
+    // the status — see CheckoutApiError. `code` and `method` are kept only when they
+    // are well-formed: the page acts on them (a locked method switches the picker).
     const body = (await res.json().catch(() => null)) as {
-      error?: string;
+      error?: unknown;
+      code?: unknown;
+      method?: unknown;
     } | null;
     const serverMessage =
       res.status === 422 && typeof body?.error === 'string' ? body.error : null;
-    throw new CheckoutApiError(res.status, serverMessage);
+    throw new CheckoutApiError(
+      res.status,
+      serverMessage,
+      typeof body?.code === 'string' ? body.code : null,
+      asPaymentMethod(body?.method),
+    );
   }
   return res.json() as Promise<PayInstruction>;
 }

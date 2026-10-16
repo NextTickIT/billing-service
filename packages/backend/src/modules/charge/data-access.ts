@@ -66,6 +66,18 @@ export interface ChargeRepo {
     id: string,
     outcome: MatchOutcome,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /**
+   * The charge's current match outcome, read under a row lock held to the end of the
+   * surrounding transaction: the first statement of settlement. A concurrent attempt on
+   * the same charge (a reaper requeue of a slow first attempt) waits for that lock —
+   * already at its own `upsertIncomingCharge`, whose ON CONFLICT update needs the same
+   * row — until the first commits, then reads `'matched'` here and does nothing.
+   * Meaningless outside a transaction. A missing row is a defect: it was upserted just
+   * before.
+   */
+  readonly lockMatchResult: (
+    id: string,
+  ) => Effect.Effect<MatchOutcome, SqlError.SqlError>;
   readonly insertPayment: (
     input: NewPayment,
   ) => Effect.Effect<void, SqlError.SqlError>;
@@ -118,6 +130,14 @@ const setMatchResult =
     sql`
       UPDATE charges SET "matchResult" = ${outcome} WHERE id = ${id}
     `.pipe(Effect.asVoid);
+
+const lockMatchResult = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql<{ readonly matchResult: MatchOutcome }>`
+    SELECT "matchResult" FROM charges WHERE id = ${id} FOR UPDATE
+  `.pipe(
+    Effect.flatMap(requireRow),
+    Effect.map((row) => row.matchResult),
+  );
 
 const insertPayment = (sql: SqlClient.SqlClient) => (input: NewPayment) =>
   sql`
@@ -215,6 +235,7 @@ export const makeChargeRepo = (sql: SqlClient.SqlClient): ChargeRepo => ({
   transaction: (effect) => sql.withTransaction(effect),
   upsertIncomingCharge: upsertIncomingCharge(sql),
   setMatchResult: setMatchResult(sql),
+  lockMatchResult: lockMatchResult(sql),
   insertPayment: insertPayment(sql),
   upsertQuarantine: upsertQuarantine(sql),
   getIncomingChargeById: getIncomingChargeById(sql),

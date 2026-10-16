@@ -35,6 +35,7 @@ export default {
   },
   checkout: {
     title: 'Payment',
+    titleProlong: 'Extend subscription',
     method: 'Payment method',
     methodCard: 'Card',
     methodCrypto: 'Crypto',
@@ -57,7 +58,12 @@ export default {
         'This payment method is temporarily unavailable. Please try again shortly.',
       generic: 'Something went wrong. Please try again.',
     },
+    notices: {
+      methodChanged:
+        'This link now pays with the method shown below. Press Pay again to continue.',
+    },
     periodLabel: 'Billing period',
+    renewalThen: 'Then {amount} every {period}',
     typeSubscription: 'Subscription',
     typeOneTime: 'One-time payment',
     linkValidUntil: 'Payment link valid until {date}',
@@ -146,6 +152,7 @@ export default {
       initial_payment_succeeded: 'Initial payment succeeded',
       recurring_payment_succeeded: 'Recurring payment succeeded',
       initial_payment_failed: 'Initial payment failed',
+      recurring_payment_failed: 'Recurring payment failed',
       charge_retry_failed: 'Charge retry failed',
       renewal_failed: 'Renewal failed',
       payment_manual_required: 'Manual payment required',

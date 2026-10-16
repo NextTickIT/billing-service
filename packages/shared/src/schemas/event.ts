@@ -18,6 +18,7 @@ export const EVENT_NAMES = [
   'recurring_payment_succeeded',
   'one_time_purchase_succeeded',
   'initial_payment_failed',
+  'recurring_payment_failed',
   'charge_retry_failed',
   'renewal_failed',
   'payment_manual_required',
@@ -103,6 +104,17 @@ export type OneTimePurchaseSucceededEvent = Schema.Schema.Type<
   typeof OneTimePurchaseSucceededEvent
 >;
 
+/** The facts of a declined checkout payment, shared by the initial and recurring
+ * variants. */
+const checkoutFailedPayload = {
+  amount: Schema.Int,
+  currency: CurrencySchema,
+  method: Schema.Int,
+  period: Schema.String,
+  reason: Schema.String,
+  source: Schema.String,
+};
+
 /**
  * A first (checkout) payment that was DECLINED for a known session (FR-003).
  * Unlike a recurring failure there is no retry ladder — the customer re-initiates
@@ -113,14 +125,7 @@ export const InitialPaymentFailedEvent = Schema.Struct({
   ...envelope,
   name: Schema.Literal('initial_payment_failed'),
   externalUserId: Schema.String,
-  payload: Schema.Struct({
-    amount: Schema.Int,
-    currency: CurrencySchema,
-    method: Schema.Int,
-    period: Schema.String,
-    reason: Schema.String,
-    source: Schema.String,
-  }),
+  payload: Schema.Struct(checkoutFailedPayload),
 });
 
 export type InitialPaymentFailedEvent = Schema.Schema.Type<
@@ -128,10 +133,30 @@ export type InitialPaymentFailedEvent = Schema.Schema.Type<
 >;
 
 /**
+ * A checkout that would have EXTENDED an existing subscription was declined: a
+ * `/prolong` link, a checkout paid against a live sub, or a manual (crypto) renewal.
+ * Same facts as `initial_payment_failed`; the subscription is untouched and the link
+ * stays payable, so this is a signal to retry, not a step on the scheduler's ladder.
+ * `aggregateId` is the subscription the payment was meant to extend.
+ */
+export const RecurringPaymentFailedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('recurring_payment_failed'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct(checkoutFailedPayload),
+});
+
+export type RecurringPaymentFailedEvent = Schema.Schema.Type<
+  typeof RecurringPaymentFailedEvent
+>;
+
+/**
  * A brand-new gateway payment created from a first checkout payment. `method` is how it
  * was paid and therefore how it renews — a card autocharges, crypto takes a manual
  * prompt (`payment_manual_required`) — so the event that states what the payment costs
- * per period also states how that money is taken.
+ * per period also states how that money is taken. `amount`/`period` are the FIRST
+ * charge; `renewal` carries the terms later renewals use when the checkout set them
+ * (null when it did not, so renewals repeat the first charge).
  */
 export const PaymentCreatedEvent = Schema.Struct({
   ...envelope,
@@ -142,6 +167,9 @@ export const PaymentCreatedEvent = Schema.Struct({
     currency: CurrencySchema,
     method: Schema.Int,
     period: Schema.String,
+    renewal: Schema.NullOr(
+      Schema.Struct({ amount: Schema.Int, period: Schema.String }),
+    ),
   }),
 });
 
@@ -381,6 +409,7 @@ export const DomainEvent = Schema.Union(
   RecurringPaymentSucceededEvent,
   OneTimePurchaseSucceededEvent,
   InitialPaymentFailedEvent,
+  RecurringPaymentFailedEvent,
   PaymentCreatedEvent,
   ChargeRetryFailedEvent,
   RenewalFailedEvent,

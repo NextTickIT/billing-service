@@ -59,6 +59,9 @@ const sessionWith = (promo: CheckoutPromo | null): CheckoutSession => ({
   successUrl: null,
   failureUrl: null,
   promo,
+  renewal: null,
+  origin: null,
+  renewalOf: null,
   idempotencyKey: null,
   email: '',
   expiresAt: new Date(0),
@@ -68,6 +71,8 @@ const sessionWith = (promo: CheckoutPromo | null): CheckoutSession => ({
 /** Every unused repo method dies, so an unexpected code path fails the test loudly. */
 const deadPayments: PaymentRepo = {
   findActiveRecurringByExternalUser: () => Effect.die('unused'),
+  transaction: (effect) => effect,
+  lockById: () => Effect.die('unused'),
   findById: () => Effect.die('unused'),
   findDue: () => Effect.die('unused'),
   findUpcomingForNotice: () => Effect.succeed([]),
@@ -119,12 +124,15 @@ const insertedFor = (promo: CheckoutPromo | null) =>
       insert: () => Effect.succeed(true),
       claimForPayment: () => Effect.succeed(false),
       releasePending: () => Effect.void,
-      markCompleted: () => Effect.void,
+      completeIfOpen: () => Effect.succeed(true),
       renameOpenSessionsExternalUser: () => Effect.succeed(0),
     };
 
     // The real pipeline: match the paid event to the session, then apply it.
-    const match = yield* makeCheckoutMatcher(checkout)(event);
+    const match = yield* makeCheckoutMatcher(
+      checkout,
+      payments.findActiveRecurringByExternalUser,
+    )(event);
     expect(match.matched).toBe(true);
     if (!match.matched) {
       return null;
@@ -133,7 +141,7 @@ const insertedFor = (promo: CheckoutPromo | null) =>
     expect(match.promoBonus).toBe(promo?.additionalFreePeriod ?? null);
 
     const result = yield* makeCheckoutApplier(payments, checkout)(event, match);
-    expect(result.created).toBe(true);
+    expect(result).toMatchObject({ created: true });
 
     expect(inserted).not.toBeNull();
     return inserted as CreatePayment | null;

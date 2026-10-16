@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { RateLimiter } from '@/infra/rate-limiter.js';
 import { type CachedToken, makeEmailConnector } from '@/modules/sinks/email.js';
-import { renderReceipt } from '@/modules/sinks/receipt.js';
+import { isReceiptable, renderReceipt } from '@/modules/sinks/receipt.js';
 import type { FetchLike } from '@/modules/sinks/sendpulse.js';
 
 const noLimit: RateLimiter = { take: Effect.void, limit: (effect) => effect };
@@ -278,6 +278,47 @@ describe('email connector token cache', () => {
       }),
     );
     expect(calls).toEqual([]);
+  });
+});
+
+describe('a declined prolongation (recurring_payment_failed)', () => {
+  it('renders with no button when there is no failureUrl', () => {
+    expect(isReceiptable('recurring_payment_failed')).toBe(true);
+    const r = renderReceipt(
+      event({
+        name: 'recurring_payment_failed',
+        payload: { amount: 5000, currency: 1, method: 1, period: 'P4W' },
+      }),
+    );
+    expect(r?.subject).toBe('NextTick — платёж не прошёл');
+    expect(r?.html).toContain('Продление не прошло');
+    expect(r?.html).toContain('подписка не изменилась');
+    expect(r?.html).toContain('50.00 USD');
+    expect(r?.text).toContain('Продление не прошло');
+    expect(r?.html).not.toContain('class="e-btn"');
+    expect(r?.html).not.toContain('Повторить оплату');
+  });
+
+  it('is sent only once the scope lists it', async () => {
+    const failed = event({ name: 'recurring_payment_failed' });
+    const outside: Recorded[] = [];
+    const inside: Recorded[] = [];
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const before = yield* connector(outside, { address: 'a@b.co' });
+        yield* before.sink.deliver(failed);
+        const after = yield* connector(inside, {
+          address: 'a@b.co',
+          events: ['initial_payment_succeeded', 'recurring_payment_failed'],
+        });
+        yield* after.sink.deliver(failed);
+      }),
+    );
+    expect(outside).toEqual([]);
+    expect(inside.map((c) => c.url)).toEqual([
+      'https://api.sendpulse.test/oauth/access_token',
+      'https://api.sendpulse.test/smtp/emails',
+    ]);
   });
 });
 

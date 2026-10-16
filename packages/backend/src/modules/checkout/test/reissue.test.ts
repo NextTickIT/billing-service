@@ -32,6 +32,9 @@ const session = (over: Partial<CheckoutSession> = {}): CheckoutSession => ({
   successUrl: null,
   failureUrl: null,
   promo: { additionalFreePeriod: 'P7D' },
+  renewal: null,
+  origin: null,
+  renewalOf: null,
   idempotencyKey: 'sp:1',
   email: 'buyer@example.com',
   expiresAt: new Date(NOW - HOUR), // lapsed an hour ago
@@ -58,24 +61,52 @@ const repoWith = (
     insert: die,
     claimForPayment: die,
     releasePending: die,
-    markCompleted: die,
     renameOpenSessionsExternalUser: die,
   } as unknown as CheckoutRepo;
   return { repo, minted };
 };
 
+/** The contact's live subscription, on terms that differ from the stale link's. */
+const liveSub = (over: Partial<Payment> = {}): Payment => ({
+  id: 'pay_live',
+  externalUserId: 'sp:1',
+  amount: 7000,
+  currency: 1,
+  method: 1,
+  period: 'P4W',
+  status: PaymentStatus.Active,
+  recurring: true,
+  currentPeriodStart: new Date(NOW - 10 * 24 * HOUR),
+  currentPeriodEnd: new Date(NOW + 18 * 24 * HOUR),
+  nextPaymentDate: new Date(NOW + 18 * 24 * HOUR),
+  recurringTokenRef: null,
+  firstFailureAt: null,
+  retryAttempt: 0,
+  cancelRequestedAt: null,
+  createdAt: new Date(NOW - 40 * 24 * HOUR),
+  updatedAt: new Date(NOW - 40 * 24 * HOUR),
+  ...over,
+});
+
 const noSubscription = () => Effect.succeed(Option.none<Payment>());
 const subscription = (status: PaymentStatus) => () =>
-  Effect.succeed(Option.some({ status } as Payment));
+  Effect.succeed(Option.some(liveSub({ status })));
 
 const run = (
   repo: CheckoutRepo,
-  findActive: Parameters<typeof resolvePayableSessionId>[1],
+  findActive: Parameters<
+    typeof resolvePayableSessionId
+  >[0]['findActiveRecurring'],
+  method = 0,
 ) =>
   Effect.runSync(
-    resolvePayableSessionId(repo, findActive, 'chk_old', NOW, TTL_SECONDS).pipe(
-      Effect.either,
-    ),
+    resolvePayableSessionId(
+      { sessions: repo, findActiveRecurring: findActive },
+      'chk_old',
+      method,
+      NOW,
+      TTL_SECONDS,
+    ).pipe(Effect.either),
   );
 
 describe('a lapsed link is re-issued instead of refused', () => {
@@ -220,5 +251,108 @@ describe('guards on re-issue', () => {
 
     expect(result._tag === 'Right' && result.right).toBe('chk_already_live');
     expect(minted).toHaveLength(0);
+  });
+});
+
+describe("T23: a lapsed link re-mints at the live sub's current terms", () => {
+  test('a lapsed plain link with a promo and a PastDue contact re-mints without the promo', () => {
+    const { repo, minted } = repoWith(session());
+    const result = run(repo, subscription(PaymentStatus.PastDue));
+
+    expect(result._tag).toBe('Right');
+    expect(minted).toHaveLength(1);
+    expect(minted[0]?.id).not.toBe('chk_old');
+    expect(minted[0]).toMatchObject({
+      // The sub's current terms, not the stale link's 5000/P1M + 7 free days.
+      amount: 7000,
+      period: 'P4W',
+      promo: null,
+      renewal: null,
+      // An unlabelled re-mint: it renews no particular sub.
+      origin: null,
+      renewalOf: null,
+      idempotencyKey: null,
+      // Where the buyer gets the receipt still belongs to the link they clicked.
+      email: 'buyer@example.com',
+      expiresAt: new Date(NOW + TTL_SECONDS * 1000),
+    });
+  });
+
+  test.each([
+    ['Active', PaymentStatus.Active],
+    ['PastDue', PaymentStatus.PastDue],
+  ])(
+    'a lapsed prolong link with a live %s sub re-mints at its current terms and method',
+    (_label, status) => {
+      const { repo, minted } = repoWith(
+        session({
+          origin: 'prolong',
+          renewalOf: 'pay_old',
+          promo: null,
+          method: 0,
+          idempotencyKey: null,
+        }),
+      );
+      const result = run(repo, subscription(status), 1);
+
+      expect(result._tag).toBe('Right');
+      expect(minted[0]).toMatchObject({
+        amount: 7000,
+        currency: 1,
+        period: 'P4W',
+        method: 1,
+        promo: null,
+        renewal: null,
+        origin: 'prolong',
+        renewalOf: 'pay_live',
+        recurring: true,
+        paymentId: null,
+      });
+    },
+  );
+});
+
+describe('T23: a lapsed manual-renewal link', () => {
+  test('a lapsed manual-renewal link with a live sub re-mints labelled manual_renewal', () => {
+    const { repo, minted } = repoWith(
+      session({ origin: 'manual_renewal', renewalOf: 'pay_live', promo: null }),
+    );
+    const result = run(repo, subscription(PaymentStatus.PastDue));
+
+    expect(result._tag).toBe('Right');
+    expect(minted[0]).toMatchObject({
+      origin: 'manual_renewal',
+      renewalOf: 'pay_live',
+      amount: 7000,
+    });
+  });
+});
+
+describe('T23: a lapsed link with no live sub is cloned on its own terms', () => {
+  test('a lapsed prolong link whose sub has died is a plain clone that keeps its attribution', () => {
+    const { repo, minted } = repoWith(
+      session({ origin: 'prolong', renewalOf: 'pay_dead', promo: null }),
+    );
+    const result = run(repo, noSubscription);
+
+    expect(result._tag).toBe('Right');
+    expect(minted[0]).toMatchObject({
+      amount: 5000,
+      period: 'P1M',
+      origin: 'prolong',
+      renewalOf: 'pay_dead',
+      method: 0,
+    });
+  });
+
+  test('a RenewalFailed row is not a live sub: the plain link is cloned on its own terms', () => {
+    const { repo, minted } = repoWith(session());
+    const result = run(repo, subscription(PaymentStatus.RenewalFailed));
+
+    expect(result._tag).toBe('Right');
+    expect(minted[0]).toMatchObject({
+      amount: 5000,
+      promo: { additionalFreePeriod: 'P7D' },
+    });
   });
 });

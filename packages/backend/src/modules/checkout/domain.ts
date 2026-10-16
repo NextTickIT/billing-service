@@ -1,5 +1,7 @@
 import type { SqlError } from '@effect/sql';
 import {
+  type CheckoutOrigin,
+  type CheckoutSession,
   CheckoutSessionKind,
   CheckoutSessionStatus,
   type NewCheckoutSession,
@@ -7,35 +9,48 @@ import {
   PaymentMethod,
   PaymentStatus,
 } from '@billing-service/shared';
-import { Effect, Option } from 'effect';
+import { Data, Effect, Option } from 'effect';
 
-import type {
-  AppliedCharge,
-  ChargeApplier,
-  ChargeMatcher,
-  Match,
+import {
+  type AppliedCharge,
+  type Charge,
+  type ChargeApplier,
+  type ChargeMatcher,
+  type Match,
+  type RefusedCharge,
+  settlementAnomaly,
 } from '@/modules/charge/contracts.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
-import { createOrExtend } from '@/modules/payment/domain.js';
-import { addPeriod } from '@/modules/payment/period.js';
+import {
+  advanceLocked,
+  createOrExtend,
+  type FindActiveRecurring,
+} from '@/modules/payment/domain.js';
 
 /** The public checkout page URL for a session id (served by the frontend SPA). `baseUrl`
  * is the environment's `checkoutBaseUrl` config (no trailing slash). */
 export const checkoutPath = (baseUrl: string, sessionId: string): string =>
   `${baseUrl}/checkout/${sessionId}`;
 
+/** How a terms session is minted: its id, expiry, idempotency key and label. */
+export interface TermsSessionMint {
+  readonly sessionId: string;
+  readonly expiresAt: Date;
+  readonly idempotencyKey: string | null;
+  readonly origin: CheckoutOrigin | null;
+}
+
 /**
- * Build OUR internal checkout session for a token-less (crypto) renewal prompt (docs/28):
- * a normal RECURRING checkout for the payment's own terms, with the last-used method
- * preselected. Paying it runs through create-or-extend and extends THIS recurring payment
- * (keyed on the user); a card pay captures a token and graduates it back to autocharge.
+ * A server-minted RECURRING checkout at a subscription's own current terms and method
+ * (amount, currency, period), with no promo and no renewal override. Paying it runs the
+ * one prolongation path: it stacks onto the contact's live sub, or after that sub died
+ * starts a fresh one. `origin` labels who minted it; a labelled session also records the
+ * sub it renews (`renewalOf`), while an unlabelled re-mint (`origin` null) records none.
  */
-export const manualRenewalSession = (
+export const subscriptionTermsSession = (
   sub: Payment,
-  sessionId: string,
-  expiresAt: Date,
-  idempotencyKey: string,
+  { sessionId, expiresAt, idempotencyKey, origin }: TermsSessionMint,
 ): NewCheckoutSession => ({
   id: sessionId,
   externalUserId: sub.externalUserId,
@@ -52,12 +67,48 @@ export const manualRenewalSession = (
   successUrl: null,
   failureUrl: null,
   promo: null,
-  // One session per renewal cycle: re-prompts on the retry ladder reuse the SAME link
-  // (the unique idempotencyKey collapses re-inserts), so a user can never hold several
-  // independently-payable links for one cycle and double-pay.
+  renewal: null,
+  origin,
+  // The sub this session renews: names it in a decline after the sub has died.
+  renewalOf: origin === null ? null : sub.id,
   idempotencyKey,
   expiresAt,
 });
+
+/**
+ * Build OUR internal checkout session for a token-less (crypto) renewal prompt (docs/28):
+ * the payment's own terms, with the last-used method preselected. Paying it extends THIS
+ * recurring payment; a card pay captures a token and graduates it back to autocharge.
+ * One session per renewal cycle: re-prompts on the retry ladder reuse the SAME link (the
+ * unique idempotencyKey collapses re-inserts), so a user can never hold several
+ * independently-payable links for one cycle and double-pay.
+ */
+export const manualRenewalSession = (
+  sub: Payment,
+  sessionId: string,
+  expiresAt: Date,
+  idempotencyKey: string,
+): NewCheckoutSession =>
+  subscriptionTermsSession(sub, {
+    sessionId,
+    expiresAt,
+    idempotencyKey,
+    origin: 'manual_renewal',
+  });
+
+/** The `/prolong` session: the sub's terms, its method locked (`origin='prolong'`). */
+export const prolongSession = (
+  sub: Payment,
+  sessionId: string,
+  expiresAt: Date,
+  idempotencyKey: string | null,
+): NewCheckoutSession =>
+  subscriptionTermsSession(sub, {
+    sessionId,
+    expiresAt,
+    idempotencyKey,
+    origin: 'prolong',
+  });
 
 /**
  * A caller-supplied post-payment redirect must point at an allowed host (docs/30). An
@@ -83,10 +134,16 @@ export const redirectHostAllowed = (
 };
 
 /** How a method change lands. `flip` mutates the payment server-side (no payment);
- * `checkout` issues a pay/verify session for `amount` in the target method. */
+ * `checkout` issues a pay/verify session for `amount` in the target method. `arrears` is
+ * true only when that session collects what the subscription owes: the route mints it
+ * with `origin='card_change_arrears'`, which alone lets its payment credit a period. */
 export type MethodChangePlan =
   | { readonly action: 'flip' }
-  | { readonly action: 'checkout'; readonly amount: number };
+  | {
+      readonly action: 'checkout';
+      readonly amount: number;
+      readonly arrears: boolean;
+    };
 
 /**
  * Decide how a method change takes effect (docs/32), previous-method agnostic:
@@ -114,8 +171,63 @@ export const planMethodChange = (
     : cardVerifyEnabled
       ? 0
       : cardChangeChargeMinor;
-  return { action: 'checkout', amount };
+  return { action: 'checkout', amount, arrears: owed };
 };
+
+/**
+ * Whether a charge on an open checkout session may settle under the session's terms.
+ * Both providers map an unknown currency to UAH, so a succeeded charge in another
+ * currency is not what the session priced: never book it (quarantine, loudly). A
+ * differing amount is routine (WhitePay reports the converted crypto value): settle on
+ * the session's price and leave a trace.
+ */
+const settlesOnSession = (event: Charge, session: CheckoutSession) =>
+  Effect.gen(function* () {
+    if (event.status !== 'succeeded') {
+      return true;
+    }
+    const sessionCurrency: number = session.currency;
+    if (event.currency !== sessionCurrency) {
+      yield* settlementAnomaly(
+        'checkout: currency differs from session',
+        event,
+      );
+      return false;
+    }
+    if (event.amount !== session.amount) {
+      yield* Effect.logWarning('settlement: amount differs from session').pipe(
+        Effect.annotateLogs({
+          idemKey: event.idemKey,
+          externalRef: event.externalRef,
+          amount: event.amount,
+          sessionAmount: session.amount,
+        }),
+      );
+    }
+    return true;
+  });
+
+/** The checkout match for an open session: its own price, terms and labels. */
+const checkoutMatch = (
+  session: CheckoutSession,
+  prolongOf: string | null,
+): Match => ({
+  matched: true,
+  kind: 'checkout',
+  subscriptionId: null,
+  externalUserId: session.externalUserId,
+  period: session.period,
+  method: session.method ?? PaymentMethod.Card,
+  recurring: session.recurring,
+  // A one-time bonus period the session carried; applied once on the create path.
+  promoBonus: session.promo?.additionalFreePeriod ?? null,
+  renewal: session.renewal,
+  origin: session.origin,
+  renewalOf: session.renewalOf,
+  prolongOf,
+  amount: session.amount,
+  currency: session.currency,
+});
 
 /**
  * Checkout matcher: an incoming event whose `externalRef` is a known checkout
@@ -124,49 +236,70 @@ export const planMethodChange = (
  * `initial_payment_failed`, FR-003) — both are OUR session, not an unknown payment.
  * Intermediate/other statuses (pending, refunded) still fall through to quarantine,
  * as do events for an unknown ref. Poller/legacy events never match here (no session).
+ *
+ * The match carries the session's own price and renewal terms (what gets stored, never
+ * the callback's), its `origin` and `renewalOf`, and, for a declined recurring session
+ * whose contact holds a live sub, that sub as `prolongOf` (a failed prolongation).
  */
 export const makeCheckoutMatcher =
-  (repo: CheckoutRepo): ChargeMatcher =>
+  (
+    repo: CheckoutRepo,
+    findActiveRecurring: FindActiveRecurring,
+  ): ChargeMatcher =>
   (event) =>
     Effect.gen(function* () {
       if (event.status !== 'succeeded' && event.status !== 'failed') {
         return { matched: false };
       }
       const found = yield* repo.findById(event.externalRef);
-      if (Option.isNone(found)) {
+      // A card-change session is handled by its own matcher/applier — never as a
+      // first checkout (which would create-or-extend a second payment).
+      if (
+        Option.isNone(found) ||
+        found.value.kind !== CheckoutSessionKind.Checkout
+      ) {
         return { matched: false };
       }
       const session = found.value;
-      // A card-change session is handled by its own matcher/applier — never as a
-      // first checkout (which would create-or-extend a second payment).
-      if (session.kind !== CheckoutSessionKind.Checkout) {
-        return { matched: false };
-      }
       // A session is completed on the FIRST successful charge. A second success (crypto
       // double-pay: two paid orders for one session) or a late decline arriving after
       // completion must NOT re-credit or emit a spurious failure — fall through to
       // quarantine so the operator sees it (a refund candidate), never book it (docs/26).
       if (session.status === CheckoutSessionStatus.Completed) {
+        if (event.status === 'succeeded') {
+          yield* settlementAnomaly('checkout: paid a completed session', event);
+        }
         return { matched: false };
       }
-      return {
-        matched: true,
-        kind: 'checkout',
-        subscriptionId: null,
-        externalUserId: session.externalUserId,
-        period: session.period,
-        method: session.method ?? PaymentMethod.Card,
-        recurring: session.recurring,
-        // A one-time bonus period the session carried; applied once on the create path.
-        promoBonus: session.promo?.additionalFreePeriod ?? null,
-      };
+      if (!(yield* settlesOnSession(event, session))) {
+        return { matched: false };
+      }
+      const live =
+        event.status === 'failed' && session.recurring
+          ? yield* findActiveRecurring(session.externalUserId)
+          : Option.none<Payment>();
+      return checkoutMatch(
+        session,
+        Option.getOrNull(Option.map(live, (sub) => sub.id)),
+      );
     });
+
+/**
+ * Whether a card-change session's payment credits its own period. New sessions carry
+ * the intent from mint time (`card_change_arrears`); a session from before `origin`
+ * existed (null) keeps the old rule, a priced session is arrears.
+ */
+const isArrears = (session: CheckoutSession): boolean =>
+  session.origin === null
+    ? session.amount > 0
+    : session.origin === 'card_change_arrears';
 
 /**
  * Card-change matcher (docs/23): a callback whose session is a `card_change`
  * resolves to that session's target payment. Runs BEFORE the checkout matcher.
- * `owed` distinguishes a priced Purchase (past_due/renewal_failed) from a 0-amount
- * verify. Both success and failure match here so the pipeline can emit the outcome.
+ * `amountCharged` (money moved, so it is fixed and reported) is kept apart from
+ * `arrears` (a period is credited). Both success and failure match here so the pipeline
+ * can emit the outcome.
  */
 export const makeCardChangeMatcher =
   (repo: CheckoutRepo): ChargeMatcher =>
@@ -193,7 +326,9 @@ export const makeCardChangeMatcher =
         externalUserId: session.externalUserId,
         period: session.period,
         method: session.method ?? PaymentMethod.Card,
-        owed: session.amount > 0,
+        amountCharged: event.amount > 0,
+        arrears: isArrears(session),
+        origin: session.origin,
       };
     });
 
@@ -207,21 +342,37 @@ const recToken = (payload: Record<string, unknown>): string | null =>
 const owesMoney = (status: PaymentStatus): boolean =>
   status === PaymentStatus.PastDue || status === PaymentStatus.RenewalFailed;
 
+/** A different charge already settled this session: write nothing, quarantine it. */
+const alreadyApplied = (subscriptionId: string | null): RefusedCharge => ({
+  refused: 'already_applied',
+  subscriptionId,
+});
+
+/** Aborts the checkout settlement savepoint so the session claim rolls back with it. */
+class IntroOnLive extends Data.TaggedError('IntroOnLive')<{
+  readonly subscriptionId: string;
+}> {}
+
 /**
- * Card-change applier (docs/23): rewrite the stored token on the target payment and,
- * for an owed change, advance the SAME payment (never create-or-extend, so the
- * one-active-payment invariant holds) — `advanceAfterSuccess` also resets the retry
- * ladder and sets `active`, reviving a past_due/renewal_failed payment in place. The
- * new period anchors on the existing `currentPeriodEnd` (drift-free).
+ * Card-change applier (docs/23): claim the session, rewrite the stored token on the
+ * target payment and, for an arrears change, credit the session's own period on the
+ * SAME payment (never create-or-extend, so the one-active-payment invariant holds),
+ * stacked on its locked anchor; the advance also resets the retry ladder and sets
+ * `active`, reviving a past_due/renewal_failed payment in place.
  */
 const applyCardChange =
   (payments: PaymentRepo, checkout: CheckoutRepo) =>
   (
     event: Parameters<ChargeApplier>[0],
     paymentId: string,
-    owed: boolean,
+    match: Match,
   ): Effect.Effect<AppliedCharge, SqlError.SqlError> =>
     Effect.gen(function* () {
+      // Exactly one charge settles a session; a replay of the same charge never gets
+      // here (the pipeline's matchResult lock), so a loss is a different charge.
+      if (!(yield* checkout.completeIfOpen(event.externalRef))) {
+        return alreadyApplied(paymentId);
+      }
       // Persist the rail the payment ACTUALLY came in on — keyed on the event SOURCE, not on
       // whether a token came back. This records what the buyer really paid even if they
       // switched method on the checkout page from what was requested.
@@ -241,36 +392,112 @@ const applyCardChange =
         }
         yield* payments.setMethod(paymentId, PaymentMethod.Card);
       }
-      // The next charge date this change establishes: for an owed change it advances the
-      // anchor (below); otherwise the payment's existing schedule is unchanged.
-      let nextPaymentDate: Date | null = null;
-      if (owed) {
-        const found = yield* payments.findById(paymentId);
-        // Guard the advance on the payment still OWING (past_due/renewal_failed):
-        // `advanceAfterSuccess` moves the anchor unconditionally, so a reaper
-        // redelivery would advance a second period. A redelivered callback finds the
-        // payment already `active` and skips — the anchor moves exactly once. The
-        // token update, the fixation, and the emitted events are id-idempotent.
-        if (Option.isSome(found) && owesMoney(found.value.status)) {
-          const p = found.value;
-          const currentPeriodEnd = addPeriod(p.currentPeriodEnd, p.period);
-          yield* payments.advanceAfterSuccess(paymentId, {
-            currentPeriodStart: p.currentPeriodEnd,
-            currentPeriodEnd,
-            nextPaymentDate: currentPeriodEnd,
-          });
-          nextPaymentDate = currentPeriodEnd;
+      if (match.arrears === true) {
+        // A session from before `origin` keeps the old guard: it advances only while the
+        // payment still owes. A new arrears session always credits its period, unless the
+        // payment was cancelled meanwhile.
+        const legacy = match.origin === null || match.origin === undefined;
+        const advanced = yield* advanceLocked(payments)(
+          paymentId,
+          match.period,
+          event.occurredAt,
+          (locked) =>
+            legacy
+              ? owesMoney(locked.status)
+              : locked.status !== PaymentStatus.Cancelled,
+        );
+        if (Option.isSome(advanced)) {
+          return {
+            subscriptionId: paymentId,
+            created: false,
+            prolonged: false,
+            nextPaymentDate: advanced.value,
+          };
         }
       }
-      yield* checkout.markCompleted(event.externalRef);
-      return { subscriptionId: paymentId, created: false, nextPaymentDate };
+      // No period credited: a charge that moved money reports the unchanged schedule;
+      // a 0-amount verify reports none.
+      const nextPaymentDate =
+        match.amountCharged === true
+          ? Option.getOrNull(
+              Option.map(
+                yield* payments.findById(paymentId),
+                (p) => p.nextPaymentDate,
+              ),
+            )
+          : null;
+      return {
+        subscriptionId: paymentId,
+        created: false,
+        prolonged: false,
+        nextPaymentDate,
+      };
     });
 
 /**
- * Checkout applier (FR-003): a matched checkout payment creates or extends the
- * user's payment (storing the card token) and marks the session completed. A
- * `recurring` match already has its payment — the scheduler advances it (M6) — so the
- * applier just reports it. A `card_change` match re-tokenizes an existing payment.
+ * The checkout branch of the applier: claim the session, then create or extend. Runs as
+ * a savepoint inside the settlement transaction: an intro-priced charge on a live sub
+ * (Q8) rolls back its session claim too, leaving the session as it was.
+ */
+const applyCheckout =
+  (payments: PaymentRepo, checkout: CheckoutRepo) =>
+  (
+    event: Charge,
+    match: Match,
+  ): Effect.Effect<AppliedCharge, SqlError.SqlError> =>
+    Effect.gen(function* () {
+      if (!(yield* checkout.completeIfOpen(event.externalRef))) {
+        return alreadyApplied(null);
+      }
+      const applied = yield* createOrExtend(payments)({
+        externalUserId: match.externalUserId,
+        // The session's price, not the callback's: a provider maps an unknown currency
+        // to UAH, and WhitePay reports a converted amount.
+        amount: match.amount ?? event.amount,
+        currency: match.currency ?? event.currency,
+        method: match.method,
+        period: match.period,
+        // Absent on a recurring/card_change match — those act on an existing recurring
+        // payment; only a checkout match can carry a one-time (false) intent.
+        recurring: match.recurring ?? true,
+        // One-time bonus period from the session; extends the paid-through anchor once.
+        promoBonus: match.promoBonus ?? null,
+        renewal: match.renewal ?? null,
+        source: event.source,
+        recurringTokenRef: recToken(event.payload),
+        paidAt: event.occurredAt,
+      });
+      if (applied.introOnLive === true) {
+        return yield* Effect.fail(
+          new IntroOnLive({ subscriptionId: applied.subscriptionId }),
+        );
+      }
+      const { subscriptionId, created, prolonged, nextPaymentDate } = applied;
+      return {
+        subscriptionId,
+        created,
+        prolonged,
+        ...(applied.reactivated === undefined
+          ? {}
+          : { reactivated: applied.reactivated }),
+        nextPaymentDate,
+      };
+    }).pipe(
+      payments.transaction,
+      Effect.catchTag('IntroOnLive', (refusal) =>
+        Effect.succeed<AppliedCharge>({
+          refused: 'intro_on_live',
+          subscriptionId: refusal.subscriptionId,
+        }),
+      ),
+    );
+
+/**
+ * Checkout applier (FR-003): claim the session, then create or extend the user's
+ * payment (storing the card token). A `recurring` match already has its payment — the
+ * scheduler advances it (M6) — so the applier just reports it. A `card_change` match
+ * re-tokenizes an existing payment. Opens no transaction of its own (only a savepoint,
+ * `applyCheckout`): the pipeline's settlement transaction holds every write and lock.
  */
 export const makeCheckoutApplier =
   (payments: PaymentRepo, checkout: CheckoutRepo): ChargeApplier =>
@@ -281,7 +508,7 @@ export const makeCheckoutApplier =
       return applyCardChange(payments, checkout)(
         event,
         match.subscriptionId,
-        match.owed === true,
+        match,
       );
     }
     if (match.kind === 'recurring' && match.subscriptionId !== null) {
@@ -294,21 +521,13 @@ export const makeCheckoutApplier =
         const nextPaymentDate = Option.isSome(found)
           ? found.value.nextPaymentDate
           : null;
-        return { subscriptionId, created: false, nextPaymentDate };
+        return {
+          subscriptionId,
+          created: false,
+          prolonged: false,
+          nextPaymentDate,
+        };
       });
     }
-    return createOrExtend(payments)({
-      externalUserId: match.externalUserId,
-      amount: event.amount,
-      currency: event.currency,
-      method: match.method,
-      period: match.period,
-      // Absent on a recurring/card_change match — those act on an existing recurring
-      // payment; only a checkout match can carry a one-time (false) intent.
-      recurring: match.recurring ?? true,
-      // One-time bonus period from the session; extends the paid-through anchor once.
-      promoBonus: match.promoBonus ?? null,
-      recurringTokenRef: recToken(event.payload),
-      paidAt: event.occurredAt,
-    }).pipe(Effect.tap(() => checkout.markCompleted(event.externalRef)));
+    return applyCheckout(payments, checkout)(event, match);
   };

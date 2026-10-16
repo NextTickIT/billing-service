@@ -1,5 +1,6 @@
 import { Schema } from 'effect';
 
+import { isNonZeroPeriod, isValidPeriod, RecurringPeriod } from '@/period.js';
 import {
   CurrencySchema,
   PaymentMethod,
@@ -65,6 +66,38 @@ export const CheckoutPromo = Schema.Struct({
 
 export type CheckoutPromo = Schema.Schema.Type<typeof CheckoutPromo>;
 
+/**
+ * The terms the subscription renews at when they differ from the first charge (an intro
+ * price or an intro length). The first payment charges the top-level amount/period; the
+ * stored subscription, and so every scheduler renewal, uses these. Both fields are
+ * required when present; the currency is the checkout's.
+ */
+export const CheckoutRenewal = Schema.Struct({
+  amount: Schema.Int.pipe(Schema.positive()),
+  period: RecurringPeriod,
+});
+
+export type CheckoutRenewal = Schema.Schema.Type<typeof CheckoutRenewal>;
+
+/**
+ * Who minted a session, when it was not the external caller's create. Never accepted on
+ * the wire and never exposed publicly (`card_change_arrears` would tell anyone holding
+ * the link that the customer owes money). Null means a caller-created checkout, or a
+ * session minted before the column existed.
+ * - `prolong`: `POST /api/payment/prolong`; its method is locked to the sub's.
+ * - `manual_renewal`: the scheduler's manual (crypto) renewal prompt.
+ * - `card_change` / `card_change_arrears`: a card change that does not / does collect
+ *   an owed period.
+ */
+export const CheckoutOrigin = Schema.Literal(
+  'prolong',
+  'manual_renewal',
+  'card_change',
+  'card_change_arrears',
+);
+
+export type CheckoutOrigin = Schema.Schema.Type<typeof CheckoutOrigin>;
+
 /** A checkout session at rest. `method` is null until chosen on the page. */
 export const CheckoutSession = Schema.Struct({
   id: Schema.String,
@@ -103,6 +136,15 @@ export const CheckoutSession = Schema.Struct({
   email: Schema.String,
   expiresAt: Schema.Date,
   createdAt: Schema.Date,
+  // Renewal terms when they differ from the first charge; null renews at the top-level
+  // amount/period (see CheckoutRenewal).
+  renewal: Schema.NullOr(CheckoutRenewal),
+  // Who minted the session (see CheckoutOrigin); internal only.
+  origin: Schema.NullOr(CheckoutOrigin),
+  // The subscription a `prolong` or `manual_renewal` session renews. Attribution only:
+  // it never selects the row a payment writes; it names the sub in a decline event and
+  // keeps one sub's replacement link from being handed to another. Internal only.
+  renewalOf: Schema.NullOr(Schema.String),
 });
 
 export type CheckoutSession = Schema.Schema.Type<typeof CheckoutSession>;
@@ -144,6 +186,8 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       successUrl: Schema.optional(RedirectUrl),
       failureUrl: Schema.optional(RedirectUrl),
       promo: Schema.optional(CheckoutPromo),
+      // Optional renewal terms when they differ from the first charge (recurring only).
+      renewal: Schema.optional(CheckoutRenewal),
       // Optional: the receipt is sent only when an address was captured. Validated for
       // FORM at the boundary — a malformed address is worse than an absent one, because
       // it looks delivered and bounces silently.
@@ -157,6 +201,30 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       !v.recurring || (typeof v.period === 'string' && v.period.length > 0),
     { message: () => 'period is required for a recurring checkout' },
   ),
+  // The rules below bind the external caller only. Internal minters (the 0-amount
+  // card-change verify, the manual renewal, /prolong) insert sessions directly and never
+  // decode through this schema.
+  Schema.filter((v) => v.renewal === undefined || v.recurring, {
+    message: () => 'renewal is only allowed on a recurring checkout',
+  }),
+  // A zero-length cadence would leave the next charge date in place, so the scheduler
+  // would charge on every tick. A one-time purchase keeps accepting P0D/no period.
+  Schema.filter(
+    (v) =>
+      !v.recurring ||
+      (typeof v.period === 'string' &&
+        isValidPeriod(v.period) &&
+        isNonZeroPeriod(v.period)),
+    {
+      message: () =>
+        'period must be a non-zero ISO-8601 duration for a recurring checkout',
+    },
+  ),
+  // Recurring or one-time: an external caller never sells something for nothing. The
+  // 0-amount card-change verify is internal and never decodes through here.
+  Schema.filter((v) => v.amount > 0, {
+    message: () => 'amount must be positive',
+  }),
 );
 
 export type CreateCheckoutSession = Schema.Schema.Type<
@@ -178,6 +246,17 @@ export const SessionCreated = Schema.Struct({
 });
 
 export type SessionCreated = Schema.Schema.Type<typeof SessionCreated>;
+
+/**
+ * POST /api/payment/prolong body: SendPulse asks for a link that extends the user's live
+ * (Active/PastDue) subscription by one period at its current terms. No redirects: the
+ * link lands on the hosted pay page. Reuses `SessionCreated` as the response.
+ */
+export const ProlongRequest = Schema.Struct({
+  externalUserId: Schema.String,
+});
+
+export type ProlongRequest = Schema.Schema.Type<typeof ProlongRequest>;
 
 /**
  * POST /api/payment/card-change body (docs/23): SendPulse initiates a card change
@@ -250,6 +329,10 @@ export type MethodChangeResult = Schema.Schema.Type<typeof MethodChangeResult>;
  * `recurring` is what the page tells the payer they are buying — a subscription that
  * renews every `period`, or a single charge — so a recurring authorisation is never
  * taken without disclosing it; `period` is a renewal cadence only when it is true.
+ * `renewal` discloses the renewal terms when they differ from the first charge. The
+ * derived `methodLocked` (only `method` is payable, the picker is hidden) and `prolong`
+ * (the page extends an existing subscription) stand in for `origin`, which is never
+ * exposed; neither is `renewalOf`.
  */
 export const CheckoutSessionPublic = CheckoutSession.pipe(
   Schema.pick(
@@ -263,6 +346,13 @@ export const CheckoutSessionPublic = CheckoutSession.pipe(
     'successUrl',
     'failureUrl',
     'expiresAt',
+    'renewal',
+  ),
+  Schema.extend(
+    Schema.Struct({
+      methodLocked: Schema.Boolean,
+      prolong: Schema.Boolean,
+    }),
   ),
 );
 

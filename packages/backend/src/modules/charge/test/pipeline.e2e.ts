@@ -2,27 +2,31 @@ import assert from 'node:assert/strict';
 
 import { SqlClient } from '@effect/sql';
 import { CheckoutSessionKind, PaymentStatus } from '@billing-service/shared';
-import { Duration, Effect, Option } from 'effect';
+import { Effect, Option } from 'effect';
 
-import type { AppConfig } from '@/config.js';
-import { defaultRetryConfig } from '@/infra/queue/policy.js';
-import { Queue } from '@/infra/queue/service.js';
 import { enqueue } from '@/infra/queue/store.js';
-import { TaskRegistry } from '@/infra/task-registry.js';
-import { DELIVER_EVENT } from '@/modules/outbox/contracts.js';
-import { Outbox } from '@/modules/outbox/domain.js';
 import type { Charge } from '@/modules/charge/contracts.js';
-import {
-  PAYMENT_EVENT_RECEIVED,
-  PAYMENT_REBIND,
-} from '@/modules/charge/contracts.js';
+import { PAYMENT_REBIND } from '@/modules/charge/contracts.js';
 import { makeChargeRepo } from '@/modules/charge/data-access.js';
 import { ChargePipeline } from '@/modules/charge/domain.js';
+import {
+  eq,
+  registerHandlers,
+  runFor,
+  type EffectE2eContext,
+  type EffectScenario,
+} from '@/modules/charge/test/e2e-harness.js';
+import { renewalScenarios } from '@/modules/charge/test/renewal.e2e.js';
+import { lapseScenarios } from '@/modules/payment/test/lapse.e2e.js';
+import { manualMinterScenarios } from '@/modules/billing/test/manual-minter.e2e.js';
+import { Outbox } from '@/modules/outbox/domain.js';
 import { sinkCancelled } from '@/modules/billing/events.js';
-import { scheduleTick } from '@/modules/billing/scheduler.js';
+import {
+  ledgerClaimAdvance,
+  scheduleTick,
+} from '@/modules/billing/scheduler.js';
 import { normalizeCallback } from '@/modules/wayforpay/callback.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
-import { cancelNotify, lapseNotify } from '@/modules/payment/cancel.js';
 import { PAYMENT_CANCEL, PAYMENT_LAPSE } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import { makeContactsRepo } from '@/modules/contacts/data-access.js';
@@ -36,18 +40,11 @@ import { makeWorkerRuntime } from '@/runtime.js';
  * freshly-migrated Postgres (the runner in test/e2e/run.ts creates/migrates/drops
  * a throwaway database around each). This is the DB-integration proof for M1+M2 —
  * dedup, FOR UPDATE SKIP LOCKED, the CTE writes, ON CONFLICT idempotency, and the
- * bind/rebind SQL only run for real here.
+ * bind/rebind SQL only run for real here. The harness (scenario shape, handlers,
+ * dispatch loop) lives in `e2e-harness.ts`; the renewal/prolong scenarios in
+ * `renewal.e2e.ts`.
  */
-export interface EffectE2eContext {
-  readonly config: AppConfig;
-  /** Read-only SQL against this scenario's throwaway database (via psql). */
-  readonly query: (sql: string) => Promise<string>;
-}
-
-export interface EffectScenario {
-  readonly name: string;
-  readonly run: (ctx: EffectE2eContext) => Promise<void>;
-}
+export type { EffectE2eContext, EffectScenario };
 
 const charge = (idemKey: string): Charge => ({
   source: 'test',
@@ -60,51 +57,6 @@ const charge = (idemKey: string): Charge => ({
   occurredAt: new Date('2026-01-01T00:00:00.000Z'),
   payload: { note: 'e2e' },
 });
-
-/** Register the worker handlers the scenarios drive. */
-const registerHandlers = Effect.gen(function* () {
-  const registry = yield* TaskRegistry;
-  const outbox = yield* Outbox;
-  const pipeline = yield* ChargePipeline;
-  const sql = yield* SqlClient.SqlClient;
-  yield* registry.register(PAYMENT_EVENT_RECEIVED, (p) =>
-    pipeline.handleFromPayload(p),
-  );
-  yield* registry.register(PAYMENT_REBIND, (p) =>
-    pipeline.rebindFromPayload(p),
-  );
-  yield* registry.register(DELIVER_EVENT, (p) => outbox.deliverFromPayload(p));
-  yield* registry.register(PAYMENT_CANCEL, cancelNotify(outbox.publish));
-  yield* registry.register(
-    PAYMENT_LAPSE,
-    lapseNotify(makePaymentRepo(sql), outbox.publish),
-  );
-});
-
-/** Run the dispatch loop for `seconds`, then stop (the loop is `Effect<never>`). */
-const runFor = (seconds: number) =>
-  Effect.gen(function* () {
-    const queue = yield* Queue;
-    yield* Effect.race(
-      queue.run({
-        workerId: 'e2e',
-        pollIntervalMillis: 50,
-        batchSize: 10,
-        visibilityTimeoutMillis: 300_000,
-        retry: defaultRetryConfig,
-      }),
-      Effect.sleep(Duration.seconds(seconds)),
-    );
-  });
-
-const eq = async (
-  query: EffectE2eContext['query'],
-  sql: string,
-  expected: string,
-  message: string,
-): Promise<void> => {
-  assert.equal((await query(sql)).trim(), expected, message);
-};
 
 const IDEM_KEY = 'w4p:o1|PURCHASE|1700000000';
 
@@ -350,6 +302,9 @@ const driveCheckout = Effect.gen(function* () {
     successUrl: null,
     failureUrl: null,
     promo: null,
+    renewal: null,
+    origin: null,
+    renewalOf: null,
     idempotencyKey: null,
     email: '',
     expiresAt: new Date('2030-01-01T00:00:00Z'),
@@ -466,6 +421,7 @@ const driveScheduler = Effect.gen(function* () {
       lapse: () => Effect.void,
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
+      claimAdvance: ledgerClaimAdvance(sql),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
@@ -635,6 +591,7 @@ const driveLapse = Effect.gen(function* () {
         }).pipe(Effect.asVoid),
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
+      claimAdvance: ledgerClaimAdvance(sql),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
@@ -722,6 +679,9 @@ const driveCardChangeOwed = Effect.gen(function* () {
     successUrl: null,
     failureUrl: null,
     promo: null,
+    renewal: null,
+    origin: null,
+    renewalOf: null,
     idempotencyKey: null,
     email: '',
     expiresAt: new Date('2030-01-01T00:00:00Z'),
@@ -837,6 +797,9 @@ const driveCardChangeDecline = Effect.gen(function* () {
     successUrl: null,
     failureUrl: null,
     promo: null,
+    renewal: null,
+    origin: null,
+    renewalOf: null,
     idempotencyKey: null,
     email: '',
     expiresAt: new Date('2030-01-01T00:00:00Z'),
@@ -1050,6 +1013,7 @@ const driveCancelPastDue = Effect.gen(function* () {
         }).pipe(Effect.asVoid),
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
+      claimAdvance: ledgerClaimAdvance(sql),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
@@ -1167,7 +1131,7 @@ const driveCancelUpstream = Effect.gen(function* () {
       upstreamCancelled: () => Effect.succeed(true),
       cancelUpstream: (sub, now) =>
         subs
-          .cancelUpstream(sub.id)
+          .cancelUpstream(sub.id, now)
           .pipe(
             Effect.flatMap((cancelled) =>
               cancelled
@@ -1175,6 +1139,7 @@ const driveCancelUpstream = Effect.gen(function* () {
                 : Effect.void,
             ),
           ),
+      claimAdvance: ledgerClaimAdvance(sql),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
@@ -1488,4 +1453,7 @@ export const effectScenarios: readonly EffectScenario[] = [
   cardChangeOwedRevives,
   cardChangeDeclineLeavesPayment,
   noticeSweepSelectsUpcoming,
+  ...renewalScenarios,
+  ...lapseScenarios,
+  ...manualMinterScenarios,
 ];

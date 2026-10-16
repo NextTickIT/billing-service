@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
 
 import {
-  callbackSignatureBase,
-  hmacMd5Hex,
-} from '@/modules/wayforpay/signature.js';
+  ADMIN_TOKEN,
+  loadBffHandler,
+  makeBff,
+  MERCHANT_ACCOUNT,
+  postJson,
+  signCallback,
+} from './http-harness.js';
+import { prolongScenarios } from './prolong.e2e.js';
+import type { Scenario } from './http-harness.js';
 
 /**
  * Edge integration test: drives the FULL checkout→operator round-trip THROUGH
@@ -16,91 +21,9 @@ import {
  * tsx executes it directly, so the real handler code is exercised.
  *
  * Registered as an e2e scenario by the existing `run.ts` harness — same pattern
- * as `routes.e2e.ts`.
+ * as `routes.e2e.ts`. The shared HTTP helpers live in `http-harness.ts`; the
+ * prolong / method-lock / Q8 scenarios in `prolong.e2e.ts`.
  */
-
-interface BffEnv {
-  readonly BACKEND_ORIGIN: string;
-  readonly BFF_SECRET: string;
-}
-
-interface BffEventContext {
-  readonly request: Request;
-  readonly env: BffEnv;
-  readonly params: Record<string, string | string[]>;
-  readonly data: Record<string, unknown>;
-  readonly next: (input?: Request | string) => Promise<Response>;
-}
-
-type BffHandler = (ctx: BffEventContext) => Promise<Response>;
-
-export interface E2eContext {
-  readonly baseUrl: string;
-  readonly query: (sql: string) => Promise<string>;
-}
-
-export interface Scenario {
-  readonly name: string;
-  readonly run: (ctx: E2eContext) => Promise<void>;
-}
-
-const ADMIN_TOKEN = 'e2e-admin-token';
-const BFF_SECRET = 'e2e-bff-secret';
-// The e2e runner sets a non-empty W4P_SECRET_KEY (run.ts setAppEnv); the hardened
-// callback fail-closes on an empty key, so we sign with the same shared secret.
-// merchantAccount stays empty on both sides (only the secret gates verification).
-const MERCHANT_ACCOUNT = '';
-const MERCHANT_SECRET = 'e2e-w4p-secret';
-
-async function loadBffHandler(): Promise<BffHandler> {
-  const bffPath = fileURLToPath(
-    new URL('../../../frontend/functions/api/[[path]].ts', import.meta.url),
-  );
-  const mod = (await import(bffPath)) as { onRequest: BffHandler };
-  return mod.onRequest;
-}
-
-function makeBff(
-  handler: BffHandler,
-  backendOrigin: string,
-): (request: Request) => Promise<Response> {
-  return (request: Request) =>
-    handler({
-      request,
-      env: { BACKEND_ORIGIN: backendOrigin, BFF_SECRET },
-      params: {},
-      data: {},
-      next: () => Promise.resolve(new Response(null, { status: 404 })),
-    });
-}
-
-const postJson = (
-  url: string,
-  body: unknown,
-  headers: Record<string, string> = {},
-): Promise<Response> =>
-  fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
-    body: JSON.stringify(body),
-  });
-
-function signCallback(payload: Record<string, string>): Record<string, string> {
-  const signature = hmacMd5Hex(
-    callbackSignatureBase({
-      merchantAccount: payload['merchantAccount'] ?? '',
-      orderReference: payload['orderReference'] ?? '',
-      amount: payload['amount'] ?? '',
-      currency: payload['currency'] ?? '',
-      authCode: payload['authCode'] ?? '',
-      cardPan: payload['cardPan'] ?? '',
-      transactionStatus: payload['transactionStatus'] ?? '',
-      reasonCode: payload['reasonCode'] ?? '',
-    }),
-    MERCHANT_SECRET,
-  );
-  return { ...payload, merchantSignature: signature };
-}
 
 function extractBssCookie(response: Response): string | null {
   const setCookie = response.headers.get('set-cookie') ?? '';
@@ -447,4 +370,5 @@ export const edgeScenarios: readonly Scenario[] = [
       await idempotentPaymentOps(baseUrl, query);
     },
   },
+  ...prolongScenarios,
 ];

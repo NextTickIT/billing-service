@@ -41,7 +41,6 @@ import {
   makePaymentRepo,
   type PaymentListFilter,
 } from '@/modules/payment/data-access.js';
-import { computeDeferral } from '@/modules/payment/domain.js';
 import { addPeriod, isValidPeriod } from '@/modules/payment/period.js';
 
 const route = makeRoute((app: FastifyInstance) => app.runtime);
@@ -310,12 +309,17 @@ const applyDefer = (
   days: number,
 ) =>
   Effect.gen(function* () {
-    const { newPeriodEnd, newNextPaymentDate } = computeDeferral(payment, days);
-    yield* makePaymentRepo(sql).defer(
-      payment.id,
-      newPeriodEnd,
-      newNextPaymentDate,
-    );
+    // The end the relative SQL actually wrote: a prolongation may have moved the anchor
+    // since `payment` was read, and the response and event must report the real one.
+    const deferred = yield* makePaymentRepo(sql).defer(payment.id, days);
+    if (Option.isNone(deferred)) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({
+          reason: 'only an active payment can be deferred',
+        }),
+      );
+    }
+    const newPeriodEnd = deferred.value;
     const at = yield* Clock.currentTimeMillis;
     yield* makeChargeRepo(sql).insertAudit({
       actor: Role[actor.role],

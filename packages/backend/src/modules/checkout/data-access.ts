@@ -37,7 +37,10 @@ export interface CheckoutRepo {
    * every extra tab — would mint another payable order for the same intent.
    *
    * Terms are matched, not just liveness: handing back a session at a different amount
-   * or period would silently charge something other than what this link promised.
+   * or period would silently charge something other than what this link promised. So
+   * are `renewal`, `origin` and `renewalOf`: a replacement for one subscription is never
+   * handed to a link for another on the same terms, and a method-locked prolong
+   * replacement is reused only for the same method.
    */
   readonly reissueLapsed: (
     input: NewCheckoutSession,
@@ -48,6 +51,10 @@ export interface CheckoutRepo {
    * a second concurrent or repeat /pay (button spam, two tabs) finds the row no longer
    * `created` and loses the claim, so exactly one caller mints exactly one provider
    * order per session. Returns true iff this call won the claim.
+   *
+   * A `prolong` session is method-locked: the claim also loses when `method` differs
+   * from the session's. This is the SQL backstop behind the route's own check, so a race
+   * can never switch a locked session to another method.
    */
   readonly claimForPayment: (
     id: string,
@@ -62,9 +69,14 @@ export interface CheckoutRepo {
   readonly releasePending: (
     id: string,
   ) => Effect.Effect<void, SqlError.SqlError>;
-  readonly markCompleted: (
+  /**
+   * Complete a session unless it already is, returning true iff THIS call completed
+   * it. The settlement claim: exactly one charge settles a session; a different charge
+   * that reaches an already-completed session gets false and is quarantined.
+   */
+  readonly completeIfOpen: (
     id: string,
-  ) => Effect.Effect<void, SqlError.SqlError>;
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
   /**
    * Remap OPEN (created/pending) sessions of one external user to another (docs/31),
    * returning how many moved. Only in-flight sessions move so a pending payment
@@ -83,6 +95,7 @@ const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
   // jsonb bound as `${JSON.stringify(x)}::jsonb`; a bare null stays SQL NULL (no promo),
   // never the jsonb `'null'` literal — mirrors the queue/outbox jsonb convention.
   const promo = input.promo === null ? null : JSON.stringify(input.promo);
+  const renewal = input.renewal === null ? null : JSON.stringify(input.renewal);
   // ON CONFLICT keys on the partial unique index (idempotencyKey IS NOT NULL): a repeat
   // or concurrent create with the same key hits DO NOTHING and returns no row; a null key
   // is outside the index, so it never conflicts and always inserts.
@@ -90,13 +103,13 @@ const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
     INSERT INTO checkout_sessions
       (id, "externalUserId", amount, currency, period, method, kind, recurring,
        "paymentId", "successUrl", "failureUrl", promo, "idempotencyKey", email,
-       "expiresAt")
+       "expiresAt", renewal, origin, "renewalOf")
     VALUES
       (${input.id}, ${input.externalUserId}, ${input.amount}, ${input.currency},
        ${input.period}, ${input.method ?? null}, ${input.kind}, ${input.recurring},
        ${input.paymentId}, ${input.successUrl}, ${input.failureUrl},
        ${promo}::jsonb, ${input.idempotencyKey}, ${input.email},
-       ${input.expiresAt})
+       ${input.expiresAt}, ${renewal}::jsonb, ${input.origin}, ${input.renewalOf})
     ON CONFLICT ("idempotencyKey") WHERE "idempotencyKey" IS NOT NULL DO NOTHING
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
@@ -114,8 +127,10 @@ const findByIdempotencyKey = (sql: SqlClient.SqlClient) => (key: string) =>
   `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
 const reissueLapsed =
-  (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) =>
-    sql.withTransaction(
+  (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
+    const renewal =
+      input.renewal === null ? null : JSON.stringify(input.renewal);
+    return sql.withTransaction(
       Effect.gen(function* () {
         // Serialize per user for the read-then-insert below. Without it two tabs both
         // see "no live session" and both mint, leaving two payable provider orders for
@@ -141,6 +156,10 @@ const reissueLapsed =
               AND amount = ${input.amount}
               AND currency = ${input.currency}
               AND period = ${input.period}
+              AND renewal IS NOT DISTINCT FROM ${renewal}::jsonb
+              AND origin IS NOT DISTINCT FROM ${input.origin}
+              AND "renewalOf" IS NOT DISTINCT FROM ${input.renewalOf}
+              AND (origin IS DISTINCT FROM 'prolong' OR method = ${input.method ?? null})
             ORDER BY "createdAt" DESC
             LIMIT 1
           )
@@ -154,6 +173,7 @@ const reissueLapsed =
         return input.id;
       }),
     );
+  };
 
 const claimForPayment =
   (sql: SqlClient.SqlClient) => (id: string, method: number) =>
@@ -161,6 +181,7 @@ const claimForPayment =
       UPDATE checkout_sessions
       SET method = ${method}, status = ${CheckoutSessionStatus.Pending}
       WHERE id = ${id} AND status = ${CheckoutSessionStatus.Created}
+        AND (origin IS DISTINCT FROM 'prolong' OR method = ${method})
       RETURNING id
     `.pipe(Effect.map((rows) => rows.length > 0));
 
@@ -170,11 +191,12 @@ const releasePending = (sql: SqlClient.SqlClient) => (id: string) =>
     WHERE id = ${id} AND status = ${CheckoutSessionStatus.Pending}
   `.pipe(Effect.asVoid);
 
-const markCompleted = (sql: SqlClient.SqlClient) => (id: string) =>
-  sql`
+const completeIfOpen = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql<{ readonly id: string }>`
     UPDATE checkout_sessions SET status = ${CheckoutSessionStatus.Completed}
-    WHERE id = ${id}
-  `.pipe(Effect.asVoid);
+    WHERE id = ${id} AND status <> ${CheckoutSessionStatus.Completed}
+    RETURNING id
+  `.pipe(Effect.map((rows) => rows.length > 0));
 
 const renameOpenSessionsExternalUser =
   (sql: SqlClient.SqlClient) => (from: string, to: string) =>
@@ -192,6 +214,6 @@ export const makeCheckoutRepo = (sql: SqlClient.SqlClient): CheckoutRepo => ({
   reissueLapsed: reissueLapsed(sql),
   claimForPayment: claimForPayment(sql),
   releasePending: releasePending(sql),
-  markCompleted: markCompleted(sql),
+  completeIfOpen: completeIfOpen(sql),
   renameOpenSessionsExternalUser: renameOpenSessionsExternalUser(sql),
 });

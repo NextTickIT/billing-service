@@ -93,11 +93,25 @@ watch(
   },
 );
 
-// The methods the picker offers: Card always; Crypto whenever WhitePay is enabled.
-const methods = computed<PaymentMethod[]>(() =>
-  cryptoOffered.value
+// The methods the picker offers: Card always; Crypto whenever WhitePay is enabled. A
+// locked session (a prolong link, fixed to the subscription's method) offers only its
+// own method, so the picker hides.
+const methods = computed<PaymentMethod[]>(() => {
+  const session = store.session;
+  if (session?.methodLocked && session.method !== null) return [session.method];
+  return cryptoOffered.value
     ? [PaymentMethod.Card, PaymentMethod.Crypto]
-    : [PaymentMethod.Card],
+    : [PaymentMethod.Card];
+});
+
+// Locked to crypto while this build does not offer crypto: there is nothing the buyer
+// can pay with, so show the "unavailable" state rather than quietly offering card (the
+// server would refuse card anyway).
+const lockedUnavailable = computed(
+  () =>
+    store.session?.methodLocked === true &&
+    store.session.method === PaymentMethod.Crypto &&
+    !cryptoOffered.value,
 );
 
 function methodLabel(method: PaymentMethod): string {
@@ -138,7 +152,13 @@ const legalLinks = [
 
 <template>
   <div class="checkout-wrap">
-    <BasePanel :title="t('checkout.title')">
+    <BasePanel
+      :title="
+        store.session?.prolong
+          ? t('checkout.titleProlong')
+          : t('checkout.title')
+      "
+    >
       <template #actions>
         <LangSwitch />
         <ThemeToggle />
@@ -193,6 +213,20 @@ const legalLinks = [
               {{ formatPeriod(store.session.period, locale) }}
             </span>
           </div>
+          <p
+            v-if="store.session.recurring && store.session.renewal"
+            class="checkout__renewal"
+          >
+            {{
+              t('checkout.renewalThen', {
+                amount: formatAmount(
+                  store.session.renewal.amount,
+                  store.session.currency,
+                ),
+                period: formatPeriod(store.session.renewal.period, locale),
+              })
+            }}
+          </p>
           <p class="checkout__expiry">
             {{
               t('checkout.linkValidUntil', {
@@ -200,7 +234,23 @@ const legalLinks = [
               })
             }}
           </p>
-          <div class="checkout__pay">
+          <div
+            v-if="store.notice"
+            class="checkout__msg checkout__msg--warn"
+            role="status"
+          >
+            {{ t(store.notice.key) }}
+          </div>
+          <div
+            v-if="lockedUnavailable"
+            class="checkout__msg checkout__msg--warn"
+          >
+            {{ t('checkout.errors.unavailable') }}
+          </div>
+          <div
+            v-else-if="!store.notice || store.notice.retryable"
+            class="checkout__pay"
+          >
             <div
               v-if="methods.length > 1"
               class="checkout__methods"
@@ -307,6 +357,14 @@ const legalLinks = [
 }
 .checkout__value {
   color: var(--txt);
+}
+
+/* The renewal terms, when they differ from the first charge: a caption under the
+   figures it qualifies, not another row. */
+.checkout__renewal {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
 }
 
 /* The link's own TTL is checkout housekeeping, not a term of the purchase: smaller and

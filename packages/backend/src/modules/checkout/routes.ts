@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { SqlClient, type SqlError } from '@effect/sql';
 import {
   CardChangeRequest,
+  type CheckoutOrigin,
   type CheckoutSession,
   CheckoutSessionKind,
   CheckoutSessionPublic,
@@ -17,10 +18,11 @@ import {
   PAYMENT_METHOD_CHANGE,
   PaymentMethod,
   PaymentStatus,
+  ProlongRequest,
   SelectMethod,
   SessionCreated,
 } from '@billing-service/shared';
-import { Clock, Effect, Option, Redacted, Schema } from 'effect';
+import { Clock, Effect, Either, Option, Redacted, Schema } from 'effect';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
@@ -29,6 +31,7 @@ import {
   AlreadySubscribed,
   ChangeUnavailable,
   Conflict,
+  MethodLocked,
   NotFound,
   Unauthorized,
   UnprocessableEntity,
@@ -47,11 +50,19 @@ import {
 } from '@/modules/checkout/data-access.js';
 import {
   checkoutPath,
+  type MethodChangePlan,
   planMethodChange,
+  prolongSession,
   redirectHostAllowed,
+  subscriptionTermsSession,
 } from '@/modules/checkout/domain.js';
 import type { MethodChangeNotify } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
+import {
+  type FindActiveRecurring,
+  isIntroPriced,
+  isLive,
+} from '@/modules/payment/domain.js';
 import { isValidPeriod } from '@/modules/payment/period.js';
 import {
   ackResponse,
@@ -152,7 +163,13 @@ const insertOrReplay = (
       return created(input.id, input.expiresAt, baseUrl);
     }
     const existing = yield* repo.findByIdempotencyKey(key);
-    if (existing._tag === 'None') {
+    // The key alone is not identity: a reused key must never hand one contact another
+    // contact's session, nor turn a /prolong into a plain checkout (or back).
+    if (
+      existing._tag === 'None' ||
+      existing.value.externalUserId !== input.externalUserId ||
+      existing.value.origin !== input.origin
+    ) {
       return yield* Effect.fail(new Conflict({ field: 'idempotency key' }));
     }
     return created(existing.value.id, existing.value.expiresAt, baseUrl);
@@ -192,6 +209,11 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
         failureUrl: input.failureUrl ?? null,
         // A one-time bonus period applied once, when this session is paid (see CheckoutPromo).
         promo: input.promo ?? null,
+        // Renewal terms when they differ from the first charge (see CheckoutRenewal).
+        renewal: input.renewal ?? null,
+        // Caller-created: no internal origin, renews no particular subscription.
+        origin: null,
+        renewalOf: null,
         // Opt-in dedup key from the caller's header; null → always a fresh session.
         idempotencyKey: idempotencyKeyOf(request),
         // Where the receipt goes. '' when the caller sent none: no address, no email —
@@ -223,7 +245,11 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
       successUrl,
       failureUrl,
       expiresAt,
+      renewal,
+      origin,
     } = found.value;
+    // `origin` itself is never returned (X11); the page sees only what it acts on.
+    const prolong = origin === 'prolong';
     return {
       amount,
       currency,
@@ -235,6 +261,9 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
       successUrl,
       failureUrl,
       expiresAt,
+      renewal,
+      methodLocked: prolong,
+      prolong,
     };
   });
 
@@ -284,6 +313,35 @@ const payCrypto = (
     return { kind: 'redirect', url: order.acquiringUrl };
   });
 
+/** What `/pay` reads and writes: the sessions, and the contact's live subscription. */
+export interface PayRepos {
+  readonly sessions: CheckoutRepo;
+  readonly findActiveRecurring: FindActiveRecurring;
+}
+
+/** A session past its life is not claimable: 409 when terminal or past `expiresAt`. */
+const assertClaimable = (
+  session: CheckoutSession,
+  nowMillis: number,
+): Effect.Effect<void, Conflict> => {
+  if (
+    session.status === CheckoutSessionStatus.Completed ||
+    session.status === CheckoutSessionStatus.Expired
+  ) {
+    return Effect.fail(
+      new Conflict({ field: 'checkout session (completed or expired)' }),
+    );
+  }
+  // Enforce the session TTL at claim time: a link past its `expiresAt` is not payable.
+  // Without this the checkout URL (incl. the crypto manual-renewal link with its
+  // advertised `windowExpiresAt`) would be a permanent bearer capability. State is still
+  // reconciled from the provider webhook, so a payment begun before expiry still settles.
+  if (session.expiresAt.getTime() <= nowMillis) {
+    return Effect.fail(new Conflict({ field: 'checkout session (expired)' }));
+  }
+  return Effect.void;
+};
+
 /**
  * Resolve a session and atomically claim it for payment, or fail: 404 when unknown, 409
  * when terminal (completed/expired) or already claimed. The claim IS the idempotency
@@ -292,8 +350,8 @@ const payCrypto = (
  * claim, and gets the 409. Exactly one provider order is ever minted per session
  * (docs/26). Returns the now-pending session, ready to hand to a provider.
  */
-const claimPayableSession = (
-  repo: CheckoutRepo,
+export const claimPayableSession = (
+  { sessions: repo, findActiveRecurring }: PayRepos,
   id: string,
   method: number,
   nowMillis: number,
@@ -303,26 +361,19 @@ const claimPayableSession = (
     if (found._tag === 'None') {
       return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
     }
-    const { status } = found.value;
-    if (
-      status === CheckoutSessionStatus.Completed ||
-      status === CheckoutSessionStatus.Expired
-    ) {
-      return yield* Effect.fail(
-        new Conflict({ field: 'checkout session (completed or expired)' }),
-      );
-    }
-    // Enforce the session TTL at claim time: a link past its `expiresAt` is not payable.
-    // Without this the checkout URL (incl. the crypto manual-renewal link with its
-    // advertised `windowExpiresAt`) would be a permanent bearer capability. State is still
-    // reconciled from the provider webhook, so a payment begun before expiry still settles.
-    if (found.value.expiresAt.getTime() <= nowMillis) {
-      return yield* Effect.fail(
-        new Conflict({ field: 'checkout session (expired)' }),
-      );
-    }
+    yield* assertClaimable(found.value, nowMillis);
+    // The same two rules the preflight ran, now on the row we actually claim: a sub can
+    // have gone live, or the session been swapped, since `resolvePayableSessionId` read.
+    const live = liveOf(yield* findActiveRecurring(found.value.externalUserId));
+    yield* assertMethodAllowed(found.value, method);
+    yield* assertNotIntroOnLiveSub(found.value, live);
     const claimed = yield* repo.claimForPayment(id, method);
     if (!claimed) {
+      // The SQL backstop refuses a locked method too; tell that apart from a lost race.
+      const current = yield* repo.findById(id);
+      if (Option.isSome(current)) {
+        yield* assertMethodAllowed(current.value, method);
+      }
       return yield* Effect.fail(
         new Conflict({
           field: 'checkout session payment (already in progress)',
@@ -376,37 +427,190 @@ const clonedIntent = (
   promo: session.promo,
   // Carried like the promo: a re-issued link must still reach the buyer.
   email: session.email,
+  // The same intent renews on the same terms, and keeps its attribution: a plain clone
+  // of a prolong/manual-renewal link still names the subscription it renews.
+  renewal: session.renewal,
+  origin: session.origin,
+  renewalOf: session.renewalOf,
   // Never copied: the key is unique across live rows, and the clone is a new checkout,
   // not a replay of the caller's original request.
   idempotencyKey: null,
   expiresAt,
 });
 
+/** The contact's live (Active/PastDue) subscription, the only kind a prolongation or a
+ * Q8 refusal acts on. The finder already excludes the rest; this keeps the rule local. */
+const liveOf = (found: Option.Option<Payment>): Option.Option<Payment> =>
+  Option.filter(found, isLive);
+
+/** What a method-lock or Q8 check looks at — a stored session or an intent to mint. */
+type PayableTerms = Pick<
+  NewCheckoutSession,
+  'amount' | 'period' | 'renewal' | 'origin' | 'externalUserId'
+> & { readonly method?: number | null | undefined };
+
+/**
+ * A `/prolong` session is locked to the method it was minted with (the subscription's).
+ * A different pick is a 400 that names the method to use. Every other origin, including
+ * `manual_renewal` (a crypto sub may pay by card and graduate back to autocharge), is open.
+ */
+const assertMethodAllowed = (
+  terms: PayableTerms,
+  method: number,
+): Effect.Effect<void, MethodLocked> =>
+  terms.origin === 'prolong' &&
+  terms.method !== undefined &&
+  terms.method !== null &&
+  terms.method !== method
+    ? Effect.fail(new MethodLocked({ method: terms.method }))
+    : Effect.void;
+
+/**
+ * Q8: an intro offer is for new customers. Paid by a contact with a live subscription it
+ * would stack the intro period at the intro price, so it is refused while one exists —
+ * lapsed or not, Active or PastDue.
+ */
+const assertNotIntroOnLiveSub = (
+  terms: PayableTerms,
+  live: Option.Option<Payment>,
+): Effect.Effect<void, AlreadySubscribed> =>
+  isIntroPriced(terms) && Option.isSome(live)
+    ? Effect.fail(
+        new AlreadySubscribed({ externalUserId: terms.externalUserId }),
+      )
+    : Effect.void;
+
+/** The session `/pay` will actually charge: the stored one, or the replacement a re-issue
+ * writes. Computed once, before any write, and the same value is what gets written. */
+export type EffectivePayable =
+  | { readonly _tag: 'Stored'; readonly session: CheckoutSession }
+  | { readonly _tag: 'Reissue'; readonly intent: NewCheckoutSession };
+
+const ORIGINS_REMINTED: readonly (CheckoutOrigin | null)[] = [
+  'prolong',
+  'manual_renewal',
+];
+
+/**
+ * A replacement minted at the live subscription's CURRENT terms and method, never the
+ * stale link's: no promo, no old amount. Where the buyer is sent afterwards still belongs
+ * to the link they clicked, so the redirects and receipt address carry over.
+ */
+const remintedIntent = (
+  session: CheckoutSession,
+  sub: Payment,
+  origin: CheckoutOrigin | null,
+  expiresAt: Date,
+): NewCheckoutSession => ({
+  ...subscriptionTermsSession(sub, {
+    sessionId: `chk_${randomUUID()}`,
+    expiresAt,
+    idempotencyKey: null,
+    origin,
+  }),
+  successUrl: session.successUrl,
+  failureUrl: session.failureUrl,
+  email: session.email,
+});
+
+/** The replacement for a lapsed, re-issuable recurring checkout (rules on
+ * `effectivePayable`). */
+const replacementIntent = (
+  session: CheckoutSession,
+  live: Option.Option<Payment>,
+  expiresAt: Date,
+): Either.Either<NewCheckoutSession, AlreadySubscribed> => {
+  if (Option.isNone(live)) {
+    return Either.right(clonedIntent(session, expiresAt));
+  }
+  const sub = live.value;
+  if (ORIGINS_REMINTED.includes(session.origin)) {
+    return Either.right(
+      remintedIntent(session, sub, session.origin, expiresAt),
+    );
+  }
+  if (sub.status === PaymentStatus.Active) {
+    return Either.left(
+      new AlreadySubscribed({ externalUserId: session.externalUserId }),
+    );
+  }
+  return Either.right(remintedIntent(session, sub, null, expiresAt));
+};
+
+/**
+ * A `/prolong` or manual-renewal link that no longer describes the contact's live sub:
+ * it names a different subscription (minted for A, while B is the live one now), or —
+ * for a method-locked prolong — the sub has since changed method. Paid as-is it would
+ * stack onto the live sub with another sub's terms, or flip the sub's method back, so
+ * it is replaced like a lapsed link: re-minted at the live sub's current terms and method.
+ */
+const isStaleRenewal = (
+  session: CheckoutSession,
+  live: Option.Option<Payment>,
+): boolean =>
+  Option.isSome(live) &&
+  ORIGINS_REMINTED.includes(session.origin) &&
+  (session.renewalOf !== live.value.id ||
+    (session.origin === 'prolong' && session.method !== live.value.method));
+
+/**
+ * Decide, without writing, which session `/pay` charges.
+ *
+ * A live link is paid as-is. A lapsed one re-issues — a new id, which is also the
+ * `orderReference`, so a reference WayForPay has already seen is never re-POSTed, and the
+ * old row stays matchable for a late callback. Guards, in order: a completed or pending
+ * session is never re-issued; one-time and card-change sessions keep the old 409; a
+ * `/prolong` or manual-renewal link for a contact with a live sub re-mints at that sub's
+ * current terms and method; a plain link is refused while the contact is Active
+ * (`AlreadySubscribed`), re-minted at the sub's current terms while PastDue (an old promo
+ * link must not be replayable), and cloned on its own terms when there is no live sub —
+ * including a `/prolong` or manual-renewal link whose sub has died (paid after death, AC 25).
+ * A still-live `/prolong` or manual-renewal link that is stale (`isStaleRenewal`) takes the
+ * same re-mint; a stale one already handed to the provider (Pending) is refused like a
+ * lapsed Pending one, since a second payable order beside it could double-charge.
+ */
+export const effectivePayable = (
+  session: CheckoutSession,
+  live: Option.Option<Payment>,
+  nowMillis: number,
+  ttlSeconds: number,
+): Either.Either<EffectivePayable, Conflict | AlreadySubscribed> => {
+  const lapsed =
+    session.status === CheckoutSessionStatus.Expired ||
+    session.expiresAt.getTime() <= nowMillis;
+  if (!lapsed && !isStaleRenewal(session, live)) {
+    return Either.right({ _tag: 'Stored', session });
+  }
+  if (!isReissuable(session.status)) {
+    return Either.left(
+      new Conflict({ field: 'checkout session (not re-issuable)' }),
+    );
+  }
+  // Only a recurring checkout is re-issuable: a one-time purchase has no subscription
+  // to check against (an immortal link would be unlimited repeat charges), and a
+  // card-change session is minted by its own endpoint.
+  if (!session.recurring || session.kind !== CheckoutSessionKind.Checkout) {
+    return Either.left(new Conflict({ field: 'checkout session (expired)' }));
+  }
+  return Either.map(
+    replacementIntent(session, live, new Date(nowMillis + ttlSeconds * 1000)),
+    (intent): EffectivePayable => ({ _tag: 'Reissue', intent }),
+  );
+};
+
 /**
  * Resolve the session id we should actually charge, re-issuing when the one in the link
- * has lapsed.
+ * has lapsed (see `effectivePayable`).
  *
- * A lapsed link used to be a dead end: `/pay` returned 409 and the buyer — who still had
- * the message, still wanted to pay, and had no subscription — had no way forward. Now an
- * expired session MINTS A FRESH ONE on the same terms and charges that instead.
- *
- * The clone gets a new id, which is also the `orderReference` we hand WayForPay, so this
- * never re-POSTs a reference the provider has already seen: whatever state the old order
- * is in, it cannot collide with the new one. The old row is left exactly as it is, so a
- * late callback for it still matches and books.
- *
- * Guards, in order: a completed session is never re-issued (that is a paid checkout); a
- * user with a live subscription is refused (`Active` only — `PastDue` and
- * `RenewalFailed` owe money and must be allowed to pay); one-time and card-change
- * sessions keep the old behaviour; and re-issues are capped per user per day, since each
- * one mints a real provider order.
+ * Every refusal is decided BEFORE any write: Q8 on the stored session, then the method
+ * lock on the effective one (a lapsed prolong link may re-mint locked to a different
+ * method than the stored row). Only then the writes — releasing a Pending link, or the
+ * re-issue — so a refused pick never moves a session.
  */
 export const resolvePayableSessionId = (
-  repo: CheckoutRepo,
-  findActiveRecurring: (
-    externalUserId: string,
-  ) => Effect.Effect<Option.Option<Payment>, SqlError.SqlError>,
+  { sessions: repo, findActiveRecurring }: PayRepos,
   id: string,
+  method: number,
   nowMillis: number,
   ttlSeconds: number,
 ) =>
@@ -416,10 +620,19 @@ export const resolvePayableSessionId = (
       return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
     }
     const session = found.value;
-    const lapsed =
-      session.status === CheckoutSessionStatus.Expired ||
-      session.expiresAt.getTime() <= nowMillis;
-    if (!lapsed) {
+    const live = liveOf(yield* findActiveRecurring(session.externalUserId));
+    yield* assertNotIntroOnLiveSub(session, live);
+    const effective = yield* effectivePayable(
+      session,
+      live,
+      nowMillis,
+      ttlSeconds,
+    );
+    yield* assertMethodAllowed(
+      effective._tag === 'Stored' ? session : effective.intent,
+      method,
+    );
+    if (effective._tag === 'Stored') {
       // A live link the buyer already pressed Pay on. `claimForPayment` only moves
       // Created → Pending, so without this the second press 409s and the buyer is shut
       // out for the rest of the TTL — 24 hours now that the TTL is a day. Release it and
@@ -434,32 +647,11 @@ export const resolvePayableSessionId = (
       }
       return id;
     }
-    if (!isReissuable(session.status)) {
-      return yield* Effect.fail(
-        new Conflict({ field: 'checkout session (not re-issuable)' }),
-      );
-    }
-    // Only a plain recurring checkout is re-issuable: a one-time purchase has no
-    // subscription to check against (an immortal link would be unlimited repeat
-    // charges), and a card-change session is minted by its own endpoint.
-    if (!session.recurring || session.kind !== CheckoutSessionKind.Checkout) {
-      return yield* Effect.fail(
-        new Conflict({ field: 'checkout session (expired)' }),
-      );
-    }
-    const live = yield* findActiveRecurring(session.externalUserId);
-    if (Option.isSome(live) && live.value.status === PaymentStatus.Active) {
-      return yield* Effect.fail(
-        new AlreadySubscribed({ externalUserId: session.externalUserId }),
-      );
-    }
     // Reuses the user's live session on these terms when one already exists, so a buyer
     // clicking the same stale link repeatedly (their URL still carries the OLD id) gets
     // one order, not one per click. That reuse is also the rate bound: a user can hold
     // at most one live session at a time, so at most one provider order per TTL window.
-    return yield* repo.reissueLapsed(
-      clonedIntent(session, new Date(nowMillis + ttlSeconds * 1000)),
-    );
+    return yield* repo.reissueLapsed(effective.intent);
   });
 
 const pay = (input: SelectMethod, request: FastifyRequest) =>
@@ -468,15 +660,20 @@ const pay = (input: SelectMethod, request: FastifyRequest) =>
     const sql = yield* SqlClient.SqlClient;
     const repo = makeCheckoutRepo(sql);
     const nowMillis = yield* Clock.currentTimeMillis;
+    const repos: PayRepos = {
+      sessions: repo,
+      findActiveRecurring:
+        makePaymentRepo(sql).findActiveRecurringByExternalUser,
+    };
     const id = yield* resolvePayableSessionId(
-      repo,
-      makePaymentRepo(sql).findActiveRecurringByExternalUser,
+      repos,
       readId(request),
+      input.method,
       nowMillis,
       request.server.appConfig.wayforpay.sessionTtlSeconds,
     );
     const session = yield* claimPayableSession(
-      repo,
+      repos,
       id,
       input.method,
       nowMillis,
@@ -559,11 +756,20 @@ const callback = (body: unknown, request: FastifyRequest) => {
 
 /** A `card_change` session for a method change: it re-tokenizes/switches the SAME recurring
  * payment, preselecting the DESTINATION method. Never one-time, carries no promo/redirects,
- * server-initiated so no idempotency key. */
+ * server-initiated so no idempotency key. `origin` records at mint time whether paying it
+ * settles arrears (credits a period) — never inferred when it is paid. */
+type ChangeOrigin = 'card_change' | 'card_change_arrears';
+
+/** What a change session charges, and whether paying it settles arrears. */
+interface ChangeCharge {
+  readonly amount: number;
+  readonly origin: ChangeOrigin;
+}
+
 const changeSession = (
   payment: Payment,
   targetMethod: number,
-  amount: number,
+  { amount, origin }: ChangeCharge,
   id: string,
   expiresAt: Date,
 ): NewCheckoutSession => ({
@@ -584,9 +790,19 @@ const changeSession = (
   successUrl: null,
   failureUrl: null,
   promo: null,
+  renewal: null,
+  origin,
+  renewalOf: null,
   idempotencyKey: null,
   expiresAt,
 });
+
+/** The change-session origin for a checkout plan: arrears only on the owed branch; a
+ * token charge or a 0-amount verify credits no time. */
+const changeOriginOf = (plan: MethodChangePlan): ChangeOrigin =>
+  plan.action === 'checkout' && plan.arrears
+    ? 'card_change_arrears'
+    : 'card_change';
 
 /** The user's ONE recurring payment a card/method change acts on, or a 409: a cancelled
  * one (or none) is refused — start a fresh checkout. One-time payments hold no reusable
@@ -614,7 +830,7 @@ const openChangeSession = (
   sql: SqlClient.SqlClient,
   payment: Payment,
   targetMethod: number,
-  amount: number,
+  charge: ChangeCharge,
   request: FastifyRequest,
 ) =>
   Effect.gen(function* () {
@@ -623,7 +839,7 @@ const openChangeSession = (
     const id = `chk_${randomUUID()}`;
     const expiresAt = new Date(nowMillis + config.sessionTtlSeconds * 1000);
     yield* makeCheckoutRepo(sql).insert(
-      changeSession(payment, targetMethod, amount, id, expiresAt),
+      changeSession(payment, targetMethod, charge, id, expiresAt),
     );
     return created(id, expiresAt, request.server.appConfig.checkoutBaseUrl);
   });
@@ -654,7 +870,7 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
       sql,
       payment,
       PaymentMethod.Card,
-      amount,
+      { amount, origin: changeOriginOf(plan) },
       request,
     );
   });
@@ -725,10 +941,73 @@ const methodChange = (input: MethodChangeRequest, request: FastifyRequest) =>
       sql,
       payment,
       input.method,
-      plan.amount,
+      { amount: plan.amount, origin: changeOriginOf(plan) },
       request,
     );
     return { kind: 'checkout', ...session } as const;
+  });
+
+/**
+ * The contact's live recurring subscription a `/prolong` extends, or a 404: only Active
+ * and PastDue are prolongable (RenewalFailed and Cancelled start a fresh checkout).
+ */
+export const resolveProlongable = (
+  findActiveRecurring: FindActiveRecurring,
+  externalUserId: string,
+): Effect.Effect<Payment, NotFound | SqlError.SqlError> =>
+  findActiveRecurring(externalUserId).pipe(
+    Effect.map(liveOf),
+    Effect.flatMap(
+      Option.match({
+        onNone: () =>
+          Effect.fail(new NotFound({ resource: 'recurring payment' })),
+        // The finder only returns recurring rows; kept so the rule reads in one place.
+        onSome: (sub) =>
+          sub.recurring
+            ? Effect.succeed(sub)
+            : Effect.fail(new NotFound({ resource: 'recurring payment' })),
+      }),
+    ),
+  );
+
+/**
+ * SendPulse-initiated prolongation (AC 6–8, 22–23): mint a hosted pay link that extends
+ * the contact's live subscription by one period at its CURRENT terms. A plain recurring
+ * checkout with `origin='prolong'`: the applier finds the live row at payment time and
+ * stacks onto it, the method is locked to the sub's, and there are no redirects. A crypto
+ * sub while WhitePay is off is refused up front (503) — the link could only fail.
+ */
+const prolong = (input: ProlongRequest, request: FastifyRequest) =>
+  Effect.gen(function* () {
+    yield* serviceActor(request);
+    yield* assertIdempotencyKey(request);
+    const sql = yield* SqlClient.SqlClient;
+    const sub = yield* resolveProlongable(
+      makePaymentRepo(sql).findActiveRecurringByExternalUser,
+      input.externalUserId,
+    );
+    if (
+      sub.method === PaymentMethod.Crypto &&
+      !request.server.appConfig.whitepay.enabled
+    ) {
+      return yield* Effect.fail(
+        new CryptoPaymentUnavailable({ reason: 'whitepay disabled' }),
+      );
+    }
+    const nowMillis = yield* Clock.currentTimeMillis;
+    const expiresAt = new Date(
+      nowMillis + request.server.appConfig.wayforpay.sessionTtlSeconds * 1000,
+    );
+    return yield* insertOrReplay(
+      makeCheckoutRepo(sql),
+      prolongSession(
+        sub,
+        `chk_${randomUUID()}`,
+        expiresAt,
+        idempotencyKeyOf(request),
+      ),
+      request.server.appConfig.checkoutBaseUrl,
+    );
   });
 
 export default function checkout(fastify: FastifyInstance): void {
@@ -748,6 +1027,15 @@ export default function checkout(fastify: FastifyInstance): void {
     output: SessionCreated,
     status: 201,
     handler: cardChange,
+  });
+
+  route(fastify, {
+    method: 'POST',
+    path: '/api/payment/prolong',
+    input: ProlongRequest,
+    output: SessionCreated,
+    status: 201,
+    handler: prolong,
   });
 
   route(fastify, {

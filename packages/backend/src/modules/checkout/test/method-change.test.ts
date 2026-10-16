@@ -66,7 +66,7 @@ it('active → card runs a 0-amount verify when card-verify is enabled', () => {
     true,
     1,
   );
-  expect(plan).toEqual({ action: 'checkout', amount: 0 });
+  expect(plan).toEqual({ action: 'checkout', amount: 0, arrears: false });
 });
 
 it('active → card falls back to a minimal tokenizing charge when verify is off', () => {
@@ -76,13 +76,17 @@ it('active → card falls back to a minimal tokenizing charge when verify is off
     false,
     1,
   );
-  expect(plan).toEqual({ action: 'checkout', amount: 1 });
+  expect(plan).toEqual({ action: 'checkout', amount: 1, arrears: false });
 });
 
 it('owed → crypto bills the arrears amount (never a free flip)', () => {
   for (const status of [PaymentStatus.PastDue, PaymentStatus.RenewalFailed]) {
     const plan = planMethodChange(paymentWith(status), CRYPTO, true, 1);
-    expect(plan).toEqual({ action: 'checkout', amount: 30000 });
+    expect(plan).toEqual({
+      action: 'checkout',
+      amount: 30000,
+      arrears: true,
+    });
   }
 });
 
@@ -93,7 +97,11 @@ it('owed → card bills the arrears amount (verify config ignored)', () => {
     true,
     1,
   );
-  expect(plan).toEqual({ action: 'checkout', amount: 30000 });
+  expect(plan).toEqual({
+    action: 'checkout',
+    amount: 30000,
+    arrears: true,
+  });
 });
 
 // ---- applier: how a paid method-change lands on the payment ----
@@ -123,7 +131,9 @@ const cardChangeMatch = (method: number, owed: boolean): Match => ({
   externalUserId: 'sp:1',
   period: 'P1M',
   method,
-  owed,
+  amountCharged: owed,
+  arrears: owed,
+  origin: owed ? 'card_change_arrears' : 'card_change',
 });
 
 /** A repo that records the mutations the applier makes, dying on anything unexpected. */
@@ -137,6 +147,9 @@ const recordingRepo = () => {
   const die = () => Effect.die('unused');
   const repo: PaymentRepo = {
     findActiveRecurringByExternalUser: die,
+    transaction: (effect) => effect,
+    lockById: () =>
+      Effect.succeed(Option.some(paymentWith(PaymentStatus.PastDue))),
     findById: () =>
       Effect.succeed(Option.some(paymentWith(PaymentStatus.PastDue))),
     findDue: die,
@@ -182,7 +195,7 @@ const completingCheckout = (onComplete: () => void): CheckoutRepo => ({
   insert: () => Effect.die('unused'),
   claimForPayment: () => Effect.die('unused'),
   releasePending: () => Effect.die('unused'),
-  markCompleted: () => Effect.sync(onComplete),
+  completeIfOpen: () => Effect.sync(onComplete).pipe(Effect.as(true)),
   renameOpenSessionsExternalUser: () => Effect.die('unused'),
 });
 
@@ -211,6 +224,7 @@ it.effect(
       expect(result).toEqual({
         subscriptionId: 'sub_1',
         created: false,
+        prolonged: false,
         nextPaymentDate: null,
       });
     }),

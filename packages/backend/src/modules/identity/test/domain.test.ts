@@ -17,6 +17,8 @@ const die = () => Effect.die('unused');
 
 const unusedPayments: PaymentRepo = {
   findActiveRecurringByExternalUser: die,
+  transaction: (effect) => effect,
+  lockById: die,
   findById: die,
   findDue: die,
   findUpcomingForNotice: die,
@@ -47,7 +49,7 @@ const unusedCheckout: CheckoutRepo = {
   insert: die,
   claimForPayment: die,
   releasePending: die,
-  markCompleted: die,
+  completeIfOpen: die,
   renameOpenSessionsExternalUser: die,
 };
 

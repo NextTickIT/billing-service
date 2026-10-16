@@ -57,6 +57,27 @@ export class AlreadySubscribed extends Data.TaggedError('AlreadySubscribed')<{
   }
 }
 
+/**
+ * The buyer picked a method this checkout does not take: a `/prolong` session is locked
+ * to the subscription's current method. 400, not 409 — the request is wrong, not the
+ * state — and nothing was written. `method` is the one the page must switch to (it can
+ * differ from the stored session when a lapsed link re-mints at the sub's current terms).
+ */
+export class MethodLocked extends Data.TaggedError('MethodLocked')<{
+  readonly method: number;
+}> {
+  toHttp(): HttpReply {
+    return {
+      status: 400,
+      body: {
+        error: 'payment method is fixed for this checkout',
+        code: 'method_locked',
+        method: this.method,
+      },
+    };
+  }
+}
+
 export class NotFound extends Data.TaggedError('NotFound')<{
   readonly resource: string;
 }> {

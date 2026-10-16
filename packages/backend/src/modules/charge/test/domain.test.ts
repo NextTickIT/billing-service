@@ -1,18 +1,23 @@
 import { it } from '@effect/vitest';
-import type { DomainEvent } from '@billing-service/shared';
-import { Effect, Option } from 'effect';
+import {
+  CheckoutSessionStatus,
+  type DomainEvent,
+} from '@billing-service/shared';
+import { Effect, Logger, Option } from 'effect';
 import { expect } from 'vitest';
 
 import type { EnqueueInput } from '@/infra/queue/store.js';
 import {
-  type AppliedCharge,
   type Charge,
+  type Match,
   type MatchResult,
   PAYMENT_EVENT_RECEIVED,
+  type RefusedCharge,
+  type SettledCharge,
   type ChargeApplier,
   type ChargeMatcher,
 } from '@/modules/charge/contracts.js';
-import type { ChargeRepo } from '@/modules/charge/data-access.js';
+import type { ChargeRepo, MatchOutcome } from '@/modules/charge/data-access.js';
 import {
   cardChangeFailed,
   cardChangeSucceeded,
@@ -23,6 +28,9 @@ import {
   rebindFromPayload,
   recurringPaymentSucceeded,
 } from '@/modules/charge/domain.js';
+import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
+import { makeCheckoutApplier } from '@/modules/checkout/domain.js';
+import type { PaymentRepo } from '@/modules/payment/data-access.js';
 
 const cardChangeMatch = (owed: boolean): MatchResult => ({
   matched: true,
@@ -31,7 +39,9 @@ const cardChangeMatch = (owed: boolean): MatchResult => ({
   externalUserId: 'sp:cc',
   period: 'P1M',
   method: 0,
-  owed,
+  amountCharged: owed,
+  arrears: owed,
+  origin: owed ? 'card_change_arrears' : 'card_change',
 });
 
 /** The JSON-encoded `payment_event_received` payload the handler decodes. */
@@ -64,12 +74,14 @@ const makeFakeRepo = () => {
   const eventsById = new Map<string, Charge>();
   const payments = new Set<string>();
   const quarantines = new Map<string, string>();
-  const matchResults = new Map<string, string>();
+  const matchResults = new Map<string, MatchOutcome>();
   const resolved = new Set<string>();
   let seq = 0;
 
   const repo: ChargeRepo = {
     transaction: (effect) => effect,
+    lockMatchResult: (id) =>
+      Effect.sync(() => matchResults.get(id) ?? 'unmatched'),
     upsertIncomingCharge: (event) =>
       Effect.sync(() => {
         let id = incoming.get(event.idemKey);
@@ -117,10 +129,15 @@ const matcherOf =
   () =>
     Effect.succeed(result);
 
+/** A settled applier result; `prolonged` defaults to false. */
+type Settled = Omit<SettledCharge, 'prolonged'> & {
+  readonly prolonged?: boolean;
+};
+
 const applierOf =
-  (result: AppliedCharge): ChargeApplier =>
+  (result: Settled): ChargeApplier =>
   () =>
-    Effect.succeed(result);
+    Effect.succeed({ prolonged: false, ...result });
 
 /** Applier for paths where no match occurs, so it must never be called. */
 const noApplier: ChargeApplier = () =>
@@ -235,6 +252,8 @@ it.effect('a checkout first charge also emits payment_created', () =>
       currency: 0,
       method: 1,
       period: 'P1M',
+      // AC 21: additive; null because this checkout set no renewal terms.
+      renewal: null,
     });
   }),
 );
@@ -527,3 +546,483 @@ it('cardChangeSucceeded/Failed carry the method and decline reason', () => {
   expect(bad.name).toBe('card_change_failed');
   expect(bad.payload).toEqual({ reason: 'Declined' });
 });
+
+// ---- Prolongation events, AC 25, and settlement replay (T12–T14, T27, T30, T32, T33) ----
+
+/** The handler deps over a fresh fake repo, with publish recording and log capture. */
+const harness = (match: MatchResult, applier: ChargeApplier) => {
+  const fake = makeFakeRepo();
+  const pub = recordingPublish();
+  const logs: string[] = [];
+  const logger = Logger.make(({ logLevel, message }) => {
+    logs.push(`${logLevel.label} ${String(message)}`);
+  });
+  const handle = handleChargeEvent({
+    repo: fake.repo,
+    matcher: matcherOf(match),
+    applier,
+    publish: pub.publish,
+  });
+  const run = (payload: unknown) =>
+    handle(payload).pipe(
+      Effect.provide(Logger.replace(Logger.defaultLogger, logger)),
+    );
+  return { ...fake, events: pub.events, logs, run };
+};
+
+const recurringCheckout = (over: Partial<Match> = {}): MatchResult => ({
+  matched: true,
+  kind: 'checkout',
+  subscriptionId: null,
+  externalUserId: 'sp:p',
+  period: 'P4W',
+  method: 0,
+  recurring: true,
+  ...over,
+});
+
+/** An applier that counts its calls and returns `result`. */
+const countingApplier = (result: Settled) => {
+  let calls = 0;
+  const applier: ChargeApplier = () =>
+    Effect.sync(() => {
+      calls += 1;
+      return { prolonged: false, ...result };
+    });
+  return { applier, calls: () => calls };
+};
+
+const NEXT = new Date('2026-03-01T00:00:00Z');
+
+it.effect(
+  'a prolonged checkout emits recurring_payment_succeeded only, never payment_created',
+  () =>
+    Effect.gen(function* () {
+      const h = harness(
+        recurringCheckout({ origin: 'prolong' }),
+        applierOf({
+          subscriptionId: 'sub_live',
+          created: false,
+          prolonged: true,
+          nextPaymentDate: NEXT,
+        }),
+      );
+
+      yield* h.run(encodedPayload('kp'));
+
+      expect(h.events.map((e) => e.name)).toEqual([
+        'recurring_payment_succeeded',
+      ]);
+      expect(h.events[0]?.aggregateId).toBe('sub_live');
+      expect(h.events[0]?.payload).toMatchObject({
+        period: 'P4W',
+        source: 'test',
+        nextPaymentDate: NEXT.toISOString(),
+      });
+      expect(h.payments.size).toBe(1);
+      expect(h.matchResults.get('inc1')).toBe('matched');
+    }),
+);
+
+it.effect(
+  'a prolongation that cleared a cancel emits payment_reactivated first',
+  () =>
+    Effect.gen(function* () {
+      const applied = countingApplier({
+        subscriptionId: 'sub_live',
+        created: false,
+        prolonged: true,
+        reactivated: true,
+        nextPaymentDate: NEXT,
+      });
+      const h = harness(recurringCheckout(), applied.applier);
+
+      yield* h.run(encodedPayload('kr'));
+      // A queue retry of the settled charge: the matchResult lock makes it a no-op.
+      yield* h.run(encodedPayload('kr'));
+
+      expect(h.events.map((e) => e.name)).toEqual([
+        'payment_reactivated',
+        'recurring_payment_succeeded',
+      ]);
+      expect(h.events[0]?.id).toBe('evt_sub_live_reactivated_0');
+      expect(h.events[0]?.aggregateId).toBe('sub_live');
+      expect(applied.calls()).toBe(1);
+    }),
+);
+
+it.effect('no pending cancel → no payment_reactivated', () =>
+  Effect.gen(function* () {
+    const h = harness(
+      recurringCheckout(),
+      applierOf({
+        subscriptionId: 'sub_live',
+        created: false,
+        prolonged: true,
+        reactivated: false,
+        nextPaymentDate: NEXT,
+      }),
+    );
+
+    yield* h.run(encodedPayload('kn'));
+
+    expect(h.events.map((e) => e.name)).toEqual([
+      'recurring_payment_succeeded',
+    ]);
+  }),
+);
+
+it.effect.each([
+  ['prolong', 'initial_payment_succeeded'],
+  ['manual_renewal', 'recurring_payment_succeeded'],
+] as const)(
+  'a %s session paid after its sub died → payment_created + %s on the fresh row',
+  ([origin, succeeded]) =>
+    Effect.gen(function* () {
+      const h = harness(
+        recurringCheckout({
+          origin,
+          renewalOf: 'sub_dead',
+          renewal: { amount: 5000, period: 'P4W' },
+        }),
+        applierOf({
+          subscriptionId: 'sub_fresh',
+          created: true,
+          nextPaymentDate: NEXT,
+        }),
+      );
+
+      yield* h.run(encodedPayload(`kd_${origin}`));
+
+      expect(h.events.map((e) => e.name)).toEqual([
+        'payment_created',
+        succeeded,
+      ]);
+      expect(h.events.every((e) => e.aggregateId === 'sub_fresh')).toBe(true);
+      // AC 21: the renewal terms ride along; amount/period stay the first charge.
+      expect(h.events[0]?.payload).toEqual({
+        amount: 30000,
+        currency: 0,
+        method: 0,
+        period: 'P4W',
+        renewal: { amount: 5000, period: 'P4W' },
+      });
+    }),
+);
+
+it.effect(
+  'a manual renewal paid while PastDue stacks and reports recurring',
+  () =>
+    Effect.gen(function* () {
+      const h = harness(
+        recurringCheckout({ origin: 'manual_renewal', renewalOf: 'sub_live' }),
+        applierOf({
+          subscriptionId: 'sub_live',
+          created: false,
+          prolonged: true,
+          nextPaymentDate: NEXT,
+        }),
+      );
+
+      yield* h.run(encodedPayload('km'));
+
+      expect(h.events.map((e) => e.name)).toEqual([
+        'recurring_payment_succeeded',
+      ]);
+    }),
+);
+
+it.effect(
+  'a one-time checkout with a live sub keeps its own row and one-time event',
+  () =>
+    Effect.gen(function* () {
+      const h = harness(
+        recurringCheckout({ recurring: false, prolongOf: 'sub_live' }),
+        applierOf({
+          subscriptionId: 'pay_ot',
+          created: true,
+          nextPaymentDate: NEXT,
+        }),
+      );
+
+      yield* h.run(encodedPayload('ko'));
+
+      expect(h.events.map((e) => e.name)).toEqual([
+        'payment_created',
+        'one_time_purchase_succeeded',
+      ]);
+    }),
+);
+
+const declined = (idemKey: string) => ({
+  ...encodedPayload(idemKey),
+  status: 'failed',
+  payload: { reason: 'Declined' },
+});
+
+/** Session and payment repos that record every write the checkout applier makes. */
+const recordingRepos = () => {
+  const writes: string[] = [];
+  const record = (name: string) => () =>
+    Effect.sync(() => {
+      writes.push(name);
+    }).pipe(Effect.zipRight(Effect.die(`unexpected ${name}`)));
+  const sessionStatus = { chk: CheckoutSessionStatus.Pending };
+  const checkout = {
+    completeIfOpen: () =>
+      Effect.sync(() => {
+        writes.push('completeIfOpen');
+        sessionStatus.chk = CheckoutSessionStatus.Completed;
+        return true;
+      }),
+  } as unknown as CheckoutRepo;
+  const payments = {
+    transaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect,
+    findActiveRecurringByExternalUser: record('findActiveRecurring'),
+    lockById: record('lockById'),
+    extend: record('extend'),
+    insert: record('insert'),
+    advanceAfterSuccess: record('advanceAfterSuccess'),
+    updateToken: record('updateToken'),
+    clearToken: record('clearToken'),
+    setMethod: record('setMethod'),
+  } as unknown as PaymentRepo;
+  return { writes, sessionStatus, payments, checkout };
+};
+
+it.effect(
+  'a declined prolongation emits recurring_payment_failed on the live sub, never applying',
+  () =>
+    Effect.gen(function* () {
+      // The REAL checkout applier over recording fakes: any session or payment write it
+      // made would show up here, so "the session stays payable" is observed, not assumed.
+      const { writes, sessionStatus, payments, checkout } = recordingRepos();
+      const h = harness(
+        recurringCheckout({ origin: 'prolong', prolongOf: 'sub_live' }),
+        makeCheckoutApplier(payments, checkout),
+      );
+
+      yield* h.run(declined('kf'));
+      // Decline replay: settled, so a no-op.
+      yield* h.run(declined('kf'));
+
+      expect(h.events.map((e) => e.name)).toEqual(['recurring_payment_failed']);
+      expect(h.events[0]?.id).toBe('evt_kf:failed');
+      expect(h.events[0]?.aggregateId).toBe('sub_live');
+      expect(h.events[0]?.payload).toMatchObject({ reason: 'Declined' });
+      // AC 11: no session claim, no subscription write, no fixation — the session is
+      // still Pending, so the next /pay releases it for another attempt.
+      expect(writes).toEqual([]);
+      expect(sessionStatus.chk).toBe(CheckoutSessionStatus.Pending);
+      expect(h.payments.size).toBe(0);
+      expect(h.matchResults.get('inc1')).toBe('matched');
+    }),
+);
+
+it.effect.each([
+  ['sub_dead', 'sub_dead'],
+  [null, 'ref-1'],
+] as const)(
+  'a declined manual renewal with no live sub → recurring_payment_failed on %s',
+  ([renewalOf, aggregateId]) =>
+    Effect.gen(function* () {
+      const h = harness(
+        recurringCheckout({
+          origin: 'manual_renewal',
+          renewalOf,
+          prolongOf: null,
+        }),
+        noApplier,
+      );
+
+      yield* h.run(declined('kmf'));
+
+      expect(h.events.map((e) => e.name)).toEqual(['recurring_payment_failed']);
+      expect(h.events[0]?.aggregateId).toBe(aggregateId);
+    }),
+);
+
+it.effect(
+  'a declined prolong session with no live sub keeps initial_payment_failed',
+  () =>
+    Effect.gen(function* () {
+      const h = harness(
+        recurringCheckout({
+          origin: 'prolong',
+          renewalOf: 'sub_dead',
+          prolongOf: null,
+        }),
+        noApplier,
+      );
+
+      yield* h.run(declined('kpf'));
+
+      expect(h.events.map((e) => e.name)).toEqual(['initial_payment_failed']);
+      expect(h.events[0]?.aggregateId).toBe('ref-1');
+    }),
+);
+
+it.effect(
+  'after a decline, the same session paid with a new charge stacks once',
+  () =>
+    Effect.gen(function* () {
+      const applied = countingApplier({
+        subscriptionId: 'sub_live',
+        created: false,
+        prolonged: true,
+        nextPaymentDate: NEXT,
+      });
+      const h = harness(
+        recurringCheckout({ origin: 'prolong', prolongOf: 'sub_live' }),
+        applied.applier,
+      );
+
+      yield* h.run(declined('k_try1'));
+      yield* h.run(encodedPayload('k_try2'));
+      yield* h.run(encodedPayload('k_try2'));
+
+      expect(h.events.map((e) => e.name)).toEqual([
+        'recurring_payment_failed',
+        'recurring_payment_succeeded',
+      ]);
+      expect(applied.calls()).toBe(1);
+    }),
+);
+
+it.effect('a settled 0-amount verify re-run is a no-op', () =>
+  Effect.gen(function* () {
+    const applied = countingApplier({
+      subscriptionId: 'pay_1',
+      created: false,
+      nextPaymentDate: null,
+    });
+    const h = harness(cardChangeMatch(false), applied.applier);
+
+    yield* h.run(encodedPayload('cv'));
+    yield* h.run(encodedPayload('cv'));
+
+    expect(h.events.map((e) => e.name)).toEqual(['card_change_succeeded']);
+    expect(applied.calls()).toBe(1);
+  }),
+);
+
+it.effect.each([
+  [
+    'a different charge on a settled checkout session',
+    recurringCheckout(),
+    'already_applied',
+    'ERROR SETTLEMENT_ANOMALY charge: session already settled',
+  ],
+  [
+    'a different charge on a settled card-change session',
+    cardChangeMatch(true),
+    'already_applied',
+    'ERROR SETTLEMENT_ANOMALY charge: session already settled',
+  ],
+  [
+    'an intro-priced charge on a live sub (Q8)',
+    recurringCheckout({ renewal: { amount: 5000, period: 'P4W' } }),
+    'intro_on_live',
+    'ERROR SETTLEMENT_ANOMALY checkout: intro-priced payment on a live subscription',
+  ],
+] as const)(
+  '%s is quarantined with the marker, nothing booked',
+  ([, match, refused, marker]) =>
+    Effect.gen(function* () {
+      const refusal: RefusedCharge = { refused, subscriptionId: null };
+      const h = harness(match, () => Effect.succeed(refusal));
+
+      yield* h.run(encodedPayload('kx'));
+
+      expect(h.events.map((e) => e.name)).toEqual([
+        'unknown_payment_quarantined',
+      ]);
+      expect(h.payments.size).toBe(0);
+      expect(h.matchResults.get('inc1')).toBe('quarantined');
+      expect(h.logs).toEqual([marker]);
+    }),
+);
+
+it.effect(
+  'an ordinary unmatched charge quarantines with no marker, and re-runs idempotently',
+  () =>
+    Effect.gen(function* () {
+      const h = harness({ matched: false }, noApplier);
+
+      yield* h.run(encodedPayload('ku'));
+      // 'quarantined' is not short-circuited: it re-runs and re-quarantines in place.
+      yield* h.run(encodedPayload('ku'));
+
+      expect(h.quarantines.size).toBe(1);
+      expect(h.events.map((e) => e.id)).toEqual([
+        'evt_ku:quarantined',
+        'evt_ku:quarantined',
+      ]);
+      expect(h.logs).toEqual([]);
+    }),
+);
+
+it.effect(
+  'a failure before the final write leaves matchResult unset, so a retry settles it',
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo();
+      let fail = true;
+      const events: DomainEvent[] = [];
+      const handle = handleChargeEvent({
+        repo: fake.repo,
+        matcher: matcherOf(recurringCheckout()),
+        applier: applierOf({
+          subscriptionId: 'sub_live',
+          created: false,
+          prolonged: true,
+          nextPaymentDate: NEXT,
+        }),
+        publish: (event) =>
+          fail
+            ? Effect.die('outbox down')
+            : Effect.sync(() => {
+                events.push(event);
+              }),
+      });
+
+      const first = yield* Effect.exit(handle(encodedPayload('kz')));
+      expect(first._tag).toBe('Failure');
+      expect(fake.matchResults.get('inc1')).toBeUndefined();
+
+      fail = false;
+      yield* handle(encodedPayload('kz'));
+      expect(fake.matchResults.get('inc1')).toBe('matched');
+      expect(events.map((e) => e.name)).toEqual([
+        'recurring_payment_succeeded',
+      ]);
+    }),
+);
+
+it.effect(
+  'a positive token charge is fixed and reported, crediting no time',
+  () =>
+    Effect.gen(function* () {
+      const h = harness(
+        {
+          ...(cardChangeMatch(false) as Match),
+          amountCharged: true,
+          origin: 'card_change',
+        },
+        applierOf({
+          subscriptionId: 'pay_1',
+          created: false,
+          nextPaymentDate: NEXT,
+        }),
+      );
+
+      yield* h.run(encodedPayload('ct'));
+
+      expect(h.payments.size).toBe(1);
+      expect(h.events.map((e) => e.name)).toEqual([
+        'recurring_payment_succeeded',
+        'card_change_succeeded',
+      ]);
+      expect(h.matchResults.get('inc1')).toBe('matched');
+    }),
+);

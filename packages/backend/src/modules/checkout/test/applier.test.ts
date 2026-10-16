@@ -24,6 +24,8 @@ const event: Charge = {
 /** A repo whose every method fails the test if called (the recurring path). */
 const unusedSubs: PaymentRepo = {
   findActiveRecurringByExternalUser: () => Effect.die('unused'),
+  transaction: (effect) => effect,
+  lockById: () => Effect.die('unused'),
   findById: () => Effect.die('unused'),
   findDue: () => Effect.die('unused'),
   findUpcomingForNotice: () => Effect.succeed([]),
@@ -53,7 +55,7 @@ const unusedCheckout: CheckoutRepo = {
   insert: () => Effect.die('unused'),
   claimForPayment: () => Effect.die('unused'),
   releasePending: () => Effect.die('unused'),
-  markCompleted: () => Effect.die('unused'),
+  completeIfOpen: () => Effect.die('unused'),
   renameOpenSessionsExternalUser: () => Effect.die('unused'),
 };
 
@@ -80,9 +82,10 @@ it.effect(
       };
       const checkout: CheckoutRepo = {
         ...unusedCheckout,
-        markCompleted: () =>
+        completeIfOpen: () =>
           Effect.sync(() => {
             completed = true;
+            return true;
           }),
       };
       const match: Match = {
@@ -99,6 +102,7 @@ it.effect(
       expect(result).toEqual({
         subscriptionId: 'sub_1',
         created: true,
+        prolonged: false,
         nextPaymentDate: addPeriod(event.occurredAt, 'P1M'),
       });
       expect(insertedToken).toBe('tok');
@@ -131,7 +135,7 @@ it.effect(
       };
       const checkout: CheckoutRepo = {
         ...unusedCheckout,
-        markCompleted: () => Effect.void,
+        completeIfOpen: () => Effect.succeed(true),
       };
       const match: Match = {
         matched: true,
@@ -150,6 +154,7 @@ it.effect(
       expect(result).toEqual({
         subscriptionId: 'pay_ot',
         created: true,
+        prolonged: false,
         nextPaymentDate: addPeriod(event.occurredAt, 'P1M'),
       });
       expect(insertedRecurring).toBe(false);
@@ -198,6 +203,7 @@ it.effect(
         expect(result).toEqual({
           subscriptionId: 'sub_x',
           created: false,
+          prolonged: false,
           nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
         });
       }),
@@ -233,16 +239,20 @@ const owedCardChange: Match = {
   externalUserId: 'sp:1',
   period: 'P1M',
   method: 0,
-  owed: true,
+  amountCharged: true,
+  arrears: true,
+  origin: 'card_change_arrears',
 };
 
 it.effect(
-  'an owed card change advances the payment exactly once across a redelivery',
+  'an owed card change advances the payment exactly once: a second charge loses the session claim',
   () =>
     Effect.gen(function* () {
-      // The advance flips status past_due → active; simulate that so the second run
-      // reads an `active` payment and the `owesMoney` guard skips the second advance.
-      let status = PaymentStatus.PastDue;
+      // The session claim (completeIfOpen) is what makes it once: the first charge
+      // completes the session, any later charge on it finds it completed and writes
+      // nothing. (A replay of the SAME charge never reaches the applier: the pipeline's
+      // matchResult lock short-circuits it.)
+      let open = true;
       let advanceCalls = 0;
       let tokenUpdated: string | null = null;
       const subs: PaymentRepo = {
@@ -253,25 +263,289 @@ it.effect(
           }),
         // A card change now also records the destination method (Card); a no-op here.
         setMethod: () => Effect.void,
-        findById: () =>
-          Effect.succeed(Option.some({ ...owingPayment, status })),
+        lockById: () => Effect.succeed(Option.some(owingPayment)),
         advanceAfterSuccess: () =>
           Effect.sync(() => {
             advanceCalls += 1;
-            status = PaymentStatus.Active;
           }),
       };
       const checkout: CheckoutRepo = {
         ...unusedCheckout,
-        markCompleted: () => Effect.void,
+        completeIfOpen: () =>
+          Effect.sync(() => {
+            const won = open;
+            open = false;
+            return won;
+          }),
       };
       const owedEvent: Charge = { ...event, payload: { recToken: 'newtok' } };
       const applier = makeCheckoutApplier(subs, checkout);
 
-      yield* applier(owedEvent, owedCardChange);
-      yield* applier(owedEvent, owedCardChange); // reaper redelivery
+      const first = yield* applier(owedEvent, owedCardChange);
+      const second = yield* applier(
+        { ...owedEvent, idemKey: 'k2', payload: { recToken: 'othertok' } },
+        owedCardChange,
+      );
 
       expect(advanceCalls).toBe(1);
       expect(tokenUpdated).toBe('newtok');
+      // PastDue end Jan 1, credited from that anchor: +P1M.
+      expect(first).toEqual({
+        subscriptionId: 'pay_1',
+        created: false,
+        prolonged: false,
+        nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+      });
+      expect(second).toEqual({
+        refused: 'already_applied',
+        subscriptionId: 'pay_1',
+      });
+    }),
+);
+
+// ---- Session claim, paid-after-death, card-change crediting (T10, T11) ----
+
+const checkoutMatch = (over: Partial<Match> = {}): Match => ({
+  matched: true,
+  kind: 'checkout',
+  subscriptionId: null,
+  externalUserId: 'sp:1',
+  period: 'P1M',
+  method: 0,
+  recurring: true,
+  amount: 30000,
+  currency: 0,
+  ...over,
+});
+
+it.effect(
+  'a different charge on a completed session is alreadyApplied and writes nothing',
+  () =>
+    Effect.gen(function* () {
+      // unusedSubs dies on any payment read or write.
+      const checkout: CheckoutRepo = {
+        ...unusedCheckout,
+        completeIfOpen: () => Effect.succeed(false),
+      };
+
+      const result = yield* makeCheckoutApplier(unusedSubs, checkout)(
+        event,
+        checkoutMatch(),
+      );
+
+      expect(result).toEqual({
+        refused: 'already_applied',
+        subscriptionId: null,
+      });
+    }),
+);
+
+it.effect.each([
+  ['prolong', PaymentStatus.RenewalFailed],
+  ['prolong', PaymentStatus.Cancelled],
+  ['manual_renewal', PaymentStatus.RenewalFailed],
+  ['manual_renewal', PaymentStatus.Cancelled],
+] as const)(
+  'a %s session paid after its sub became %s inserts a fresh auto-charging row at paidAt',
+  ([origin, status]) =>
+    Effect.gen(function* () {
+      const dead: Payment = {
+        ...owingPayment,
+        id: 'sub_dead',
+        status,
+        cancelRequestedAt: new Date('2026-01-01T00:00:00Z'),
+      };
+      let inserted: Record<string, unknown> | null = null;
+      const subs: PaymentRepo = {
+        ...unusedSubs,
+        // The finder already excludes dead rows; the lock is what sees the death in a
+        // race, so both paths are covered by returning the dead row from the lock.
+        findActiveRecurringByExternalUser: () =>
+          Effect.succeed(Option.some(dead)),
+        lockById: () => Effect.succeed(Option.some(dead)),
+        insert: (input) =>
+          Effect.sync(() => {
+            inserted = { ...input };
+            return {
+              ...input,
+              id: 'sub_fresh',
+              cancelRequestedAt: null,
+              createdAt: new Date(0),
+              updatedAt: new Date(0),
+            };
+          }),
+      };
+      const checkout: CheckoutRepo = {
+        ...unusedCheckout,
+        completeIfOpen: () => Effect.succeed(true),
+      };
+
+      const result = yield* makeCheckoutApplier(subs, checkout)(
+        event,
+        checkoutMatch({ origin, renewalOf: 'sub_dead' }),
+      );
+
+      expect(result).toMatchObject({
+        subscriptionId: 'sub_fresh',
+        created: true,
+        prolonged: false,
+      });
+      // The callback's token, auto-charging; the dead row is never written (extend dies).
+      expect(inserted).toMatchObject({
+        recurring: true,
+        recurringTokenRef: 'tok',
+        currentPeriodStart: event.occurredAt,
+      });
+    }),
+);
+
+/** A card-change repo whose locked row has `status`, recording advances. */
+const cardChangeRepo = (status: PaymentStatus) => {
+  const advances: { start: Date; end: Date }[] = [];
+  const subs: PaymentRepo = {
+    ...unusedSubs,
+    updateToken: () => Effect.void,
+    setMethod: () => Effect.void,
+    clearToken: () => Effect.void,
+    lockById: () => Effect.succeed(Option.some({ ...owingPayment, status })),
+    findById: () => Effect.succeed(Option.some({ ...owingPayment, status })),
+    advanceAfterSuccess: (_id, anchor) =>
+      Effect.sync(() => {
+        advances.push({
+          start: anchor.currentPeriodStart,
+          end: anchor.currentPeriodEnd,
+        });
+      }),
+  };
+  const checkout: CheckoutRepo = {
+    ...unusedCheckout,
+    completeIfOpen: () => Effect.succeed(true),
+  };
+  return { applier: makeCheckoutApplier(subs, checkout), advances };
+};
+
+it.effect(
+  'an arrears session credits its OWN period, whatever the row adopted since',
+  () =>
+    Effect.gen(function* () {
+      // The row now renews P1M (owingPayment.period); the arrears session was minted P4W.
+      const { applier, advances } = cardChangeRepo(PaymentStatus.Active);
+
+      const result = yield* applier(event, {
+        ...owedCardChange,
+        period: 'P4W',
+      });
+
+      // Stacked on the locked end (Jan 1) + 4 weeks.
+      expect(advances).toEqual([
+        {
+          start: new Date('2026-01-01T00:00:00Z'),
+          end: new Date('2026-01-29T00:00:00Z'),
+        },
+      ]);
+      expect(result).toMatchObject({
+        nextPaymentDate: new Date('2026-01-29T00:00:00Z'),
+      });
+    }),
+);
+
+it.effect('an arrears session on a cancelled row credits nothing', () =>
+  Effect.gen(function* () {
+    const { applier, advances } = cardChangeRepo(PaymentStatus.Cancelled);
+
+    yield* applier(event, owedCardChange);
+
+    expect(advances).toEqual([]);
+  }),
+);
+
+it.effect(
+  'a token charge minted while Active never advances, even settled while PastDue',
+  () =>
+    Effect.gen(function* () {
+      const { applier, advances } = cardChangeRepo(PaymentStatus.PastDue);
+
+      const result = yield* applier(event, {
+        ...owedCardChange,
+        arrears: false,
+        origin: 'card_change',
+      });
+
+      expect(advances).toEqual([]);
+      // Money moved, so the unchanged schedule is reported.
+      expect(result).toMatchObject({
+        nextPaymentDate: owingPayment.nextPaymentDate,
+      });
+    }),
+);
+
+it.effect(
+  'a legacy (origin null) priced session keeps the old rule: advance only while owing',
+  () =>
+    Effect.gen(function* () {
+      const legacy: Match = { ...owedCardChange, origin: null };
+
+      const active = cardChangeRepo(PaymentStatus.Active);
+      yield* active.applier(event, legacy);
+      expect(active.advances).toEqual([]);
+
+      const pastDue = cardChangeRepo(PaymentStatus.PastDue);
+      yield* pastDue.applier(event, legacy);
+      expect(pastDue.advances).toHaveLength(1);
+    }),
+);
+
+/** A fake `transaction` that records each savepoint and whether it failed (the real one
+ * rolls back on failure; the fake only observes it). */
+const observedSavepoint = () => {
+  const counts = { opened: 0, rolledBack: 0 };
+  const markRolledBack = Effect.sync(() => {
+    counts.rolledBack += 1;
+  });
+  const transaction: PaymentRepo['transaction'] = (effect) => {
+    counts.opened += 1;
+    return effect.pipe(Effect.tapError(() => markRolledBack));
+  };
+  return { counts, transaction };
+};
+
+it.effect(
+  'an intro-priced checkout on a live sub is refused and its session claim rolled back',
+  () =>
+    Effect.gen(function* () {
+      const live: Payment = { ...owingPayment, status: PaymentStatus.Active };
+      const savepoint = observedSavepoint();
+      const subs: PaymentRepo = {
+        ...unusedSubs,
+        transaction: savepoint.transaction,
+        findActiveRecurringByExternalUser: () =>
+          Effect.succeed(Option.some(live)),
+        lockById: () => Effect.succeed(Option.some(live)),
+      };
+      let claimed = 0;
+      const checkout: CheckoutRepo = {
+        ...unusedCheckout,
+        completeIfOpen: () =>
+          Effect.sync(() => {
+            claimed += 1;
+            return true;
+          }),
+      };
+
+      const result = yield* makeCheckoutApplier(subs, checkout)(
+        event,
+        checkoutMatch({
+          amount: 1000,
+          renewal: { amount: 30000, period: 'P1M' },
+        }),
+      );
+
+      expect(result).toEqual({
+        refused: 'intro_on_live',
+        subscriptionId: 'pay_1',
+      });
+      // The claim ran inside the savepoint that was then rolled back.
+      expect(claimed).toBe(1);
+      expect(savepoint.counts).toEqual({ opened: 1, rolledBack: 1 });
     }),
 );

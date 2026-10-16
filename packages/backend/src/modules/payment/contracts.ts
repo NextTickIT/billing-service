@@ -54,10 +54,12 @@ export const MethodChangeNotify = Schema.Struct({
 
 export type MethodChangeNotify = Schema.Schema.Type<typeof MethodChangeNotify>;
 
-/** payment_lapse payload: a cancel-pending payment reached its due date. */
+/** payment_lapse payload: a cancel-pending payment reached its due date. `dueAt` (epoch
+ * ms) is the due date it was enqueued for; absent on messages from before it existed. */
 export const LapseNotify = Schema.Struct({
   paymentId: Schema.String,
   externalUserId: Schema.String,
+  dueAt: Schema.optional(Schema.Number),
 });
 
 export type LapseNotify = Schema.Schema.Type<typeof LapseNotify>;

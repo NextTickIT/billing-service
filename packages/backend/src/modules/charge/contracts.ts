@@ -2,6 +2,8 @@ import type { SqlError } from '@effect/sql';
 import {
   ChargeStatus,
   CHARGE_STATUSES,
+  type CheckoutOrigin,
+  type CheckoutRenewal,
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
 } from '@billing-service/shared';
@@ -58,6 +60,20 @@ export const Charge = Schema.Struct({
 
 export type Charge = Schema.Schema.Type<typeof Charge>;
 
+/**
+ * The log line the watchdog alerts on (`SETTLEMENT_ANOMALY`): a charge that took money
+ * but could not settle, a refund candidate. One shape for every call site; `idemKey` is
+ * the charge's identity (the `charges` row is unique on it).
+ */
+export const settlementAnomaly = (reason: string, event: Charge) =>
+  Effect.logError(`SETTLEMENT_ANOMALY ${reason}`).pipe(
+    Effect.annotateLogs({
+      idemKey: event.idemKey,
+      externalRef: event.externalRef,
+      source: event.source,
+    }),
+  );
+
 /** How a matched charge relates to a gateway payment: a first checkout payment
  * (create-or-extend), a charge against one that already exists (M6), or a
  * SendPulse-initiated card change that re-tokenizes an existing payment (docs/23). */
@@ -67,14 +83,13 @@ export type MatchKind = 'checkout' | 'recurring' | 'card_change';
  * The result of matching an incoming charge to a gateway payment. A match carries
  * what the outgoing events need (docs/07) that the event itself doesn't (period,
  * method). `subscriptionId` is null for a checkout first payment — the payment is
- * created while applying it; for `card_change` it is the target payment id. `owed`
- * is only meaningful for `card_change`: true when the session collected an owed
- * amount (past_due/renewal_failed) vs a 0-amount verify. `recurring` is only consumed
- * on the `checkout` create path (false → a one-time payment); it defaults to true when
- * absent, since a `recurring`/`card_change` match acts on an already-recurring payment.
- * `promoBonus` is a one-time bonus period (ISO-8601 duration) a `checkout` session may
- * carry: applied once on the create path to push the paid-through anchor further; absent
- * on `recurring`/`card_change` (a renewal never re-earns it). No match → quarantine.
+ * created while applying it; for `card_change` it is the target payment id. `recurring`
+ * is only consumed on the `checkout` create path (false → a one-time payment); it
+ * defaults to true when absent, since a `recurring`/`card_change` match acts on an
+ * already-recurring payment. `promoBonus` is a one-time bonus period (ISO-8601 duration) a
+ * `checkout` session may carry: applied once on the create path to push the paid-through
+ * anchor further; absent on `recurring`/`card_change` (a renewal never re-earns it). No
+ * match → quarantine.
  */
 export type MatchResult =
   | {
@@ -84,9 +99,28 @@ export type MatchResult =
       readonly externalUserId: string;
       readonly period: string;
       readonly method: number;
-      readonly owed?: boolean;
+      /** `card_change` only: the charge moved money (> 0), so it is fixed and reported as
+       * `recurring_payment_succeeded`. A 0-amount verify moved none. */
+      readonly amountCharged?: boolean;
+      /** `card_change` only: the session was minted to collect arrears, so it credits its
+       * own period. Decided at mint time (`origin`), never inferred at settlement. */
+      readonly arrears?: boolean;
       readonly recurring?: boolean;
       readonly promoBonus?: string | null;
+      /** The checkout session's renewal terms, when they differ from the first charge. */
+      readonly renewal?: CheckoutRenewal | null;
+      /** Who minted the session; null on sessions from before the column existed. Selects
+       * the event name for a manual renewal (AC 25), never the row the applier writes. */
+      readonly origin?: CheckoutOrigin | null;
+      /** The subscription a `prolong`/`manual_renewal` session renews (the session column).
+       * Attribution only: the decline `aggregateId` after that sub has died. */
+      readonly renewalOf?: string | null;
+      /** A declined recurring checkout whose contact holds a live sub: that sub's id. An
+       * unlocked read that only selects the decline event's name and aggregate. */
+      readonly prolongOf?: string | null;
+      /** The session's own price, the terms a checkout stores (never the callback's). */
+      readonly amount?: number;
+      readonly currency?: number;
     }
   | { readonly matched: false };
 
@@ -117,13 +151,31 @@ export const makeCompositeMatcher =
     });
 
 /** The subscription a matched charge resolved to, and whether it was just born. */
-export interface AppliedCharge {
+export interface SettledCharge {
   readonly subscriptionId: string;
   readonly created: boolean;
+  /** The charge stacked onto the contact's live recurring sub (a prolongation). */
+  readonly prolonged: boolean;
+  /** The prolongation cleared a pending cancel (→ `payment_reactivated`). */
+  readonly reactivated?: boolean;
   /** The payment's next scheduled charge date after applying this charge, or null when
    * there is none (a one-time purchase, or a reconciliation with no known schedule). */
   readonly nextPaymentDate: Date | null;
 }
+
+/**
+ * A matched charge the applier refused to settle, having written nothing: the pipeline
+ * quarantines it as a refund candidate and logs `SETTLEMENT_ANOMALY`.
+ * - `already_applied`: a different charge already settled this session.
+ * - `intro_on_live`: an intro-priced checkout paid while the contact holds a live sub
+ *   (Q8, enforced again at settlement); `subscriptionId` is that live sub.
+ */
+export interface RefusedCharge {
+  readonly refused: 'already_applied' | 'intro_on_live';
+  readonly subscriptionId: string | null;
+}
+
+export type AppliedCharge = SettledCharge | RefusedCharge;
 
 /**
  * An applier is the domain follow-up for a matched charge (FR-003): create or

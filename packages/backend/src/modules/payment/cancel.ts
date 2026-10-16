@@ -175,7 +175,11 @@ export const methodChangeNotify =
 /**
  * The `payment_lapse` handler: the cancel-pending payment reached its due date.
  * Flip it to `cancelled` (state before the event, CLAUDE.md §5), then emit the
- * terminal `renewal_failed`. Both steps are idempotent for a redelivered message.
+ * terminal `renewal_failed` — in ONE transaction, so a publish failure rolls the cancel
+ * back and the queue retry redoes both. The flip is guarded on the row still being due
+ * and cancel-pending on the due date it was enqueued for (`dueAt`): a lapse made stale by a
+ * prolongation or defer flips nothing and emits nothing, while one that runs before the
+ * DB clock reaches that date still flips. Both steps are idempotent for a redelivered message.
  */
 export const lapseNotify =
   (
@@ -185,9 +189,20 @@ export const lapseNotify =
   (payload: unknown): Effect.Effect<void, SqlError.SqlError> =>
     Schema.decodeUnknown(LapseNotify)(payload).pipe(
       Effect.flatMap((notify) =>
-        repo.markCancelledLapsed(notify.paymentId).pipe(
-          Effect.andThen(Clock.currentTimeMillis),
-          Effect.flatMap((ms) => publish(cancelLapsed(notify, new Date(ms)))),
+        repo.transaction(
+          repo
+            .markCancelledLapsed(notify.paymentId, notify.dueAt)
+            .pipe(
+              Effect.flatMap((cancelled) =>
+                cancelled
+                  ? Clock.currentTimeMillis.pipe(
+                      Effect.flatMap((ms) =>
+                        publish(cancelLapsed(notify, new Date(ms))),
+                      ),
+                    )
+                  : Effect.void,
+              ),
+            ),
         ),
       ),
       Effect.catchTag('ParseError', (error) =>
