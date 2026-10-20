@@ -13,7 +13,7 @@ import {
 } from '@billing-service/shared';
 import { Effect, Either, Exit, Fiber, Option } from 'effect';
 
-import { claimBatch, enqueue, reapStale } from '@/infra/queue/store.js';
+import { claimBatch, reapStale } from '@/infra/queue/store.js';
 import { TaskRegistry } from '@/infra/task-registry.js';
 import migration0021 from '@/migrations/0021_checkout_renewal.js';
 import {
@@ -74,6 +74,7 @@ import {
 } from '@/modules/payment/data-access.js';
 import { advanceLocked, computeDeferral } from '@/modules/payment/domain.js';
 import { PAYMENT_ORDER_PREFIX } from '@/modules/payment/matcher.js';
+import { lapseEnqueuer } from '@/worker-boot.js';
 
 /**
  * Renewal / prolong / settlement e2e (plan §4: T15–T18, T22, T24, T28, T31 and T35
@@ -161,18 +162,6 @@ const schedulerAdvance = (
     ),
   );
 
-/** The lapse enqueue exactly as worker-boot wires it: keyed on the due date it lapses. */
-const lapseVia = (sql: SqlClient.SqlClient) => (sub: Payment) =>
-  enqueue(sql)({
-    messageType: PAYMENT_LAPSE,
-    idemKey: `lapse:${sub.id}:${sub.nextPaymentDate.getTime().toString()}`,
-    payload: {
-      paymentId: sub.id,
-      externalUserId: sub.externalUserId,
-      dueAt: sub.nextPaymentDate.getTime(),
-    },
-  }).pipe(Effect.asVoid);
-
 /** Scheduler deps on the scenario DB; anything a scenario does not expect dies loudly. */
 const schedulerDeps = (overrides: Partial<SchedulerDeps> = {}) =>
   Effect.gen(function* () {
@@ -182,7 +171,7 @@ const schedulerDeps = (overrides: Partial<SchedulerDeps> = {}) =>
       client: { charge: () => Effect.die('no charge expected in this tick') },
       ingest: (yield* ChargePipeline).ingest,
       publish: (yield* Outbox).publish,
-      lapse: lapseVia(sql),
+      lapse: lapseEnqueuer(sql),
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.die('no upstream cancel expected'),
       claimAdvance: ledgerClaimAdvance(sql),
@@ -502,7 +491,10 @@ const seedDueCancelPending = (externalUserId: string) =>
       externalUserId,
       end: new Date(Date.now() - HOUR),
     });
-    assert.equal(yield* subs.requestCancel(sub.id), true, 'cancel requested');
+    assert.ok(
+      Option.isSome(yield* subs.requestCancel(sub.id)),
+      'cancel requested',
+    );
     return sub;
   });
 
@@ -586,6 +578,53 @@ const t18StaleLapse: EffectScenario = {
     }),
 };
 
+/**
+ * A lapse enqueued by a tick, then a reactivation that wins the race (the lapse runs as a
+ * no-op), then a fresh cancel of the same period: same due date, new cancellation.
+ */
+const driveT18Recancel = Effect.gen(function* () {
+  yield* registerHandlers;
+  const subs = makePaymentRepo(yield* SqlClient.SqlClient);
+  const sub = yield* seedDueCancelPending('sp:t18r');
+  yield* tick();
+  assert.ok(
+    Option.isSome(yield* subs.clearCancelRequest(sub.id)),
+    'reactivated',
+  );
+  yield* runFor(1.5);
+  assert.ok(
+    Option.isSome(yield* subs.requestCancel(sub.id)),
+    'cancelled again',
+  );
+  yield* tick();
+  yield* runFor(1.5);
+});
+
+const t18RecancelSamePeriod: EffectScenario = {
+  name: 'lapse (T18): a cancel after a reactivation that beat the lapse gets its own lapse in the same period',
+  run: ({ config, query }) =>
+    withWorker(config, async (run) => {
+      await run(driveT18Recancel);
+      await expectRows(query, [
+        [
+          `SELECT count(DISTINCT "idemKey") FROM messages WHERE "messageType" = 'payment_lapse'`,
+          '2',
+          'the second cancellation got a lapse key of its own',
+        ],
+        [
+          `SELECT status FROM payments`,
+          String(PaymentStatus.Cancelled),
+          'lapsed',
+        ],
+        [
+          `${countEventsSql('renewal_failed')} AND payload->>'reason' = 'cancelled'`,
+          '1',
+          'exactly one renewal_failed (cancelled)',
+        ],
+      ]);
+    }),
+};
+
 /** The lapse handler's publish fails once; attempt 1 parks in `retry`. */
 const driveT18Fault = Effect.gen(function* () {
   yield* registerHandlers;
@@ -627,9 +666,9 @@ const t18LapseFailureInjection: EffectScenario = {
           'cancelled',
         ],
         [
-          `SELECT string_agg(id, ',') FROM domain_events WHERE name = 'renewal_failed'`,
-          `evt_${subId}_cancel_lapsed`,
-          'exactly one renewal_failed, with the deterministic id',
+          `SELECT count(*) || '|' || bool_and(id LIKE 'evt_${subId}_cancel_lapsed_%') FROM domain_events WHERE name = 'renewal_failed'`,
+          '1|true',
+          'exactly one renewal_failed, keyed on this payment and its cancellation',
         ],
       ]);
     }),
@@ -1903,6 +1942,7 @@ export const renewalScenarios: readonly EffectScenario[] = [
   t16BarrierRollback,
   t17DeferRacesProlong,
   t18StaleLapse,
+  t18RecancelSamePeriod,
   t18LapseFailureInjection,
   t22LockScope,
   t22DeferAcrossDst,

@@ -27,12 +27,13 @@ import {
 } from '@/modules/billing/scheduler.js';
 import { normalizeCallback } from '@/modules/wayforpay/callback.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
-import { PAYMENT_CANCEL, PAYMENT_LAPSE } from '@/modules/payment/contracts.js';
+import { PAYMENT_CANCEL } from '@/modules/payment/contracts.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import { makeContactsRepo } from '@/modules/contacts/data-access.js';
 import type { W4pTransaction } from '@/modules/wayforpay/contracts.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
 import { pollTick } from '@/modules/wayforpay/poller.js';
+import { lapseEnqueuer } from '@/worker-boot.js';
 import { makeWorkerRuntime } from '@/runtime.js';
 
 /**
@@ -588,22 +589,8 @@ const driveLapse = Effect.gen(function* () {
       },
       ingest: pipeline.ingest,
       publish: outbox.publish,
-      // Mirrors worker-boot's wiring: keyed on the cancellation being lapsed, never the
-      // tick, so the ticks between enqueue and commit collapse to one message.
-      lapse: (sub) => {
-        const cancelRequestedAt = (
-          sub.cancelRequestedAt ?? new Date(0)
-        ).toISOString();
-        return enqueue(sql)({
-          messageType: PAYMENT_LAPSE,
-          idemKey: `lapse:${sub.id}:${cancelRequestedAt}`,
-          payload: {
-            paymentId: sub.id,
-            externalUserId: sub.externalUserId,
-            cancelRequestedAt,
-          },
-        }).pipe(Effect.asVoid);
-      },
+      // worker-boot's own wiring, so the ticks between enqueue and commit collapse to one.
+      lapse: lapseEnqueuer(sql),
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
@@ -1009,7 +996,7 @@ const driveCancelPastDue = Effect.gen(function* () {
     retryAttempt: 1,
   });
   const ok = yield* subs.requestCancel(created.id);
-  if (!ok) {
+  if (Option.isNone(ok)) {
     return yield* Effect.die('requestCancel must accept a PastDue payment');
   }
   const outbox = yield* Outbox;
@@ -1022,22 +1009,8 @@ const driveCancelPastDue = Effect.gen(function* () {
       },
       ingest: pipeline.ingest,
       publish: outbox.publish,
-      // Mirrors worker-boot's wiring: keyed on the cancellation being lapsed, never the
-      // tick, so the ticks between enqueue and commit collapse to one message.
-      lapse: (sub) => {
-        const cancelRequestedAt = (
-          sub.cancelRequestedAt ?? new Date(0)
-        ).toISOString();
-        return enqueue(sql)({
-          messageType: PAYMENT_LAPSE,
-          idemKey: `lapse:${sub.id}:${cancelRequestedAt}`,
-          payload: {
-            paymentId: sub.id,
-            externalUserId: sub.externalUserId,
-            cancelRequestedAt,
-          },
-        }).pipe(Effect.asVoid);
-      },
+      // worker-boot's own wiring, so the ticks between enqueue and commit collapse to one.
+      lapse: lapseEnqueuer(sql),
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
@@ -1083,7 +1056,7 @@ const driveCancelRenewalFailed = Effect.gen(function* () {
     retryAttempt: 5,
   });
   const ok = yield* subs.requestCancel(created.id);
-  if (!ok) {
+  if (Option.isNone(ok)) {
     return yield* Effect.die(
       'requestCancel must accept a RenewalFailed payment',
     );

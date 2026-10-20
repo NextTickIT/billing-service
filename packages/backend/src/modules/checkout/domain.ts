@@ -18,11 +18,13 @@ import {
   type ChargeMatcher,
   type Match,
   type RefusedCharge,
+  type SettledCharge,
   settlementAnomaly,
 } from '@/modules/charge/contracts.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import {
+  type AdvancedPeriod,
   advanceLocked,
   createOrExtend,
   type FindActiveRecurring,
@@ -361,6 +363,45 @@ class IntroOnLive extends Data.TaggedError('IntroOnLive')<{
   readonly subscriptionId: string;
 }> {}
 
+/** An arrears card change that credited its period: report the window it bought. */
+const creditedChange = (
+  paymentId: string,
+  credited: AdvancedPeriod,
+): SettledCharge => ({
+  subscriptionId: paymentId,
+  created: false,
+  prolonged: false,
+  nextPaymentDate: credited.nextPaymentDate,
+  periodStart: credited.currentPeriodStart,
+  periodEnd: credited.currentPeriodEnd,
+  metadata: credited.metadata,
+});
+
+/**
+ * A card change that credited no period, so it bought no window: a charge that moved
+ * money reports the unchanged schedule and the payment's declaration; a 0-amount verify
+ * reports neither.
+ */
+const uncreditedChange = (
+  payments: PaymentRepo,
+  paymentId: string,
+  match: Match,
+): Effect.Effect<SettledCharge, SqlError.SqlError> =>
+  (match.amountCharged === true
+    ? payments.findById(paymentId).pipe(Effect.map(Option.getOrNull))
+    : Effect.succeed(null)
+  ).pipe(
+    Effect.map((current) => ({
+      subscriptionId: paymentId,
+      created: false,
+      prolonged: false,
+      nextPaymentDate: current?.nextPaymentDate ?? null,
+      periodStart: null,
+      periodEnd: null,
+      metadata: current?.metadata ?? null,
+    })),
+  );
+
 /**
  * Card-change applier (docs/23): claim the session, rewrite the stored token on the
  * target payment and, for an arrears change, credit the session's own period on the
@@ -415,33 +456,10 @@ const applyCardChange =
               : locked.status !== PaymentStatus.Cancelled,
         );
         if (Option.isSome(advanced)) {
-          const credited = advanced.value;
-          return {
-            subscriptionId: paymentId,
-            created: false,
-            prolonged: false,
-            nextPaymentDate: credited.nextPaymentDate,
-            periodStart: credited.currentPeriodStart,
-            periodEnd: credited.currentPeriodEnd,
-            metadata: credited.metadata,
-          };
+          return creditedChange(paymentId, advanced.value);
         }
       }
-      // No period credited, so no window: a charge that moved money reports the unchanged
-      // schedule and the payment's declaration; a 0-amount verify reports neither.
-      const current =
-        match.amountCharged === true
-          ? Option.getOrNull(yield* payments.findById(paymentId))
-          : null;
-      return {
-        subscriptionId: paymentId,
-        created: false,
-        prolonged: false,
-        nextPaymentDate: current?.nextPaymentDate ?? null,
-        periodStart: null,
-        periodEnd: null,
-        metadata: current?.metadata ?? null,
-      };
+      return yield* uncreditedChange(payments, paymentId, match);
     });
 
 /**
