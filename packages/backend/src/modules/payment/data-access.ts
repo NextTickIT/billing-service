@@ -451,9 +451,16 @@ const clearCancelRequest = (sql: SqlClient.SqlClient) => (id: string) =>
     RETURNING "updatedAt"
   `.pipe(Effect.map((rows) => Option.fromNullable(rows[0]?.updatedAt)));
 
-// The lapse key `lapse:{id}:{dueMs}` dedupes forever, so the guard must never depend on
-// the DB clock having reached a due date the app clock already passed: compare to the
-// enqueued due date itself, at the millisecond precision a JS Date carries.
+// The guard does not check WHICH cancellation the message lapses. A stale message for an
+// earlier cancellation A, run after a reactivation and a fresh cancellation B of the same
+// due date, flips the row correctly and publishes exactly one `renewal_failed` — but under
+// A's id (`cancelLapsed` keys on the message's stamp). Status and count are right; only
+// the event id names the older cancellation.
+//
+// The lapse key (`lapse:{id}:{dueMs}:{cancelRequestedAt}`) dedupes forever, so the guard
+// must never depend on the DB clock having reached a due date the app clock already
+// passed: compare to the enqueued due date itself, at the millisecond precision a JS Date
+// carries.
 const markCancelledLapsed =
   (sql: SqlClient.SqlClient) => (id: string, dueAtMs?: number) =>
     sql<{ readonly id: string }>`

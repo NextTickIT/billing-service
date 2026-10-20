@@ -659,6 +659,14 @@ const t18LapseFailureInjection: EffectScenario = {
         [`SELECT count(*) FROM domain_events`, '0', 'no event'],
       ]);
       await run(retryNow);
+      // The stamp as the handler read it: through the same driver, as a JS Date.
+      const stamped = await run(
+        Effect.flatMap(SqlClient.SqlClient, (sql) =>
+          current(makePaymentRepo(sql), subId),
+        ),
+      );
+      const cancelRequestedAt =
+        stamped.cancelRequestedAt?.toISOString() ?? 'no cancelRequestedAt';
       await expectRows(query, [
         [
           `SELECT status FROM payments`,
@@ -666,8 +674,8 @@ const t18LapseFailureInjection: EffectScenario = {
           'cancelled',
         ],
         [
-          `SELECT count(*) || '|' || bool_and(id LIKE 'evt_${subId}_cancel_lapsed_%') FROM domain_events WHERE name = 'renewal_failed'`,
-          '1|true',
+          `SELECT string_agg(id, ',') FROM domain_events WHERE name = 'renewal_failed'`,
+          `evt_${subId}_cancel_lapsed_${cancelRequestedAt}`,
           'exactly one renewal_failed, keyed on this payment and its cancellation',
         ],
       ]);
@@ -1207,51 +1215,42 @@ const t33PaidAfterDay7: EffectScenario = {
 };
 
 /**
- * 6 Oct: a CARD subscription whose renewal ladder ended (`renewal_failed`), recovered by
- * the buyer through its manual-pay link («Оплатить сейчас») and paid by card. Decision 7
- * (2026-10-20): a recovered renewal is reported as a renewal, never as a first purchase,
- * so the chatbot does not run onboarding again.
+ * T33w: the WayForPay-callback twin of T33's "paid after death" case. A token-less
+ * subscription in `renewal_failed` — the only kind the scheduler gives a manual-renewal
+ * link (`promptManual` runs only when `recurringTokenRef` is null) — is paid through that
+ * link by card. It pins the `manual_renewal` arm of the settlement rule on the card rail:
+ * decision 7 (2026-10-20), a recovered renewal is reported as a renewal.
+ *
+ * It does NOT cover a card subscription that holds a token: that one never gets a
+ * manual link, and how its buyer pays again after `renewal_failed` is open decision 20.
  */
-const driveOct6 = Effect.gen(function* () {
+const driveT33w = Effect.gen(function* () {
   yield* registerHandlers;
-  const sql = yield* SqlClient.SqlClient;
-  const sub = yield* seedSub(makePaymentRepo(sql), {
-    externalUserId: 'sp:oct6',
-    end: MANUAL_END,
-    status: PaymentStatus.RenewalFailed,
-    firstFailureAt: MANUAL_END,
-  });
-  yield* makeCheckoutRepo(sql).insert(
-    manualRenewalSession(
-      sub,
-      'chk_oct6',
-      FAR,
-      `manual:${sub.id}:${ms(MANUAL_END)}`,
-    ),
-  );
+  const dead = yield* seedManual('sp:t33w', PaymentStatus.RenewalFailed);
   yield* (yield* ChargePipeline).ingest(
     callback(
-      'chk_oct6',
-      'w4pcb:chk_oct6|Approved',
+      'chk_t33w',
+      'w4pcb:chk_t33w|Approved',
       new Date('2026-05-03T00:00:00Z'),
       {
+        currency: USD,
         payload: { recToken: 'tok_new' },
       },
     ),
   );
   yield* runFor(2);
-  return sub.id;
+  return dead;
 });
 
-const oct6RecoveredRenewal: EffectScenario = {
-  name: 'manual renewal (6 Oct): a renewal_failed card sub paid through its manual-pay link reports recurring_payment_succeeded, not initial',
+const t33wCardPaysManualLink: EffectScenario = {
+  name: 'manual renewal (T33w): a token-less renewal_failed sub paid by card through its manual link reports recurring_payment_succeeded, not initial',
   run: ({ config, query }) =>
     withWorker(config, async (run) => {
-      const dead = await run(driveOct6);
-      const fresh = await trimmed(query, freshRowSql('sp:oct6', dead));
+      const dead = await run(driveT33w);
+      const fresh = await trimmed(query, freshRowSql('sp:t33w', dead));
       await expectRows(query, [
         [
-          eventsOfSql('sp:oct6'),
+          eventsOfSql('sp:t33w'),
           `payment_created:${fresh},recurring_payment_succeeded:${fresh}`,
           'the recovery is a recurring payment; no initial_payment_succeeded',
         ],
@@ -2004,7 +2003,7 @@ export const renewalScenarios: readonly EffectScenario[] = [
   t28ProlongBeatsLapse,
   t33CryptoManualRenewal,
   t33PaidAfterDay7,
-  oct6RecoveredRenewal,
+  t33wCardPaysManualLink,
   t36LegacyTransition,
   t37SchedulerTx2,
   t37SchedulerTx2Exhausted,
