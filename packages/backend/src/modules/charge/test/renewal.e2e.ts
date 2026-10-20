@@ -1206,6 +1206,59 @@ const t33PaidAfterDay7: EffectScenario = {
     }),
 };
 
+/**
+ * 6 Oct: a CARD subscription whose renewal ladder ended (`renewal_failed`), recovered by
+ * the buyer through its manual-pay link («Оплатить сейчас») and paid by card. Decision 7
+ * (2026-10-20): a recovered renewal is reported as a renewal, never as a first purchase,
+ * so the chatbot does not run onboarding again.
+ */
+const driveOct6 = Effect.gen(function* () {
+  yield* registerHandlers;
+  const sql = yield* SqlClient.SqlClient;
+  const sub = yield* seedSub(makePaymentRepo(sql), {
+    externalUserId: 'sp:oct6',
+    end: MANUAL_END,
+    status: PaymentStatus.RenewalFailed,
+    firstFailureAt: MANUAL_END,
+  });
+  yield* makeCheckoutRepo(sql).insert(
+    manualRenewalSession(
+      sub,
+      'chk_oct6',
+      FAR,
+      `manual:${sub.id}:${ms(MANUAL_END)}`,
+    ),
+  );
+  yield* (yield* ChargePipeline).ingest(
+    callback(
+      'chk_oct6',
+      'w4pcb:chk_oct6|Approved',
+      new Date('2026-05-03T00:00:00Z'),
+      {
+        payload: { recToken: 'tok_new' },
+      },
+    ),
+  );
+  yield* runFor(2);
+  return sub.id;
+});
+
+const oct6RecoveredRenewal: EffectScenario = {
+  name: 'manual renewal (6 Oct): a renewal_failed card sub paid through its manual-pay link reports recurring_payment_succeeded, not initial',
+  run: ({ config, query }) =>
+    withWorker(config, async (run) => {
+      const dead = await run(driveOct6);
+      const fresh = await trimmed(query, freshRowSql('sp:oct6', dead));
+      await expectRows(query, [
+        [
+          eventsOfSql('sp:oct6'),
+          `payment_created:${fresh},recurring_payment_succeeded:${fresh}`,
+          'the recovery is a recurring payment; no initial_payment_succeeded',
+        ],
+      ]);
+    }),
+};
+
 // ---------------------------------------------------------------------------------
 // T36 — an old-code attempt killed between 'matched' and its apply (drain gate).
 // ---------------------------------------------------------------------------------
@@ -1951,6 +2004,7 @@ export const renewalScenarios: readonly EffectScenario[] = [
   t28ProlongBeatsLapse,
   t33CryptoManualRenewal,
   t33PaidAfterDay7,
+  oct6RecoveredRenewal,
   t36LegacyTransition,
   t37SchedulerTx2,
   t37SchedulerTx2Exhausted,
