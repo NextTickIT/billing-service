@@ -8,7 +8,7 @@ import type { FetchLike } from '@/modules/sinks/sendpulse.js';
 import { snakeCaseKeys } from '@/modules/sinks/snake-case.js';
 
 /**
- * CRM connector (docs/21). Runs ALONGSIDE the SendPulse sink, not instead of it: the
+ * CRM connector (docs/21 §14, which records the wire dialect). Runs ALONGSIDE the SendPulse sink, not instead of it: the
  * outbox fans each event out to one delivery per sink, so the two retry and fail
  * independently and a CRM outage cannot stop a customer message going out.
  *

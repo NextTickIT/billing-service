@@ -278,7 +278,8 @@ id yields a terminal delivery failure (§4.5) visible to the operator.
 2. `external_data` — **send full event payload** (+ `event_id`).
 3. Publish gating — **gate at publish** (§2 options).
 4. Rate limiting — **yes**, reuse the `RateLimiter` infra (`SENDPULSE_RATE_LIMIT_RPS`).
-5. Sink vocabulary — one kind today (`SendPulse`); widen the DU + `SinkKindCode` per new sink.
+5. Sink vocabulary — widen the DU + `SinkKindCode` per new sink. Kinds today: `SendPulse = 0`,
+   `Crm = 1` (§14), `Email = 2` (receipts).
 6. Config freshness — **short-TTL cache** over a stable fetch/limiter (`SINKS_CACHE_TTL_MS`, default 10 s).
 7. Failure handling — **all non-success → `SinkError`, retried by the queue to `maxAttempts`**
    (no core outbox change); per-error terminal split deferred.
@@ -317,3 +318,60 @@ id yields a terminal delivery failure (§4.5) visible to the operator.
 - **Verification gates:** `npm run typecheck && npm run lint && npm test`, then the e2e runner
   against Docker Postgres for AC-S3/4/6; a `critic`/`code-reviewer` pass per phase (separate
   lane, no self-approval).
+
+## 14. CRM sink (event contract v2)
+
+A second event sink beside SendPulse: kind `Crm = 1`, code `crm`, seeded **disabled with an
+empty URL** by migration `0024_crm_sink`. The outbox fans each event out to one delivery per
+sink, so the CRM and SendPulse retry and fail independently. The CRM gets **every** event (no
+per-name opt-in, unlike SendPulse's `flows`), through its own rate limiter
+(`CRM_RATE_LIMIT_RPS`, default 10). Config is `{ url }` (the full ingest endpoint) plus the bearer
+token in `auth.token`; an enabled row with an empty URL logs and succeeds rather than
+dead-lettering. Connector: `modules/sinks/crm.ts`.
+
+### 14.1 Wire dialect
+
+`POST <url>` with `Authorization: Bearer <token>`, `Content-Type: application/json`, and
+`Idempotency-Key: <idempotencyKey>`. The body (`crmBody`) is the whole envelope:
+
+```json
+{
+  "id": "evt_w4pcb:pay_…|Approved:succeeded",
+  "idempotency_key": "evt_w4pcb:pay_…|Approved:succeeded",
+  "name": "recurring_payment_succeeded",
+  "occurred_at": "2026-10-20T09:00:00.000Z",
+  "external_user_id": "65f1c0d2a9b8e7f6a5b4c3d2",
+  "correlation_id": "w4pcb:pay_…|Approved",
+  "aggregate_id": "pay_…",
+  "payload": {
+    "aggregate_id": "pay_…",
+    "correlation_id": "w4pcb:pay_…|Approved",
+    "amount": 150000,
+    "next_payment_date": "2026-11-20T09:00:00.000Z",
+    "metadata": { "planCode": "half_year" }
+  }
+}
+```
+
+- **snake_case keys**, applied at this boundary only (`sinks/snake-case.ts`); the stored event
+  and every other consumer keep the camelCase vocabulary of docs/07. Nested keys are renamed
+  too (e.g. inside `renewal`). **`metadata` is exempt**, keys and values: it is the caller's
+  object, echoed verbatim.
+- **`aggregate_id` and `correlation_id` are inside the payload AND at the top level.** The
+  CRM's door keeps only `id, name, occurred_at, external_user_id, payload` of the envelope and
+  drops the rest, while its event registry requires both subject fields inside every billing
+  kind's payload; a body with them only at the top level is stored `rejected`. The top-level
+  copies (and `idempotency_key`) stay for readers that key on the envelope. The payload's own
+  keys are spread after the two subject fields. Owner decision 1 (2026-10-20).
+- **Dedupe in the CRM is on the body `id`** (its natural key per client), never on
+  `idempotency_key` or the header. The `Idempotency-Key` header is for a proxy or gateway in
+  front of the CRM that wants to collapse a retry without parsing the body.
+- **No `*_formatted` twins** (those exist only for SendPulse flows that drop a value into a
+  sentence).
+- `external_user_id` is null for `unknown_payment_quarantined`, as on every sink.
+
+The CRM side pins the same shape in guildmaster
+`packages/contract/src/crmEvents.billingWire.test.ts`; billing pins it in
+`modules/sinks/test/crm.test.ts`. Kinds the CRM has not registered (today
+`recurring_payment_failed`, `upcoming_charge`) are stored `unregistered`, not rejected.
+
