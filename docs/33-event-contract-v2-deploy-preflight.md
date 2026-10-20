@@ -26,19 +26,37 @@ A database that once ran PR #5's OLD numbering (0020–0022 as `event_idempotenc
 to be in that state (it boots 58d80ef, which runs the same check); staging or a shared dev DB
 may be. Fix such a database before deploying to it.
 
-## 2. No rollback to 58d80ef once 0022–0024 are applied
+## 2. Rollback to 58d80ef needs a manual step
 
-Main's boot runs the same `unmatchedApplied` check. After this deploy the applied rows
-`22_event_idempotency_key`, `23_metadata_passthrough` and `24_crm_sink` have no file in image
-58d80ef, so that image **refuses to start**. Either declare this deploy roll-forward-only, or
-write the rollback into the runbook before deploying: the migrations are additive, so delete
-the three bookkeeping rows, leave the columns, the index and the disabled row in place, then
-boot 58d80ef.
+Main's server boot runs the same `unmatchedApplied` check (`infra/migrator.ts`). After this
+deploy the applied rows `22 event_idempotency_key`, `23 metadata_passthrough` and
+`24 crm_sink` have no file in image 58d80ef, so a plain redeploy of that image **refuses to
+start** ("Applied migrations have no matching file"). The migrations are additive, so the
+rollback removes only their bookkeeping rows.
 
-```sql
--- rollback only, then redeploy 58d80ef
-DELETE FROM effect_sql_migrations WHERE migration_id IN (22, 23, 24);
-```
+**Rollback procedure:**
+
+1. Stop the new image: the server AND the worker.
+2. Delete the three bookkeeping rows by hand:
+
+   ```sql
+   DELETE FROM effect_sql_migrations WHERE migration_id IN (22, 23, 24);
+   ```
+
+3. Leave everything the migrations added in place (main ignores it, see below).
+4. Start image 58d80ef (server and worker).
+
+**What stays behind, and why it is harmless to main:**
+
+| Migration | Adds | Under 58d80ef |
+|---|---|---|
+| 0022 | `domain_events."idempotencyKey"` text, nullable, no default (backfilled from `id`); index `domain_events_idempotency_key_idx` (NON-unique) | main never reads or writes it; its inserts leave it NULL |
+| 0023 | `checkout_sessions.metadata` jsonb, nullable; `payments.metadata` jsonb, nullable | main never reads or writes them; its inserts leave them NULL |
+| 0024 | `sinks` row `kind = 1` (CRM), disabled, `config = {"url":""}`, empty token | main's `buildConnector` drops the unknown kind; only main's console Sinks list can return 500 (§5) |
+
+Rolling forward again later is safe. 0022 re-runs as `ADD COLUMN IF NOT EXISTS`, then
+backfills only rows still NULL, which are the events written under 58d80ef. 0023 also uses
+`IF NOT EXISTS`, and 0024 uses `ON CONFLICT (kind) DO NOTHING`.
 
 ## 3. Stuck lapses will fire at the first tick
 
