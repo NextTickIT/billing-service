@@ -409,7 +409,7 @@ const loadContactsSyncConfig = (): AppConfig['contactsSync'] => ({
 
 /** The CRM sink's client-side rate limit. Its URL and token are operator config. */
 const loadCrmSinkConfig = (): { readonly rateLimitRps: number } => ({
-  rateLimitRps: Number(process.env['CRM_RATE_LIMIT_RPS'] ?? '10'),
+  rateLimitRps: positiveNumber(process.env['CRM_RATE_LIMIT_RPS'], 10),
 });
 
 export const loadConfig = (): AppConfig => ({
