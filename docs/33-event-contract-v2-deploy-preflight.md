@@ -46,6 +46,11 @@ rollback removes only their bookkeeping rows.
 3. Leave everything the migrations added in place (main ignores it, see below).
 4. Start image 58d80ef (server and worker).
 
+If the CRM sink was enabled before the rollback, its pending CRM deliveries are marked
+failed under 58d80ef, which has no CRM connector, and never reach the CRM unless the B5
+backfill re-posts them. So either disable the sink and let the queue drain before step 1,
+or record the range of event ids still undelivered to `crm` so they can be re-posted.
+
 **What stays behind, and why it is harmless to main:**
 
 | Migration | Adds | Under 58d80ef |
