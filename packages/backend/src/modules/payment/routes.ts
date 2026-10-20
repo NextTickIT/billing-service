@@ -192,8 +192,13 @@ const enqueueCancel = (
   sql: SqlClient.SqlClient,
   actor: { readonly role: Role },
   payment: Payment,
-  reasonInput: string | undefined,
-  cancelRequestedAt: Date,
+  {
+    reasonInput,
+    cancelRequestedAt,
+  }: {
+    readonly reasonInput: string | undefined;
+    readonly cancelRequestedAt: Date;
+  },
 ) =>
   Effect.gen(function* () {
     const reason = reasonInput ?? 'operator';
@@ -251,7 +256,10 @@ const cancelPayment = (
         }),
       );
     }
-    yield* enqueueCancel(sql, actor, found.value, body.reason, requested.value);
+    yield* enqueueCancel(sql, actor, found.value, {
+      reasonInput: body.reason,
+      cancelRequestedAt: requested.value,
+    });
     return { status: 'cancelled' as const };
   });
 

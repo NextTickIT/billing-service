@@ -211,6 +211,24 @@ export const isIntroPriced = (terms: {
   (terms.renewal.amount !== terms.amount ||
     !samePeriod(terms.renewal.period, terms.period));
 
+/** The result of stacking a charge onto a live row (`stacked` is what `extend` wrote). */
+const prolongedResult = (
+  row: Payment,
+  stacked: AdvanceAnchor,
+  supplied: ApplyPaymentParams['metadata'],
+): ApplyPaymentResult => ({
+  subscriptionId: row.id,
+  created: false,
+  prolonged: true,
+  reactivated: row.cancelRequestedAt !== null,
+  nextPaymentDate: stacked.nextPaymentDate,
+  periodStart: stacked.currentPeriodStart,
+  periodEnd: stacked.currentPeriodEnd,
+  // Mirrors what `extend`'s COALESCE just wrote: the supplied declaration, or the stored
+  // one when this charge supplied none.
+  metadata: supplied ?? row.metadata,
+});
+
 /**
  * Apply a successful checkout charge. A one-time charge always inserts. A recurring one
  * stacks onto the user's live (Active/PastDue) recurring payment, re-read under a row
@@ -269,18 +287,7 @@ export const createOrExtend =
           ...stacked,
           metadata: params.metadata,
         });
-        return {
-          subscriptionId: row.id,
-          created: false,
-          prolonged: true,
-          reactivated: row.cancelRequestedAt !== null,
-          nextPaymentDate: stacked.nextPaymentDate,
-          periodStart: stacked.currentPeriodStart,
-          periodEnd: stacked.currentPeriodEnd,
-          // Mirrors what `extend`'s COALESCE just wrote: the supplied declaration, or the
-          // stored one when this charge supplied none.
-          metadata: params.metadata ?? row.metadata,
-        };
+        return prolongedResult(row, stacked, params.metadata);
       }
       return yield* insertNew(repo)(params, anchors);
     });
