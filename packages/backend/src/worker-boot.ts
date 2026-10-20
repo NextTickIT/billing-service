@@ -64,7 +64,10 @@ import {
   PAYMENT_METHOD_CHANGE,
   PAYMENT_REACTIVATE,
 } from '@/modules/payment/contracts.js';
-import { makePaymentRepo } from '@/modules/payment/data-access.js';
+import {
+  makePaymentRepo,
+  type PaymentRepo,
+} from '@/modules/payment/data-access.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { WayForPay } from '@/modules/wayforpay/client.js';
 import { makePollerStateRepo } from '@/modules/wayforpay/poller-state.js';
@@ -253,6 +256,72 @@ const makeUpstreamCancelledCheck = (
       );
   });
 
+/**
+ * The scheduler's `lapse` dep. Keyed on the due date it lapses AND the cancellation it
+ * lapses, never the tick's clock: the row keeps coming back from `findDue` until
+ * `markCancelledLapsed` commits, so a time-based key would enqueue one message per tick.
+ * The due date makes a lapse made stale by a defer a no-op while the real one at the moved
+ * date gets its own key; the cancellation stamp gives a fresh cancel after a mid-flight
+ * reactivation its own key in the same period. A null `cancelRequestedAt` cannot reach
+ * here: the scheduler only lapses cancel-pending rows. Dying is deliberate — an epoch
+ * fallback would make the key constant per due date again and silently restore the very
+ * bug this fixes, so a loud defect beats a quiet regression.
+ */
+export const lapseEnqueuer =
+  (sql: SqlClient.SqlClient) =>
+  (
+    sub: Pick<
+      Payment,
+      'id' | 'externalUserId' | 'nextPaymentDate' | 'cancelRequestedAt'
+    >,
+  ) => {
+    if (sub.cancelRequestedAt === null) {
+      return Effect.die(
+        `lapse requested for ${sub.id} with no cancelRequestedAt`,
+      );
+    }
+    const cancelRequestedAt = sub.cancelRequestedAt.toISOString();
+    const dueAt = sub.nextPaymentDate.getTime();
+    return enqueue(sql)({
+      messageType: PAYMENT_LAPSE,
+      idemKey: `lapse:${sub.id}:${dueAt.toString()}:${cancelRequestedAt}`,
+      payload: {
+        paymentId: sub.id,
+        externalUserId: sub.externalUserId,
+        dueAt,
+        cancelRequestedAt,
+      },
+    }).pipe(Effect.asVoid);
+  };
+
+/**
+ * The scheduler's `cancelUpstream` dep: the contact cancelled upstream, so flip to
+ * cancelled + record payment_cancelled (unmapped to a flow → no echo back to a user who
+ * already cancelled). One transaction, like the lapse: a publish failure rolls the cancel
+ * back, so the terminal event can never be lost after the flip commits.
+ */
+const upstreamCanceller =
+  (subs: PaymentRepo, publish: OutboxService['publish']) =>
+  (sub: Payment, now: Date) =>
+    subs.transaction(
+      subs.cancelUpstream(sub.id, now).pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.void,
+            onSome: (cancelRequestedAt) =>
+              publish(
+                sinkCancelled(
+                  sub,
+                  'sendpulse_cancelled',
+                  now,
+                  cancelRequestedAt,
+                ),
+              ),
+          }),
+        ),
+      ),
+    );
+
 /** Fork the recurring-charge scheduler (FR-004) if enabled. */
 const startScheduler = (
   config: AppConfig,
@@ -275,59 +344,9 @@ const startScheduler = (
           client,
           ingest,
           publish,
-          // Keyed on the due date it lapses AND the cancellation it lapses, never the
-          // tick's clock: the row keeps coming back from `findDue` until
-          // `markCancelledLapsed` commits, so a time-based key would enqueue one message
-          // per tick. The due date makes a lapse made stale by a defer a no-op while the
-          // real one at the moved date gets its own key; the cancellation stamp gives a
-          // fresh cancel after a mid-flight reactivation its own key in the same period.
-          // A null `cancelRequestedAt` cannot reach here: the scheduler only lapses
-          // cancel-pending rows. Dying is deliberate — an epoch fallback would make the
-          // key constant per due date again and silently restore the very bug this
-          // fixes, so a loud defect beats a quiet regression.
-          lapse: (sub) => {
-            if (sub.cancelRequestedAt === null) {
-              return Effect.die(
-                `lapse requested for ${sub.id} with no cancelRequestedAt`,
-              );
-            }
-            const cancelRequestedAt = sub.cancelRequestedAt.toISOString();
-            const dueAt = sub.nextPaymentDate.getTime();
-            return enqueue(sql)({
-              messageType: PAYMENT_LAPSE,
-              idemKey: `lapse:${sub.id}:${dueAt.toString()}:${cancelRequestedAt}`,
-              payload: {
-                paymentId: sub.id,
-                externalUserId: sub.externalUserId,
-                dueAt,
-                cancelRequestedAt,
-              },
-            }).pipe(Effect.asVoid);
-          },
+          lapse: lapseEnqueuer(sql),
           upstreamCancelled,
-          // Contact cancelled upstream: flip to cancelled + record payment_cancelled
-          // (unmapped to a flow → no echo back to a user who already cancelled).
-          // One transaction, like the lapse: a publish failure rolls the cancel back, so
-          // the terminal event can never be lost after the flip commits.
-          cancelUpstream: (sub, now) =>
-            subs.transaction(
-              subs.cancelUpstream(sub.id, now).pipe(
-                Effect.flatMap(
-                  Option.match({
-                    onNone: () => Effect.void,
-                    onSome: (cancelRequestedAt) =>
-                      publish(
-                        sinkCancelled(
-                          sub,
-                          'sendpulse_cancelled',
-                          now,
-                          cancelRequestedAt,
-                        ),
-                      ),
-                  }),
-                ),
-              ),
-            ),
+          cancelUpstream: upstreamCanceller(subs, publish),
           // Token-less (crypto) renewal prompt (docs/28): mint/reuse our internal checkout.
           createManualCheckout: manualCheckoutMinter(sql, config),
           claimAdvance: ledgerClaimAdvance(sql),
