@@ -13,9 +13,16 @@ import { snakeCaseKeys } from '@/modules/sinks/snake-case.js';
  * independently and a CRM outage cannot stop a customer message going out.
  *
  * Posts the whole envelope — not just the payload — because the CRM is the system of
- * record: it needs `id` to reference an event, `idempotency_key` to collapse a redelivery,
- * and `occurred_at` to order a history. Keys are snake_case, its chosen dialect
- * (see `snake-case.ts`), applied here and nowhere upstream.
+ * record: it needs `id` to reference an event (and dedupes on it: `id` is the natural key
+ * of a stored event), and `occurred_at` to order a history. Keys are snake_case, its chosen
+ * dialect (see `snake-case.ts`), applied here and nowhere upstream.
+ *
+ * `aggregate_id` and `correlation_id` ride INSIDE the payload as well as at the top level.
+ * The CRM's door keeps only `id, name, occurred_at, external_user_id, payload` of the
+ * envelope and drops the rest, while its registry requires both subject fields in every
+ * billing kind's payload — so a body with them only at the top level is stored
+ * `rejected`. The top-level copies, and `idempotency_key`, stay for any reader that keys
+ * on the envelope; the CRM ignores them.
  *
  * No `*_formatted` twins. Those exist because a SendPulse flow drops a value straight
  * into a sentence; the CRM renders its own UI from the canonical instant and duration, and
@@ -47,7 +54,11 @@ export const crmBody = (event: StoredEvent): unknown =>
     correlationId: event.correlationId,
     externalUserId: event.externalUserId,
     aggregateId: event.aggregateId,
-    payload: event.payload,
+    payload: {
+      aggregateId: event.aggregateId,
+      correlationId: event.correlationId,
+      ...event.payload,
+    },
   });
 
 export const makeCrmConnector = (client: CrmClient): SinkConnector => ({
@@ -73,8 +84,8 @@ export const makeCrmConnector = (client: CrmClient): SinkConnector => ({
               headers: {
                 'Content-Type': 'application/json',
                 Authorization: `Bearer ${client.token}`,
-                // The CRM dedupes on this rather than on `id`, so it travels in a header
-                // too: a proxy or gateway in front of it can collapse a retry without
+                // The CRM dedupes on the body's `id`, never on this header. It stays so a
+                // proxy or gateway in front of the CRM can collapse a retry without
                 // parsing the body.
                 'Idempotency-Key': event.idempotencyKey,
               },
