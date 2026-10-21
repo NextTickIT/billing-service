@@ -358,6 +358,9 @@ it.effect(
 
       // Paid on 2026-03-01 for the month that began when the last one ended (2026-02-01).
       expect(calls.ingested[0]?.settlement).toEqual({
+        // The terms it was charged on: the due row's period and method.
+        period: 'P1M',
+        method: 0,
         periodStart: new Date('2026-02-01T00:00:00Z'),
         periodEnd: new Date('2026-03-01T00:00:00Z'),
         nextPaymentDate: new Date('2026-03-01T00:00:00Z'),

@@ -18,8 +18,9 @@ const charge: Charge = {
 
 describe('withSettlement', () => {
   // Every field distinct, the next charge date included, so reporting one field as
-  // another (e.g. the window's end as the next charge) cannot pass.
-  it('carries each field of what the advance credited into its own place', () => {
+  // another (e.g. the window's end as the next charge) cannot pass. The charged terms are
+  // the row the scheduler charged, frozen with the window.
+  it('carries the charged terms and each field the advance credited into its own place', () => {
     const settled = withSettlement(
       charge,
       Option.some({
@@ -28,9 +29,12 @@ describe('withSettlement', () => {
         nextPaymentDate: new Date('2026-03-04T00:00:00Z'),
         metadata: { planCode: 'half_year' },
       }),
+      { period: 'P4W', method: 1 },
     );
 
     expect(settled.settlement).toEqual({
+      period: 'P4W',
+      method: 1,
       periodStart: new Date('2026-02-01T00:00:00Z'),
       periodEnd: new Date('2026-03-01T00:00:00Z'),
       nextPaymentDate: new Date('2026-03-04T00:00:00Z'),
@@ -39,7 +43,10 @@ describe('withSettlement', () => {
   });
 
   it('leaves the charge without a snapshot when the advance credited nothing', () => {
-    const settled = withSettlement(charge, Option.none());
+    const settled = withSettlement(charge, Option.none(), {
+      period: 'P4W',
+      method: 1,
+    });
 
     expect(settled).toEqual(charge);
   });

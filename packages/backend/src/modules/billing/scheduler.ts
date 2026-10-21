@@ -279,6 +279,7 @@ const recordApproved = (
           withSettlement(
             chargeIncomingEvent(sub, orderReference, response, now),
             advanced,
+            sub,
           ),
         );
         return Option.isSome(advanced);

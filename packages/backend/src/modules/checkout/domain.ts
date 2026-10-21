@@ -550,12 +550,16 @@ export const makeCheckoutApplier =
       if (settled !== undefined) {
         // The scheduler credited this charge before enqueuing it and said what it
         // credited. The row may have moved on since (a defer, the next renewal); the
-        // event reports what THIS charge bought.
+        // event reports what THIS charge bought. (Its period and method reach the event
+        // through the match, which the recurring matcher took from the same snapshot.)
         return Effect.succeed({
           subscriptionId,
           created: false,
           prolonged: false,
-          ...settled,
+          periodStart: settled.periodStart,
+          periodEnd: settled.periodEnd,
+          nextPaymentDate: settled.nextPaymentDate,
+          metadata: settled.metadata,
         });
       }
       // No snapshot (the poller saw the charge first, or the message predates the field):

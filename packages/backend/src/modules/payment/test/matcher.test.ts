@@ -99,3 +99,35 @@ it.effect('does not match a non-succeeded charge', () =>
     }),
   ),
 );
+
+// A plan or method changed while the charge message waited (P1M→P3M, card→crypto) must not
+// rewrite what the scheduler charged: the snapshot's terms win over the row's.
+it.effect(
+  'takes the charged period and method from the scheduler snapshot, not the row',
+  () =>
+    makeRecurringMatcher(repo({ ...sub, period: 'P3M', method: 1 }))({
+      ...event(`sub_${sub.id}_1700000000`),
+      settlement: {
+        period: 'P1M',
+        method: 0,
+        periodStart: new Date('2026-01-01T00:00:00Z'),
+        periodEnd: new Date('2026-02-01T00:00:00Z'),
+        nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+        metadata: null,
+      },
+    }).pipe(
+      Effect.map((result) => {
+        expect(result).toMatchObject({ period: 'P1M', method: 0 });
+      }),
+    ),
+);
+
+it.effect('without a snapshot, the charged terms are the row as it is', () =>
+  makeRecurringMatcher(repo({ ...sub, period: 'P3M', method: 1 }))(
+    event(`sub_${sub.id}_1700000000`),
+  ).pipe(
+    Effect.map((result) => {
+      expect(result).toMatchObject({ period: 'P3M', method: 1 });
+    }),
+  ),
+);

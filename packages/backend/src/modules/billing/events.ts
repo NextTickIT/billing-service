@@ -49,19 +49,24 @@ export const chargeIncomingEvent = (
 };
 
 /**
- * The charge with what the advance credited, when it credited anything. None (the row was
- * gone or no longer live under the lock) carries no snapshot, and the pipeline reads the
- * row as before.
+ * The charge with what the advance credited, when it credited anything: the terms it was
+ * charged on (`charged`, the row the scheduler charged — the period it advanced by and the
+ * method it charged through) and the window, next date and metadata the advance produced.
+ * None (the row was gone or no longer live under the lock) carries no snapshot, and the
+ * pipeline reads the row as before.
  */
 export const withSettlement = (
   charge: Charge,
   advanced: Option.Option<AdvancedPeriod>,
+  charged: Pick<Payment, 'period' | 'method'>,
 ): Charge =>
   Option.match(advanced, {
     onNone: () => charge,
     onSome: (period) => ({
       ...charge,
       settlement: {
+        period: charged.period,
+        method: charged.method,
         periodStart: period.currentPeriodStart,
         periodEnd: period.currentPeriodEnd,
         nextPaymentDate: period.nextPaymentDate,

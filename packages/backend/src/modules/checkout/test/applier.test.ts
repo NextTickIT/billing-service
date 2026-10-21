@@ -236,6 +236,8 @@ it.effect(
       {
         ...event,
         settlement: {
+          period: 'P1M',
+          method: 0,
           periodStart: new Date('2026-02-01T00:00:00Z'),
           periodEnd: new Date('2026-03-01T00:00:00Z'),
           nextPaymentDate: new Date('2026-03-04T00:00:00Z'),
