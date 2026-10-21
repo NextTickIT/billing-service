@@ -79,11 +79,14 @@ const succeededPayload = {
   // renews). A string (not Schema.Date) to match the payload-date convention used by
   // `payment_deferred.newPeriodEnd` / `charge_retry_failed.nextRetryDate`.
   nextPaymentDate: Schema.NullOr(Schema.String),
-  // THIS prolongation: the window the money just bought. `period` alone says the cadence,
-  // not what was actually purchased — and the two come apart as soon as a buyer can pick a
-  // different duration at pay time, or a promo grants bonus days on top (`periodEnd` then
-  // sits past `periodStart + period`). Stating the window makes the event answer "what did
-  // they get" without a consumer re-deriving it from a cadence and a date.
+  // The payment's paid-through coverage AFTER this charge (docs/07). `periodEnd` is the new
+  // end. `periodStart` is where the continuous coverage ending there began. For a charge
+  // that opens a fresh window (a first payment, or a renewal paid at or after the old end)
+  // that is where this charge's own slice starts. For a charge stacked onto time still
+  // running (paid early, a prolong), it is the EARLIER start of the whole stacked
+  // coverage, not the old end. This charge's own slice is then [previous `periodEnd`,
+  // `periodEnd`]. `period` alone says the cadence, not what was bought: the two come apart
+  // when a buyer picks a different duration at pay time or a promo adds bonus days.
   // ISO-8601 instants, per the payload-date convention. Null where no window is known —
   // an operator bind reconciling a legacy payment has no schedule to report.
   periodStart: Schema.NullOr(Schema.String),
