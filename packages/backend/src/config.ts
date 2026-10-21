@@ -169,10 +169,12 @@ export interface SinksConfig {
     readonly apiUrl: string;
     readonly rateLimitRps: number;
   };
-  /** The CRM sink's client-side rate limit. Its endpoint and token are operator config
-   * (a `sinks` row), not environment — only the limiter is built once per process. */
+  /** The CRM sink's client-side rate limit and per-POST deadline. Its endpoint and
+   * token are operator config (a `sinks` row), not environment. */
   readonly crm: {
     readonly rateLimitRps: number;
+    /** One deadline for connect, headers and body read (env `CRM_TIMEOUT_MS`). */
+    readonly timeoutMillis: number;
   };
 }
 
@@ -407,9 +409,18 @@ const loadContactsSyncConfig = (): AppConfig['contactsSync'] => ({
   batchSize: Number(process.env['CONTACTS_SYNC_BATCH_SIZE'] ?? '500'),
 });
 
-/** The CRM sink's client-side rate limit. Its URL and token are operator config. */
-const loadCrmSinkConfig = (): { readonly rateLimitRps: number } => ({
+/**
+ * The CRM sink's limiter and deadline. Its URL and token are operator config.
+ *
+ * The worker dispatches one message at a time, so a CRM that accepts the connection and
+ * then stalls holds every delivery behind it for as long as the deadline. 10 s is far above
+ * a healthy POST and short enough that a stalled CRM delays the queue by seconds, not
+ * forever. A zero, negative or unreadable value falls back to it: no deadline at all is the
+ * failure this exists to prevent.
+ */
+const loadCrmSinkConfig = (): SinksConfig['crm'] => ({
   rateLimitRps: positiveNumber(process.env['CRM_RATE_LIMIT_RPS'], 10),
+  timeoutMillis: positiveNumber(process.env['CRM_TIMEOUT_MS'], 10_000),
 });
 
 export const loadConfig = (): AppConfig => ({

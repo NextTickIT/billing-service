@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest';
 import { EVENT_NAMES, type StoredEvent } from '@billing-service/shared';
-import { Effect, Fiber, TestClock } from 'effect';
+import { Duration, Effect, Fiber, TestClock } from 'effect';
 
 import type { RateLimiter } from '@/infra/rate-limiter.js';
 import {
@@ -456,6 +456,8 @@ describe('crmBody', () => {
 
 const noLimit: RateLimiter = { take: Effect.void, limit: (effect) => effect };
 
+const deadlineMillis = 10_000;
+
 interface Posted {
   readonly url: string;
   readonly method: string;
@@ -506,6 +508,7 @@ const client = (
   url: 'https://crm.example/api/public/v1/events',
   fetch,
   rateLimiter: noLimit,
+  timeoutMillis: deadlineMillis,
   ...over,
 });
 
@@ -714,5 +717,107 @@ describe('makeCrmConnector — the request', () => {
           'Idempotency-Key': 'idem_evt_k1',
         });
       }),
+  );
+});
+
+/** A promise that settles only when `signal` aborts — a peer that went quiet. */
+const stalled = <A>(signal: AbortSignal | undefined): Promise<A> =>
+  new Promise<A>((_resolve, reject) => {
+    signal?.addEventListener('abort', () => {
+      reject(new DOMException('aborted', 'AbortError'));
+    });
+  });
+
+/** A CRM that accepts the POST and then goes quiet at `where`. */
+const crmStalling = (where: 'headers' | 'body') => {
+  let posts = 0;
+  const fetch: FetchLike = (_url, init) => {
+    posts += 1;
+    return where === 'headers'
+      ? stalled(init.signal)
+      : Promise.resolve({
+          ok: true,
+          status: 200,
+          text: () => stalled<string>(init.signal),
+        });
+  };
+  return { fetch, posts: () => posts };
+};
+
+/** A CRM whose `validated` answer is held until the test releases it. */
+const crmHeld = () => {
+  let release: () => void = () => undefined;
+  const fetch: FetchLike = () =>
+    new Promise((resolve) => {
+      release = () => {
+        resolve({
+          ok: true,
+          status: 200,
+          text: () =>
+            Promise.resolve(
+              '{"status":"ok","event_id":"crm_evt_1","schema_status":"validated"}',
+            ),
+        });
+      };
+    });
+  return {
+    fetch,
+    release: () => {
+      release();
+    },
+  };
+};
+
+describe('makeCrmConnector — the deadline', () => {
+  // The dispatcher runs one message at a time; a CRM that stops answering must cost one
+  // deadline per queue attempt, not hold every delivery behind it.
+  it.effect.each([
+    ['no headers ever arrive', 'headers'],
+    ['headers arrive and the body stalls', 'body'],
+  ] as const)('%s → retryable timeout, posted once', ([, where]) =>
+    Effect.gen(function* () {
+      const crm = crmStalling(where);
+
+      const result = yield* deliver(client(crm.fetch), event());
+
+      expect(result).toMatchObject({
+        _tag: 'Left',
+        left: {
+          permanent: false,
+          reason: 'crm POST timed out after 10000ms',
+        },
+      });
+      expect(crm.posts()).toBe(1);
+    }),
+  );
+
+  it.effect('an answer one millisecond before the deadline is delivered', () =>
+    Effect.gen(function* () {
+      const crm = crmHeld();
+      const fiber = yield* Effect.fork(
+        Effect.either(makeCrmConnector(client(crm.fetch)).deliver(event())),
+      );
+      yield* TestClock.adjust(Duration.millis(deadlineMillis - 1));
+
+      crm.release();
+      const result = yield* Fiber.join(fiber);
+
+      expect(result).toMatchObject(DELIVERED);
+    }),
+  );
+
+  it.effect('an answer held until the deadline is a timeout', () =>
+    Effect.gen(function* () {
+      const crm = crmHeld();
+      const fiber = yield* Effect.fork(
+        Effect.either(makeCrmConnector(client(crm.fetch)).deliver(event())),
+      );
+      yield* TestClock.adjust(Duration.millis(deadlineMillis));
+
+      crm.release();
+      const result = yield* Fiber.join(fiber);
+
+      expect(result).toMatchObject(RETRYABLE);
+    }),
   );
 });

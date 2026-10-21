@@ -325,7 +325,10 @@ A second event sink beside SendPulse: kind `Crm = 1`, code `crm`, seeded **disab
 empty URL** by migration `0024_crm_sink`. The outbox fans each event out to one delivery per
 sink, so the CRM and SendPulse retry and fail independently. The CRM gets **every** event (no
 per-name opt-in, unlike SendPulse's `flows`), through its own rate limiter
-(`CRM_RATE_LIMIT_RPS`, default 10). Config is `{ url }` (the full ingest endpoint) plus the bearer
+(`CRM_RATE_LIMIT_RPS`, default 10), and every POST has one deadline covering connect, headers
+and the body read (`CRM_TIMEOUT_MS`, default 10 000; a zero, negative or unreadable value
+falls back to it). A timeout is retryable on the queue only, so a stalled CRM costs the single
+dispatcher one deadline per attempt. Config is `{ url }` (the full ingest endpoint) plus the bearer
 token in `auth.token`. The console refuses to enable the row while either is empty (422);
 an enabled row that still lacks one (the seed, a hand edit) fails every delivery
 retryably, never marks it delivered (§14.2). Connector: `modules/sinks/crm.ts`.
@@ -396,6 +399,7 @@ email are unchanged.
 | 401 | retryable (queue only): a token the operator has not fixed yet | same |
 | other 4xx (400, 403, 404, 422, …) bar 429 | permanent | permanent |
 | 429, 5xx, network error | retried in the call (4 backoff retries), then by the queue | same |
+| no complete answer within `CRM_TIMEOUT_MS` | retryable (queue only) | same |
 | enabled with empty URL or token | retryable (queue only), nothing sent | same |
 
 A delivery whose sink is no longer enabled when it runs (disabled or removed after the event

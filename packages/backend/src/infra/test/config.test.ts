@@ -32,3 +32,39 @@ describe('the CRM sink rate limit', () => {
     expect(config.sinks.crm.rateLimitRps).toBe(expectedConfiguredRps);
   });
 });
+
+// One deadline per CRM POST; the worker dispatches one message at a time, so "no deadline"
+// would let a stalled CRM hold every delivery. A bad value falls back to the default.
+const expectedCrmDefaultTimeoutMs = 10_000;
+const expectedConfiguredTimeoutMs = 2_500;
+
+describe('the CRM sink deadline', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('defaults when unset', () => {
+    const config = loadConfig();
+
+    expect(config.sinks.crm.timeoutMillis).toBe(expectedCrmDefaultTimeoutMs);
+  });
+
+  it.each([['0'], ['-3'], ['not-a-number'], ['']])(
+    'falls back to the default for %j',
+    (raw) => {
+      vi.stubEnv('CRM_TIMEOUT_MS', raw);
+
+      const config = loadConfig();
+
+      expect(config.sinks.crm.timeoutMillis).toBe(expectedCrmDefaultTimeoutMs);
+    },
+  );
+
+  it('takes a positive configured value', () => {
+    vi.stubEnv('CRM_TIMEOUT_MS', String(expectedConfiguredTimeoutMs));
+
+    const config = loadConfig();
+
+    expect(config.sinks.crm.timeoutMillis).toBe(expectedConfiguredTimeoutMs);
+  });
+});

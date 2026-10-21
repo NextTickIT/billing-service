@@ -15,7 +15,9 @@ import {
   type EffectE2eContext,
   type EffectScenario,
   expectRows,
+  holdRetries,
   registerHandlers,
+  runFor,
   withWorker,
 } from '@/modules/charge/test/e2e-harness.js';
 import { Outbox } from '@/modules/outbox/domain.js';
@@ -70,6 +72,12 @@ const answering =
       }),
     );
   };
+
+/** Headers, the first byte of a body, then silence: a CRM that hung mid-answer. */
+const stallingAfterHeaders: Handler = (_req, res) => {
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.write('{');
+};
 
 const enableCrmSink = (query: EffectE2eContext['query'], url: string) =>
   query(
@@ -197,7 +205,53 @@ const disabledSinkDeadLetters: EffectScenario = {
   },
 };
 
+/** A deadline short enough for the scenario; the property is the same at 10 s. */
+const expectedDeadlineMillis = 300;
+
+const withDeadline = (config: AppConfig): AppConfig => ({
+  ...config,
+  sinks: {
+    ...config.sinks,
+    crm: { ...config.sinks.crm, timeoutMillis: expectedDeadlineMillis },
+  },
+});
+
+const stalledBodyIsRetried: EffectScenario = {
+  name: 'crm sink: a CRM that sends headers and stalls the body times out into a queue retry, posted once',
+  run: async ({ config, query }) => {
+    const crm = await startCrmStub(stallingAfterHeaders);
+    try {
+      await enableCrmSink(query, crm.url);
+      await withWorker(withDeadline(config), async (run) => {
+        await run(publishSucceeded);
+        // A first backoff of ten minutes parks the retry, so the scenario reads exactly
+        // what one stalled attempt left behind.
+        await run(runFor(3, holdRetries));
+      });
+
+      await expectRows(query, [
+        [deliveryMessageSql('crm'), 'retry|1', 'one attempt, waiting to retry'],
+        [deliveryStatusSql('crm'), 'failed', 'recorded as failed meanwhile'],
+        [
+          `SELECT "lastError"->>'message' FROM event_deliveries WHERE sink = 'crm'`,
+          `crm: crm POST timed out after ${expectedDeadlineMillis.toString()}ms`,
+          'the delivery says it timed out',
+        ],
+        [
+          deliveryStatusSql('sendpulse'),
+          'delivered',
+          'the other sink is not held up',
+        ],
+      ]);
+      assert.equal(crm.posts(), 1, 'a timeout is not retried inside the call');
+    } finally {
+      await crm.close();
+    }
+  },
+};
+
 export const crmSinkScenarios: readonly EffectScenario[] = [
+  stalledBodyIsRetried,
   rejectedMoneyEventDeadLetters,
   validatedMoneyEventDelivers,
   disabledSinkDeadLetters,
