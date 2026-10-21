@@ -464,6 +464,23 @@ describe('crmBody', () => {
   });
 });
 
+describe('crmBody — the subject', () => {
+  it('keeps the envelope subject when the payload carries keys of the same name', () => {
+    const body = crmBody(
+      event({
+        aggregateId: 'pay_real',
+        correlationId: 'corr_real',
+        payload: { aggregateId: 'pay_spoofed', correlationId: 'corr_spoofed' },
+      }),
+    ) as { payload: Record<string, unknown> };
+
+    expect(body.payload).toMatchObject({
+      aggregate_id: 'pay_real',
+      correlation_id: 'corr_real',
+    });
+  });
+});
+
 const noLimit: RateLimiter = { take: Effect.void, limit: (effect) => effect };
 
 const deadlineMillis = 10_000;
@@ -615,11 +632,14 @@ describe('makeCrmConnector — an unreadable 2xx', () => {
 });
 
 describe('makeCrmConnector — HTTP status', () => {
+  // The answers are canned: these rows prove how the connector maps a status code, not why
+  // the CRM sends it. Which refusal a status stands for (a missing scope, a rejected
+  // payload) is the CRM's contract and is tested on that side.
   it.effect.each([
     ['400', 400],
-    ['403 (a token without the money_events scope)', 403],
+    ['403', 403],
     ['404', 404],
-    ['422 (a rejected money-kind payload)', 422],
+    ['422', 422],
   ] as const)('%s is permanent, posted once', ([, status]) =>
     Effect.gen(function* () {
       const crm = crmAnswering({ status, body: '{"error":"x"}' });
