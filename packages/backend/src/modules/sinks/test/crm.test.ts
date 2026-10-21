@@ -1,5 +1,9 @@
 import { describe, expect, it } from '@effect/vitest';
-import { EVENT_NAMES, type StoredEvent } from '@billing-service/shared';
+import {
+  CHARGE_KINDS,
+  EVENT_NAMES,
+  type StoredEvent,
+} from '@billing-service/shared';
 import { Duration, Effect, Fiber, TestClock } from 'effect';
 
 import type { RateLimiter } from '@/infra/rate-limiter.js';
@@ -826,4 +830,17 @@ describe('makeCrmConnector — the deadline', () => {
       expect(result).toMatchObject(RETRYABLE);
     }),
   );
+});
+
+// The CRM registry (guildmaster c8bd978d) accepts exactly these two values; any other is
+// stored `rejected`, which this connector dead-letters for every success kind. The union
+// is pinned here so a new value cannot ship before the CRM accepts it.
+const expectedCrmChargeKinds = ['scheduled', 'checkout'];
+
+describe('charge_kind', () => {
+  it('has exactly the values the CRM registry accepts', () => {
+    expect([...CHARGE_KINDS].sort()).toEqual(
+      [...expectedCrmChargeKinds].sort(),
+    );
+  });
 });
