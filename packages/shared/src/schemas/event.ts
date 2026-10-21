@@ -1,5 +1,6 @@
 import { Schema } from 'effect';
 
+import { ChargeKind } from '@/schemas/charge.js';
 import { CurrencySchema, Metadata } from '@/schemas/payment.js';
 
 /**
@@ -70,7 +71,10 @@ const succeededPayload = {
   currency: CurrencySchema,
   method: Schema.Int,
   period: Schema.String,
+  // The path that brought the charge in (`wayforpay_charge`, `_callback`, `_poller`, …).
+  // Not what started it: that is `chargeKind`.
   source: Schema.String,
+  chargeKind: ChargeKind,
   // ISO-8601 date of the next scheduled charge; null for a one-time purchase (never
   // renews). A string (not Schema.Date) to match the payload-date convention used by
   // `payment_deferred.newPeriodEnd` / `charge_retry_failed.nextRetryDate`.

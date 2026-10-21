@@ -30,6 +30,7 @@ const event = (id: string): DomainEvent => ({
     method: 0,
     period: 'P1M',
     source: 'test',
+    chargeKind: 'checkout',
     nextPaymentDate: '2026-02-01T00:00:00.000Z',
     periodStart: '2026-01-01T00:00:00.000Z',
     periodEnd: '2026-02-01T00:00:00.000Z',
