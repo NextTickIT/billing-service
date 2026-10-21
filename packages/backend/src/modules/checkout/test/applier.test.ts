@@ -226,6 +226,44 @@ it.effect(
   },
 );
 
+it.effect(
+  'a recurring match whose charge carries a settlement reports it, without reading the row',
+  () =>
+    // `unusedSubs` dies on any read: what the scheduler credited is the whole answer, and
+    // the row — possibly moved on by a defer since — is never consulted.
+    makeCheckoutApplier(unusedSubs, unusedCheckout)(
+      {
+        ...event,
+        settlement: {
+          periodStart: new Date('2026-02-01T00:00:00Z'),
+          periodEnd: new Date('2026-03-01T00:00:00Z'),
+          nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+          metadata: { planCode: 'half_year' },
+        },
+      },
+      {
+        matched: true,
+        kind: 'recurring',
+        subscriptionId: 'sub_x',
+        externalUserId: 'sp:1',
+        period: 'P1M',
+        method: 0,
+      },
+    ).pipe(
+      Effect.map((result) => {
+        expect(result).toEqual({
+          subscriptionId: 'sub_x',
+          created: false,
+          prolonged: false,
+          periodStart: new Date('2026-02-01T00:00:00Z'),
+          periodEnd: new Date('2026-03-01T00:00:00Z'),
+          nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+          metadata: { planCode: 'half_year' },
+        });
+      }),
+    ),
+);
+
 /** A past_due payment the owed card-change advances (only the read status matters). */
 const owingPayment: Payment = {
   id: 'pay_1',

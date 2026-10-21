@@ -349,6 +349,42 @@ it.effect(
 );
 
 it.effect(
+  'an approved charge is ingested with what the advance credited: window, next date, metadata',
+  () =>
+    Effect.gen(function* () {
+      const sub: Payment = { ...baseSub, metadata: { planCode: 'half_year' } };
+      const { deps, calls } = makeDeps(sub);
+
+      yield* tick(deps);
+
+      // Paid on 2026-03-01 for the month that began when the last one ended (2026-02-01).
+      expect(calls.ingested[0]?.settlement).toEqual({
+        periodStart: new Date('2026-02-01T00:00:00Z'),
+        periodEnd: new Date('2026-03-01T00:00:00Z'),
+        nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+        metadata: { planCode: 'half_year' },
+      });
+    }),
+);
+
+it.effect(
+  'an approved charge whose row vanished before the advance is ingested with no snapshot',
+  () =>
+    Effect.gen(function* () {
+      const { deps, calls } = makeDeps(baseSub, {
+        duringCharge: (rows) => {
+          rows.delete('sub-1');
+        },
+      });
+
+      yield* tick(deps);
+
+      expect(calls.ingested).toHaveLength(1);
+      expect(calls.ingested[0]).not.toHaveProperty('settlement');
+    }),
+);
+
+it.effect(
   'AC 4: stored renewal terms 5000/P4W charge 5000 and advance by P4W',
   () =>
     Effect.gen(function* () {
