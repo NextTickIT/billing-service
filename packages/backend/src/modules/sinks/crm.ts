@@ -109,13 +109,16 @@ const accepts = (name: StoredEvent['name'], status: SchemaStatus): boolean =>
 /**
  * A non-2xx status → how it is retried. A 401 is a token the operator has not fixed yet,
  * the same configuration gap as an empty token, so it waits on the queue rather than
- * dead-lettering every event until the fix; any other 4xx is the CRM refusing the event.
+ * dead-lettering every event until the fix. A 408 is a request timeout, a "send it again"
+ * by definition. Any other 4xx is the CRM refusing the event.
  */
+const RETRYABLE_4XX: ReadonlySet<number> = new Set([401, 408]);
+
 const retryForStatus = (status: number): Retry => {
   if (isTransientStatus(status)) {
     return 'inCall';
   }
-  if (status === 401) {
+  if (RETRYABLE_4XX.has(status)) {
     return 'queue';
   }
   return status >= 400 && status < 500 ? 'never' : 'queue';
