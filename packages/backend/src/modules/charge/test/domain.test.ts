@@ -71,6 +71,22 @@ const decodedCharge = (idemKey: string): Charge => ({
   payload: {},
 });
 
+/** The fake's answer to `orderSettledByAnotherCopy`: another succeeded row of the same
+ * order already matched. */
+const settledElsewhere = (
+  rows: ReadonlyMap<string, Charge>,
+  matchResults: ReadonlyMap<string, MatchOutcome>,
+  externalRef: string,
+  id: string,
+): boolean =>
+  [...rows].some(
+    ([otherId, other]) =>
+      otherId !== id &&
+      other.externalRef === externalRef &&
+      other.status === 'succeeded' &&
+      matchResults.get(otherId) === 'matched',
+  );
+
 const makeFakeRepo = () => {
   const incoming = new Map<string, string>();
   const eventsById = new Map<string, Charge>();
@@ -84,6 +100,10 @@ const makeFakeRepo = () => {
     transaction: (effect) => effect,
     lockMatchResult: (id) =>
       Effect.sync(() => matchResults.get(id) ?? 'unmatched'),
+    orderSettledByAnotherCopy: (externalRef, id) =>
+      Effect.sync(() =>
+        settledElsewhere(eventsById, matchResults, externalRef, id),
+      ),
     upsertIncomingCharge: (event) =>
       Effect.sync(() => {
         let id = incoming.get(event.idemKey);
@@ -1136,5 +1156,75 @@ it.effect(
       });
 
       expect(pub.events[0]?.payload).toMatchObject({ chargeKind: 'scheduled' });
+    }),
+);
+
+/** The pipeline as the worker builds it, around a recurring match of order `ref-1`. */
+const recurringHandler = (
+  repo: ChargeRepo,
+  publish: ReturnType<typeof recordingPublish>['publish'],
+) =>
+  handleChargeEvent({
+    repo,
+    matcher: matcherOf({
+      matched: true,
+      kind: 'recurring',
+      subscriptionId: 'sub_1',
+      externalUserId: 'sp:1',
+      period: 'P1M',
+      method: 0,
+    }),
+    applier: applierOf({
+      subscriptionId: 'sub_1',
+      created: false,
+      nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+      periodStart: new Date('2026-01-01T00:00:00Z'),
+      periodEnd: new Date('2026-02-01T00:00:00Z'),
+      metadata: null,
+    }),
+    publish,
+  });
+
+// One provider order reaches the pipeline twice: the scheduler's own copy and the
+// WayForPay callback, under different keys. One charge must be one payment and one event.
+it.effect(
+  'a second copy of an already settled scheduled order writes and publishes nothing',
+  () =>
+    Effect.gen(function* () {
+      const { repo, payments, matchResults } = makeFakeRepo();
+      const pub = recordingPublish();
+      const handle = recurringHandler(repo, pub.publish);
+      yield* handle(encodedPayload('w4p:ref-1|CHARGE|1700000000'));
+
+      yield* handle(encodedPayload('w4pcb:ref-1|Approved'));
+
+      expect(payments.size).toBe(1);
+      expect(pub.events.map((e) => e.id)).toEqual([
+        'evt_w4p:ref-1|CHARGE|1700000000:succeeded',
+      ]);
+      expect([...matchResults.values()]).toEqual(['matched', 'matched']);
+    }),
+);
+
+it.effect(
+  'a copy settles normally when the other copy of its order has not settled',
+  () =>
+    Effect.gen(function* () {
+      const { repo, payments } = makeFakeRepo();
+      const pub = recordingPublish();
+      // The other copy is on record but unmatched: it has written nothing yet.
+      yield* repo.upsertIncomingCharge(
+        decodedCharge('w4p:ref-1|CHARGE|1700000000'),
+      );
+
+      yield* recurringHandler(
+        repo,
+        pub.publish,
+      )(encodedPayload('w4pcb:ref-1|Approved'));
+
+      expect(payments.size).toBe(1);
+      expect(pub.events.map((e) => e.id)).toEqual([
+        'evt_w4pcb:ref-1|Approved:succeeded',
+      ]);
     }),
 );

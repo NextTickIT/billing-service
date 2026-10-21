@@ -195,7 +195,34 @@ before it starts, and runs in this order:
    `rejected`, 4xx) means the CRM would refuse real payments: stop, delete what was posted
    (step 4) and fix the CRM side.
 4. Delete the three test events through the CRM admin, by that `external_user_id`.
-5. Only then may the CRM owner turn the payments consumer switch on.
+5. Only then may the CRM owner turn the payments consumer switch on, and only once gate
+   (d) below is clean.
+
+(d) **No scheduled charge was ever booked twice.** Before the per-order guard
+(`recordSuccessOnce` in `charge/domain.ts`), one Approved token charge could reach the
+pipeline as two `charges` rows: the scheduler's own copy (`w4p:<ref>|CHARGE|<date>`) and the
+WayForPay callback for the same order (`w4pcb:<ref>|Approved`). Both settled, each with its
+own `recurring_payment_succeeded`. The B5 backfill would hand both to the CRM as two
+payments. Run on the production billing database before the CRM payments consumer is
+switched on:
+
+```sql
+-- orders with more than one succeeded copy, and how many success events they produced
+SELECT c."externalRef",
+       count(DISTINCT c.id)  AS copies,
+       count(e.id)           AS success_events,
+       string_agg(DISTINCT c.source, ', ') AS sources
+FROM charges c
+LEFT JOIN domain_events e
+  ON e."correlationId" = c."idemKey" AND e.name = 'recurring_payment_succeeded'
+WHERE c."externalRef" LIKE 'sub\_%' AND c.status = 'succeeded'
+GROUP BY c."externalRef"
+HAVING count(DISTINCT c.id) > 1;
+```
+
+Zero rows: nothing to do. Any row with `success_events` above 1 is a charge reported twice.
+Record the event ids in the deploy log. The CRM owner decides, before the switch, which one
+the CRM keeps; B5 must not re-post the other.
 
 ```sh
 curl -sS -X POST "$CRM_URL" \

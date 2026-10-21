@@ -78,6 +78,17 @@ export interface ChargeRepo {
   readonly lockMatchResult: (
     id: string,
   ) => Effect.Effect<MatchOutcome, SqlError.SqlError>;
+  /**
+   * Lock the order `externalRef` names until the surrounding transaction ends, then say
+   * whether a DIFFERENT charge row for it has already settled. One provider order can
+   * reach the pipeline more than once under different keys — the scheduler's own copy
+   * (`w4p:…|CHARGE|…`) and the WayForPay callback (`w4pcb:…`) — and each copy is its own
+   * `charges` row. A concurrent copy waits on the lock, then sees the first one's commit.
+   */
+  readonly orderSettledByAnotherCopy: (
+    externalRef: string,
+    id: string,
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
   readonly insertPayment: (
     input: NewPayment,
   ) => Effect.Effect<void, SqlError.SqlError>;
@@ -138,6 +149,21 @@ const lockMatchResult = (sql: SqlClient.SqlClient) => (id: string) =>
     Effect.flatMap(requireRow),
     Effect.map((row) => row.matchResult),
   );
+
+const orderSettledByAnotherCopy =
+  (sql: SqlClient.SqlClient) => (externalRef: string, id: string) =>
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`charge-order:${externalRef}`}))`.pipe(
+      Effect.andThen(
+        sql<{ readonly settled: boolean }>`
+          SELECT EXISTS (
+            SELECT 1 FROM charges
+            WHERE "externalRef" = ${externalRef} AND id <> ${id}
+              AND status = 'succeeded' AND "matchResult" = 'matched'
+          ) AS settled
+        `,
+      ),
+      Effect.map((rows) => rows[0]?.settled === true),
+    );
 
 const insertPayment = (sql: SqlClient.SqlClient) => (input: NewPayment) =>
   sql`
@@ -236,6 +262,7 @@ export const makeChargeRepo = (sql: SqlClient.SqlClient): ChargeRepo => ({
   upsertIncomingCharge: upsertIncomingCharge(sql),
   setMatchResult: setMatchResult(sql),
   lockMatchResult: lockMatchResult(sql),
+  orderSettledByAnotherCopy: orderSettledByAnotherCopy(sql),
   insertPayment: insertPayment(sql),
   upsertQuarantine: upsertQuarantine(sql),
   getIncomingChargeById: getIncomingChargeById(sql),
