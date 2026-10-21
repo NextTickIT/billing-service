@@ -55,17 +55,32 @@ rollback removes only their bookkeeping rows, plus the CRM sink row (step 4).
    next step, which records what is owed.
 
 2. Disable the CRM sink (console → Sinks → CRM → off) and **record the disable time (UTC)
-   in the deploy log**. From that moment no event gets a CRM delivery at all: publish fans
-   out only to enabled sinks. That covers the rest of this image's life and everything
-   58d80ef publishes until a roll-forward re-enables the sink. Those events have no
+   in the deploy log**. Soon after, no event gets a CRM delivery at all: publish fans out
+   only to enabled sinks. That covers the rest of this image's life and everything 58d80ef
+   publishes until a roll-forward re-enables the sink. Those events have no
    `sink = 'crm'` row, so no query over `event_deliveries` can list them. The B5 backfill
-   must re-post every event with `"occurredAt"` at or after the recorded disable time, up to
-   the moment the sink is enabled again.
+   must re-post every event whose **`domain_events."createdAt"`** (when billing stored it)
+   is at or after the recorded disable time, up to the moment the sink is enabled again.
+   Select by `createdAt`, never by `"occurredAt"`, which is the provider's time. A
+   quarantine an operator binds later, or a charge the poller catches up on, is published
+   inside the window with an `occurredAt` from long before it, and would be missed.
 
-   Separately, list the events that did fan out to the CRM and never arrived: deliveries
-   that failed or dead-lettered, and any still pending from the window between the drain
-   and the switch. Record their ids in the deploy log; B5 re-posts these too. This query
-   covers only deliveries that exist.
+   ```sql
+   SELECT id, name, "occurredAt", "createdAt"
+   FROM domain_events
+   WHERE "createdAt" >= :disabled_at   -- and < the re-enable time, once known
+   ORDER BY "createdAt";
+   ```
+
+   **Wait out the sink cache before the next query.** Every process caches the sink list
+   for `SINKS_CACHE_TTL_MS` (default 10 s), so for up to that long after the switch an
+   event can still fan out to the CRM. Its delivery then fails because the sink is off.
+   Wait at least the cache TTL (say 30 s), then list the events that fanned out to the CRM
+   and never arrived: deliveries that failed or dead-lettered, any still pending from the
+   window between the drain and the switch, and those from the cache window. Record their
+   ids in the deploy log; B5 re-posts these too. This query covers only deliveries that
+   exist, so run it **after** the wait, not before the switch. An event can be on both
+   lists; the CRM dedupes on the event `id`.
 
    ```sql
    SELECT d."eventId", d.status, d."lastError"->>'message' AS error
@@ -249,13 +264,11 @@ change appends its `message_status_events` row in the same statement (docs/09), 
 query and hand the event ids to the B5 backfill, which re-posts them from outside this repo.
 That query covers only events that fanned out to the CRM. If the sink was switched off
 while the fix was made, the events published while it was off have no CRM delivery row:
-record the off and on times, and have B5 re-post every event with `"occurredAt"` in that
-window as well.
+record the off and on times, and have B5 re-post every event whose
+`domain_events."createdAt"` falls in that window as well (§2 step 2, including the wait for
+the sink cache).
 
-The backfill re-posts the events as they are stored. Any event stored before `chargeKind`
-shipped (412f876) has no `charge_kind`. That is expected: the CRM registry takes the field
-as optional and stores such an event `validated`, and analytics falls back to `source` when
-the field is absent.
+What B5 must send is in §9.
 
 ## 8. Accepted risk: a late remap retry can undo a revert
 
@@ -270,4 +283,36 @@ called by the relay) stays on the CRM's `ingest` path. It moves
 the payments and open sessions to the new id and does not re-fire events (`refireEvents`
 is not set, so no `external_user_id_changed` goes out; docs/31). A repeated rename moves
 data and sends nothing to any sink.
+
+## 9. What the B5 backfill must send
+
+B5 (the history backfill; not built yet, and not in this repo) re-posts stored
+`domain_events` to the CRM in the docs/21 §14.1 dialect. Three rules come from this release:
+
+1. **Select windows by `domain_events."createdAt"`**, never by `"occurredAt"` (§2 step 2).
+2. **Send `charge_kind` on every success event**: `initial_payment_succeeded`,
+   `recurring_payment_succeeded` and `one_time_purchase_succeeded`. Analytics reads
+   `charge_kind` directly. It has no `source` fallback any more, and its derive run fails
+   on a billing success without the field. An event stored before `chargeKind` shipped
+   (412f876) has none in its payload, so B5 derives it from the order reference, with the
+   same rule billing applies to a bound charge (`boundChargeKind`, `charge/domain.ts`):
+   reference starting `sub_` or containing `_WFPREG-` → `scheduled`; anything else →
+   `checkout`. The reference is the `externalRef` of the charge the event came from. A
+   success event's `correlationId` is that charge's `idemKey`:
+
+   ```sql
+   SELECT e.id, e.name, c."externalRef",
+          CASE WHEN c."externalRef" LIKE 'sub\_%' OR c."externalRef" LIKE '%\_WFPREG-%'
+               THEN 'scheduled' ELSE 'checkout' END AS charge_kind
+   FROM domain_events e
+   JOIN charges c ON c."idemKey" = e."correlationId"
+   WHERE e.name IN ('initial_payment_succeeded', 'recurring_payment_succeeded',
+                    'one_time_purchase_succeeded')
+     AND NOT (e.payload ? 'chargeKind');
+   ```
+
+   An event that already carries `chargeKind` is sent as stored. A success event with no
+   matching `charges` row would be a defect. Stop and report it; do not guess.
+3. **Skip the second event of a doubled charge** that §7 gate (d) found. Re-post only the
+   one the CRM owner chose to keep.
 
