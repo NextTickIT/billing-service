@@ -114,9 +114,10 @@ export type SendPulseConfig = Schema.Schema.Type<typeof SendPulseConfig>;
  * record and wants EVERY event. Making it opt-in per event would mean an event we add
  * later silently never reaches the one consumer whose job is to have all of them.
  *
- * `url` is the full ingest endpoint. Empty disables delivery even if the row is enabled —
- * the seeded row has no URL, so turning the sink on before pointing it somewhere cannot
- * start dead-lettering every event.
+ * `url` is the full ingest endpoint. The seeded row has none. The console refuses to enable
+ * the sink while the URL or the token is empty (422); a row enabled without one anyway (hand
+ * SQL) fails every delivery retryably, so each event dead-letters after the queue's attempts
+ * — never a silent success (docs/21 §14.2).
  */
 export const CrmConfig = Schema.Struct({
   url: Schema.String,
