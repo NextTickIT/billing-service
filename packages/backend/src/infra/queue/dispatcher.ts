@@ -10,6 +10,7 @@ import {
 import {
   decideOutcome,
   describeError,
+  isPermanentFailure,
   type RetryConfig,
 } from '@/infra/queue/policy.js';
 import type { TaskHandler } from '@/infra/task-registry.js';
@@ -50,11 +51,11 @@ const processOne = (
     const exit = yield* Effect.exit(handler(message.payload));
     const nowMillis = yield* Clock.currentTimeMillis;
     const failed = Exit.isFailure(exit);
-    const failure = Exit.isFailure(exit)
-      ? describeError(Cause.squash(exit.cause))
-      : null;
+    const squashed = Exit.isFailure(exit) ? Cause.squash(exit.cause) : null;
+    const failure = squashed === null ? null : describeError(squashed);
+    const permanent = isPermanentFailure(squashed);
     const outcome = decideOutcome(
-      { failed, attemptCount: message.attemptCount },
+      { failed, attemptCount: message.attemptCount, permanent },
       nowMillis,
       options.retry,
     );
@@ -75,7 +76,9 @@ const processOne = (
     // than at warn among the ordinary retry noise.
     if (outcome.status === 'fail') {
       yield* Effect.logError(
-        'DEAD_LETTER queue message exhausted its retries',
+        permanent
+          ? 'DEAD_LETTER queue message failed permanently'
+          : 'DEAD_LETTER queue message exhausted its retries',
       ).pipe(
         Effect.annotateLogs({
           messageId: message.id,

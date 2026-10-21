@@ -5,6 +5,7 @@ import {
   decideOutcome,
   defaultRetryConfig,
   describeError,
+  isPermanentFailure,
   type RetryConfig,
 } from '@/infra/queue/policy.js';
 
@@ -87,6 +88,53 @@ describe('decideOutcome', () => {
       decideOutcome({ failed: true, attemptCount: 4 }, now, defaultRetryConfig)
         .status,
     ).toBe('retry');
+  });
+});
+
+describe('a permanent failure', () => {
+  const now = 1_000_000;
+
+  test('is terminal on its first attempt, with attempts left on the ladder', () => {
+    const outcome = decideOutcome(
+      { failed: true, attemptCount: 1, permanent: true },
+      now,
+      config,
+    );
+
+    expect(outcome).toEqual({ status: 'fail', retryAt: null, finished: true });
+  });
+
+  test('a failure not marked permanent still retries on its first attempt', () => {
+    const outcome = decideOutcome(
+      { failed: true, attemptCount: 1, permanent: false },
+      now,
+      config,
+    );
+
+    expect(outcome.status).toBe('retry');
+  });
+
+  test('does not turn a success into a failure', () => {
+    const outcome = decideOutcome(
+      { failed: false, attemptCount: 1, permanent: true },
+      now,
+      config,
+    );
+
+    expect(outcome.status).toBe('success');
+  });
+});
+
+describe('isPermanentFailure', () => {
+  test.each([
+    ['a value carrying permanent: true', { permanent: true }, true],
+    ['a value carrying permanent: false', { permanent: false }, false],
+    ['a value without the flag', { _tag: 'SinkError' }, false],
+    ['a truthy non-boolean flag', { permanent: 'yes' }, false],
+    ['null', null, false],
+    ['a string', 'permanent', false],
+  ])('%s → %s', (_label, error, expected) => {
+    expect(isPermanentFailure(error)).toBe(expected);
   });
 });
 

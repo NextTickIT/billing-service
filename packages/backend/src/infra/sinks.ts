@@ -21,6 +21,12 @@ export class SinkError extends Data.TaggedError('SinkError')<{
    */
   readonly message?: string;
   readonly cause?: unknown;
+  /**
+   * The receiver will never accept this delivery (it refused the payload, or the sink is
+   * gone), so the queue dead-letters it on this attempt instead of re-sending
+   * (`isPermanentFailure`). Absent means the queue's normal retry ladder.
+   */
+  readonly permanent?: boolean;
 }> {}
 
 export interface SinkConnector {
