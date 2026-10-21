@@ -111,8 +111,10 @@ export type SendPulseConfig = Schema.Schema.Type<typeof SendPulseConfig>;
 /**
  * CRM config: just where to POST. No flow map — unlike SendPulse, which runs a chosen
  * automation per event and so needs an explicit opt-in per name, the CRM is the system of
- * record and wants EVERY event. Making it opt-in per event would mean an event we add
- * later silently never reaches the one consumer whose job is to have all of them.
+ * record and wants every event. Making it opt-in per event would mean an event we add
+ * later silently never reaches the one consumer whose job is to have all of them. The
+ * exception is a short deny-list in the connector (`CRM_SKIPPED_KINDS`: an unfixed,
+ * quarantined payment), docs/21 §14.2.
  *
  * `url` is the full ingest endpoint. The seeded row has none. The console refuses to enable
  * the sink while the URL or the token is empty (422); a row enabled without one anyway (hand

@@ -6,10 +6,15 @@ import {
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
+import { SqlClient } from '@effect/sql';
 import type { DomainEvent } from '@billing-service/shared';
 import { Effect } from 'effect';
 
 import type { AppConfig } from '@/config.js';
+import { enqueue } from '@/infra/queue/store.js';
+import { PAYMENT_REBIND } from '@/modules/charge/contracts.js';
+import { makeChargeRepo } from '@/modules/charge/data-access.js';
+import { ChargePipeline } from '@/modules/charge/domain.js';
 import {
   drain,
   type EffectE2eContext,
@@ -35,13 +40,27 @@ interface CrmStub {
   readonly url: string;
   /** How many POSTs reached the stub. */
   readonly posts: () => number;
+  /** `name|charge_kind` of every body received in full, in arrival order. */
+  readonly received: () => readonly string[];
   readonly close: () => Promise<void>;
 }
 
 const startCrmStub = async (handler: Handler): Promise<CrmStub> => {
   let posts = 0;
+  const received: string[] = [];
   const server = createServer((req, res) => {
     posts += 1;
+    let raw = '';
+    req.on('data', (chunk: Buffer) => {
+      raw += chunk.toString();
+    });
+    req.on('end', () => {
+      const body = JSON.parse(raw) as {
+        name: string;
+        payload: { charge_kind?: string };
+      };
+      received.push(`${body.name}|${body.payload.charge_kind ?? ''}`);
+    });
     handler(req, res);
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -49,6 +68,7 @@ const startCrmStub = async (handler: Handler): Promise<CrmStub> => {
   return {
     url: `http://127.0.0.1:${port.toString()}/api/public/v1/events`,
     posts: () => posts,
+    received: () => received,
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();
@@ -251,7 +271,84 @@ const stalledBodyIsRetried: EffectScenario = {
   },
 };
 
+/**
+ * Owner decision 2026-10-21: a quarantined (unfixed) payment never reaches the CRM; once an
+ * operator binds it, its success event does. A WayForPay-managed regular payment of the
+ * migration tail is the typical quarantine, so the bound event is `scheduled`.
+ */
+const quarantineLegacyCharge = Effect.gen(function* () {
+  yield* registerHandlers;
+  yield* (yield* ChargePipeline).ingest({
+    source: 'wayforpay_poller',
+    idemKey: 'w4p:ord_1712_WFPREG-48213-7|CHARGE|1700000000',
+    externalRef: 'ord_1712_WFPREG-48213-7',
+    externalUserId: null,
+    amount: 30000,
+    currency: 0,
+    status: 'succeeded',
+    occurredAt: new Date('2026-03-01T10:00:00Z'),
+    payload: {},
+  });
+  yield* drain;
+});
+
+/** The operator's bind, as the quarantine route enqueues it. */
+const bindIt = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const open = yield* makeChargeRepo(sql).listOpenQuarantine();
+  const record = open[0];
+  if (record === undefined) {
+    return yield* Effect.die('the charge was not quarantined');
+  }
+  yield* enqueue(sql)({
+    messageType: PAYMENT_REBIND,
+    idemKey: `rebind:${record.quarantineId}`,
+    payload: {
+      incomingEventId: record.incomingEventId,
+      quarantineId: record.quarantineId,
+      externalUserId: 'sp:bound-crm',
+      subscriptionId: null,
+      period: 'P1M',
+      method: 0,
+    },
+  });
+  yield* drain;
+});
+
+const quarantineSkippedBindSent: EffectScenario = {
+  name: 'crm sink: a quarantined payment is never posted; once bound, its success event is posted exactly once (scheduled)',
+  run: async ({ config, query }) => {
+    const crm = await startCrmStub(answering('validated'));
+    try {
+      await enableCrmSink(query, crm.url);
+      await withWorker(config, async (run) => {
+        await run(quarantineLegacyCharge);
+
+        assert.equal(crm.posts(), 0, 'nothing posted for the quarantine');
+        await expectRows(query, [
+          [
+            `SELECT d.status FROM event_deliveries d JOIN domain_events e ON e.id = d."eventId" WHERE d.sink = 'crm' AND e.name = 'unknown_payment_quarantined'`,
+            'delivered',
+            'the quarantine delivery is closed without a request',
+          ],
+        ]);
+
+        await run(bindIt);
+
+        assert.deepEqual(
+          crm.received(),
+          ['recurring_payment_succeeded|scheduled'],
+          'exactly one POST: the bound success event',
+        );
+      });
+    } finally {
+      await crm.close();
+    }
+  },
+};
+
 export const crmSinkScenarios: readonly EffectScenario[] = [
+  quarantineSkippedBindSent,
   stalledBodyIsRetried,
   rejectedMoneyEventDeadLetters,
   validatedMoneyEventDelivers,
