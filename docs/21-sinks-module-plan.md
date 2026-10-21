@@ -327,8 +327,10 @@ sink, so the CRM and SendPulse retry and fail independently. The CRM gets **ever
 per-name opt-in, unlike SendPulse's `flows`), through its own rate limiter
 (`CRM_RATE_LIMIT_RPS`, default 10), and every POST has one deadline covering connect, headers
 and the body read (`CRM_TIMEOUT_MS`, default 10 000; a zero, negative or unreadable value
-falls back to it). A timeout is retryable on the queue only, so a stalled CRM costs the single
-dispatcher one deadline per attempt. Config is `{ url }` (the full ingest endpoint) plus the bearer
+falls back to it). The connector never retries inside the call: each delivery attempt is
+one POST, and every retryable failure (a timeout included) goes back to the queue's ladder.
+The worker dispatches one message at a time, so a CRM that is down or stalled costs the
+dispatcher at most one deadline per attempt. Config is `{ url }` (the full ingest endpoint) plus the bearer
 token in `auth.token`. The console refuses to enable the row while either is empty (422);
 an enabled row that still lacks one (the seed, a hand edit) fails every delivery
 retryably, never marks it delivered (§14.2). Connector: `modules/sinks/crm.ts`.
@@ -409,7 +411,7 @@ marked failed.
 | 2xx, body not `{status:'ok', event_id, schema_status}` | retryable (queue only) | retryable (queue only) |
 | 401, 408 | retryable (queue only): a token the operator has not fixed yet; a request timeout | same |
 | other 4xx (400, 403, 404, 422, …) bar 408 and 429 | permanent | permanent |
-| 429, 5xx, network error | retried in the call (4 backoff retries), then by the queue | same |
+| 429, 5xx, network error | retryable (queue only) | same |
 | no complete answer within `CRM_TIMEOUT_MS` | retryable (queue only) | same |
 | enabled with empty URL or token | retryable (queue only), nothing sent | same |
 
