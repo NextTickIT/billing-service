@@ -36,6 +36,7 @@ import {
   captureLogs,
   type Check,
   DAY,
+  drain,
   type EffectE2eContext,
   type EffectScenario,
   expectRows,
@@ -1064,7 +1065,9 @@ const driveT33 = Effect.gen(function* () {
   yield* pipeline.ingest(whitepay('chk_t33b', 'succeeded'));
   yield* pipeline.ingest(whitepay('chk_t33c', 'succeeded'));
   yield* pipeline.ingest(whitepay('chk_t33d', 'failed'));
-  yield* runFor(2);
+  // Until the queue is empty, not for a fixed window: chk_t33d is ingested last, and under
+  // load two seconds ended the dispatcher before its decline was processed.
+  yield* drain;
   return ids;
 });
 
