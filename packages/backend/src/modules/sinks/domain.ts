@@ -39,6 +39,7 @@ export interface ConnectorDeps {
   /** The CRM's own limiter — a separate budget, so a CRM backlog cannot throttle the
    * customer-facing SendPulse deliveries sharing this process. */
   readonly crmRateLimiter: RateLimiter;
+  readonly crmTimeoutMillis: number;
 }
 
 const emailConnector = (
@@ -93,6 +94,7 @@ const buildConnector = (
         url: sink.config.url,
         fetch: deps.fetch,
         rateLimiter: deps.crmRateLimiter,
+        timeoutMillis: deps.crmTimeoutMillis,
       });
     case SinkKind.Email:
       return emailConnector(sink, deps);

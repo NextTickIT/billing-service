@@ -1,5 +1,5 @@
 import type { StoredEvent } from '@billing-service/shared';
-import { Effect, Either, Schema } from 'effect';
+import { Duration, Effect, Either, Schema } from 'effect';
 
 import { isTransientStatus, retryTransient } from '@/infra/http/retry.js';
 import type { RateLimiter } from '@/infra/rate-limiter.js';
@@ -37,12 +37,16 @@ export interface CrmClient {
   readonly url: string;
   readonly fetch: FetchLike;
   readonly rateLimiter: RateLimiter;
+  /** One deadline per POST, covering connect, headers and the body read. */
+  readonly timeoutMillis: number;
 }
 
 /**
  * How a failed POST is retried.
  * - `inCall`: a blip (network, 429, 5xx) — retried here with backoff, then by the queue.
- * - `queue`: worth asking again later, not right now — the queue's ladder only.
+ * - `queue`: worth asking again later, not right now — the queue's ladder only. A timeout
+ *   is one: each in-call retry of a stalled CRM would hold the single dispatcher for
+ *   another full deadline.
  * - `never`: the CRM refused the event; re-sending the same body cannot change that, so it
  *   dead-letters on this attempt.
  */
@@ -165,6 +169,8 @@ const post = (
           body: JSON.stringify(crmBody(event)),
           signal,
         })
+        // The body is read inside the same promise, so it is under the same deadline: a
+        // CRM that sends headers and then stalls must not hold the dispatcher.
         .then(async (r) => ({
           ok: r.ok,
           status: r.status,
@@ -175,7 +181,16 @@ const post = (
       message: 'crm network error',
       cause,
     }),
-  });
+  }).pipe(
+    // On the deadline the fiber is interrupted, which aborts `signal` and so the request.
+    Effect.timeoutFail({
+      duration: Duration.millis(client.timeoutMillis),
+      onTimeout: (): CrmFail => ({
+        retry: 'queue',
+        message: `crm POST timed out after ${client.timeoutMillis.toString()}ms`,
+      }),
+    }),
+  );
 
 const attempt = (
   client: CrmClient,
