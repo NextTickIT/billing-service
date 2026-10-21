@@ -351,6 +351,47 @@ async function idempotentPaymentOps(
   assert.equal(advancedOnce, 't', 'currentPeriodEnd advanced exactly once');
 }
 
+const putCrmSink = (baseUrl: string, cookie: string, body: unknown): Request =>
+  new Request(`${baseUrl}/api/sinks/crm`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify(body),
+  });
+
+/**
+ * The seeded CRM row has no URL and no token. Enabling it as is used to be accepted, and
+ * every event was then marked delivered without being sent. The console now answers 422
+ * and writes nothing; with both filled the same request enables it.
+ */
+async function crmSinkEnableGate(
+  baseUrl: string,
+  query: (sql: string) => Promise<string>,
+): Promise<void> {
+  const bff = makeBff(await loadBffHandler(), baseUrl);
+  const cookie = await seedOperatorCookie(baseUrl, bff);
+  const rowSql = `SELECT enabled || '|' || (config->>'url') || '|' || (auth->>'token') FROM sinks WHERE kind = 1`;
+
+  const refused = await bff(putCrmSink(baseUrl, cookie, { enabled: true }));
+
+  assert.equal(refused.status, 422, 'enabling the bare seeded row → 422');
+  assert.equal((await query(rowSql)).trim(), 'false||', 'nothing written');
+
+  const accepted = await bff(
+    putCrmSink(baseUrl, cookie, {
+      enabled: true,
+      config: { url: 'https://crm.example/api/public/v1/events' },
+      auth: { kind: 0, token: 'crm-token' },
+    }),
+  );
+
+  assert.equal(accepted.status, 200, 'with a url and a token → 200');
+  assert.equal(
+    (await query(rowSql)).trim(),
+    'true|https://crm.example/api/public/v1/events|crm-token',
+    'enabled with both stored',
+  );
+}
+
 export const edgeScenarios: readonly Scenario[] = [
   {
     name: 'BFF edge: full checkout→operator round-trip through the BFF handler',
@@ -370,6 +411,12 @@ export const edgeScenarios: readonly Scenario[] = [
     name: 'operator: same Idempotency-Key replays create + defer (no double apply)',
     run: async ({ baseUrl, query }) => {
       await idempotentPaymentOps(baseUrl, query);
+    },
+  },
+  {
+    name: 'operator: the CRM sink cannot be enabled without a URL and a token (422, nothing written)',
+    run: async ({ baseUrl, query }) => {
+      await crmSinkEnableGate(baseUrl, query);
     },
   },
   ...prolongScenarios,
