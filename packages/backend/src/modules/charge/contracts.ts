@@ -42,13 +42,16 @@ export type RebindPayload = Schema.Schema.Type<typeof RebindPayload>;
 
 /**
  * What a source already credited when it settled the charge before handing it over: the
- * window, the next charge date and the declaration the payment carried at that moment.
+ * period and method it charged, the window, the next charge date and the declaration the
+ * payment carried at that moment.
  * Only the scheduler settles first (it advances the payment, then ingests its own charge),
  * and the message can wait in the queue while the row moves on — a defer, an operator
  * edit, the next renewal. The success event reports this snapshot, not the row as it is
  * when the message is processed.
  */
 export const Settlement = Schema.Struct({
+  period: Schema.String,
+  method: Schema.Int,
   periodStart: Schema.Date,
   periodEnd: Schema.Date,
   nextPaymentDate: Schema.Date,

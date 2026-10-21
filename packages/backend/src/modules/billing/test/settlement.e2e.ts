@@ -69,13 +69,14 @@ const succeededField = (field: string) =>
   `SELECT payload->>'${field}' FROM domain_events WHERE name = 'recurring_payment_succeeded'`;
 
 const renewalReportsTheSettledWindow: EffectScenario = {
-  name: 'settlement snapshot: a renewal event reports the window and metadata the charge settled, though the row moved before the pipeline ran',
+  name: 'settlement snapshot: a renewal event reports the period, method, window and metadata the charge settled, though the row changed before the pipeline ran',
   run: ({ config, query }) =>
     withWorker(config, async (run) => {
       await run(seedDueAndCharge);
-      // A week's defer and a new declaration land while the charge message waits.
+      // While the charge message waits: a week's defer, a new declaration, and a plan and
+      // method change (P1M card → P3M crypto).
       await query(
-        `UPDATE payments SET "currentPeriodEnd" = '2026-02-08T00:00:00Z', "nextPaymentDate" = '2026-02-08T00:00:00Z', metadata = '{"planCode":"later"}'::jsonb`,
+        `UPDATE payments SET "currentPeriodEnd" = '2026-02-08T00:00:00Z', "nextPaymentDate" = '2026-02-08T00:00:00Z', metadata = '{"planCode":"later"}'::jsonb, period = 'P3M', method = 1`,
       );
       await run(drain);
 
@@ -94,6 +95,11 @@ const renewalReportsTheSettledWindow: EffectScenario = {
           succeededField('nextPaymentDate'),
           '2026-02-01T00:00:00.000Z',
           'the next charge as settled',
+        ],
+        [
+          `SELECT (payload->>'period') || '|' || (payload->>'method') FROM domain_events WHERE name = 'recurring_payment_succeeded'`,
+          'P1M|0',
+          'the period and method it was charged on, not the changed plan',
         ],
         [
           `SELECT payload->'metadata'->>'planCode' FROM domain_events WHERE name = 'recurring_payment_succeeded'`,

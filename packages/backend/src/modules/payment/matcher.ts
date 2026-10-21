@@ -35,13 +35,16 @@ export const makeRecurringMatcher =
         return { matched: false };
       }
       const sub = found.value;
+      // The terms the charge was made on: the scheduler's snapshot when it sent one, so a
+      // plan or method changed while the message waited cannot rewrite what was charged.
+      const charged = event.settlement ?? sub;
       return {
         matched: true,
         kind: 'recurring',
         subscriptionId: sub.id,
         externalUserId: sub.externalUserId,
-        period: sub.period,
-        method: sub.method,
+        period: charged.period,
+        method: charged.method,
         // The last declaration made for this payment, so a renewal event carries intent.
         metadata: sub.metadata,
       };
