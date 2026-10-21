@@ -212,6 +212,11 @@ change appends its `message_status_events` row in the same statement (docs/09), 
 `UPDATE` breaks that log. After the fix, list what the CRM lacks with the §2 step 2 query
 and hand the event ids to the B5 backfill, which re-posts them from outside this repo.
 
+The backfill re-posts the events as they are stored. Any event stored before `chargeKind`
+shipped (412f876) has no `charge_kind`. That is expected: the CRM registry takes the field
+as optional and stores such an event `validated`, and analytics falls back to `source` when
+the field is absent.
+
 ## 8. Accepted risk: a late remap retry can undo a revert
 
 Accepted by the owner on 2026-10-21. The CRM can remap a contact A→B and then revert it
