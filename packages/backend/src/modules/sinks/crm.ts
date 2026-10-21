@@ -74,10 +74,12 @@ export const crmBody = (event: StoredEvent): unknown =>
     correlationId: event.correlationId,
     externalUserId: event.externalUserId,
     aggregateId: event.aggregateId,
+    // The subject fields are spread LAST, so a payload key of the same name can never
+    // replace the envelope's subject: the CRM files the event under these two.
     payload: {
+      ...event.payload,
       aggregateId: event.aggregateId,
       correlationId: event.correlationId,
-      ...event.payload,
     },
   });
 
