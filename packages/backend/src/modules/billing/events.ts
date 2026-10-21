@@ -7,7 +7,10 @@ import type {
   RenewalFailedEvent,
 } from '@billing-service/shared';
 
+import { Option } from 'effect';
+
 import type { Charge } from '@/modules/charge/contracts.js';
+import type { AdvancedPeriod } from '@/modules/payment/domain.js';
 import type { W4pChargeResponse } from '@/modules/wayforpay/contracts.js';
 
 /**
@@ -44,6 +47,28 @@ export const chargeIncomingEvent = (
     payload: { ...response },
   };
 };
+
+/**
+ * The charge with what the advance credited, when it credited anything. None (the row was
+ * gone or no longer live under the lock) carries no snapshot, and the pipeline reads the
+ * row as before.
+ */
+export const withSettlement = (
+  charge: Charge,
+  advanced: Option.Option<AdvancedPeriod>,
+): Charge =>
+  Option.match(advanced, {
+    onNone: () => charge,
+    onSome: (period) => ({
+      ...charge,
+      settlement: {
+        periodStart: period.currentPeriodStart,
+        periodEnd: period.currentPeriodEnd,
+        nextPaymentDate: period.nextPaymentDate,
+        metadata: period.metadata,
+      },
+    }),
+  });
 
 export interface RetryFailure {
   readonly attempt: number;

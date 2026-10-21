@@ -22,6 +22,7 @@ import type { WayForPayClient } from '@/modules/wayforpay/client.js';
 import type { W4pChargeResponse } from '@/modules/wayforpay/contracts.js';
 import {
   chargeIncomingEvent,
+  withSettlement,
   chargeRetryFailed,
   type ManualCheckout,
   paymentManualRequired,
@@ -273,11 +274,14 @@ const recordApproved = (
           sub.period,
           now,
           isLive,
-        ).pipe(Effect.map(Option.isSome));
-        yield* deps.ingest(
-          chargeIncomingEvent(sub, orderReference, response, now),
         );
-        return advanced;
+        yield* deps.ingest(
+          withSettlement(
+            chargeIncomingEvent(sub, orderReference, response, now),
+            advanced,
+          ),
+        );
+        return Option.isSome(advanced);
       }),
     )
     .pipe(

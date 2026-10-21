@@ -758,10 +758,22 @@ export const makeCheckoutApplier =
     }
     if (match.kind === 'recurring' && match.subscriptionId !== null) {
       const subscriptionId = match.subscriptionId;
-      // A recurring match already has its payment (the scheduler advanced it before the
-      // incoming event re-entered the pipeline), so its own row IS the prolongation this
-      // charge bought — and its stored metadata is the last intent the buyer declared,
-      // which is what a renewal must report rather than nothing.
+      const settled = event.settlement;
+      if (settled !== undefined) {
+        // The scheduler credited this charge before enqueuing it and said what it
+        // credited. The row may have moved on since (a defer, the next renewal); the
+        // event reports what THIS charge bought.
+        return Effect.succeed({
+          subscriptionId,
+          created: false,
+          prolonged: false,
+          ...settled,
+        });
+      }
+      // No snapshot (the poller saw the charge first, or the message predates the field):
+      // the scheduler advanced the row before the event re-entered the pipeline, so the
+      // row is the closest record of the prolongation — and its stored metadata is the
+      // last intent the buyer declared, which a renewal must report rather than nothing.
       return Effect.gen(function* () {
         const found = Option.getOrNull(
           yield* payments.findById(subscriptionId),
