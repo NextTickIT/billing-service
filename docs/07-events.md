@@ -13,9 +13,9 @@ kind (`checkout` → initial, `recurring` → renewal); see 22.
 
 | Event | When | Required payload fields |
 |-------|------|-------------------------|
-| `initial_payment_succeeded` | first checkout payment approved (match kind `checkout`) | external_user_id, amount, currency, method, period, source |
-| `recurring_payment_succeeded` | a renewal charge approved (match kind `recurring`), incl. an operator-bound quarantine | external_user_id, amount, currency, method, period, source |
-| `one_time_purchase_succeeded` | a one-time (non-recurring) checkout approved — a single buy, never renewed (match kind `checkout`, session `recurring = false`) | external_user_id, amount, currency, method, period, source |
+| `initial_payment_succeeded` | first checkout payment approved (match kind `checkout`) | external_user_id, amount, currency, method, period, source, charge_kind |
+| `recurring_payment_succeeded` | a renewal charge approved (match kind `recurring`), incl. an operator-bound quarantine | external_user_id, amount, currency, method, period, source, charge_kind |
+| `one_time_purchase_succeeded` | a one-time (non-recurring) checkout approved — a single buy, never renewed (match kind `checkout`, session `recurring = false`) | external_user_id, amount, currency, method, period, source, charge_kind |
 | `initial_payment_failed` | first checkout payment **declined** for a known session — no retry ladder; the customer re-initiates checkout | external_user_id, amount, currency, method, period, reason, source |
 | `charge_retry_failed` | failed intermediate **recurring** charge attempt | external_user_id, attempt number, next retry date, provider reason |
 | `renewal_failed` | final failure of the **recurring** retry cycle (day 7) | external_user_id, reason |
@@ -27,6 +27,20 @@ kind (`checkout` → initial, `recurring` → renewal); see 22.
 | `card_change_succeeded` | a SendPulse-initiated card change tokenized/collected the new card (docs/23) | external_user_id, method |
 | `card_change_failed` | a card-change attempt was declined/errored (docs/23) | external_user_id, reason |
 | `unknown_payment_quarantined` | incoming charge went to quarantine | quarantine record reference |
+
+**`chargeKind`** (`charge_kind` on the CRM wire) on the three success events says what
+STARTED the charge (owner decision 2026-10-21): `scheduled` for billing's own renewal
+charge of the stored token, `checkout` for any payment through a checkout session (a first
+payment, a plain checkout, a manual-renewal link, a card change that moved money). It is
+the origin, not the path that settled the charge. The scheduler's own call, the WayForPay
+callback and the poller all carry the same orderReference, so a scheduled renewal is
+`scheduled` whichever of them brings it in, while `source` names that path. The pipeline
+sets it once from the match kind (`chargeKindOf` in `charge/domain.ts`): `recurring` (an
+order the scheduler minted, `sub_…`) → `scheduled`; `checkout` and `card_change` (a
+session) → `checkout`. So a manual renewal reports `recurring_payment_succeeded` with
+`chargeKind: checkout`. An operator-bound quarantine matched nothing, so its orderReference
+decides (`boundChargeKind`). A billing renewal order (`sub_…`) or a WayForPay-managed
+regular payment (`…_WFPREG-…`, docs/15) → `scheduled`; anything else → `checkout`.
 
 Recurring failures keep the two-event ladder (`charge_retry_failed` per attempt on days
 0/1/3/5/7, then `renewal_failed`); a first-payment failure is a **single** terminal

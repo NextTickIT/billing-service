@@ -2,6 +2,7 @@ import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
 import type {
   CardChangeFailedEvent,
+  ChargeKind,
   CardChangeSucceededEvent,
   DomainEvent,
   InitialPaymentFailedEvent,
@@ -19,6 +20,7 @@ import type { EnqueueInput, EnqueueResult } from '@/infra/queue/store.js';
 import {
   Charge,
   type Match,
+  type MatchKind,
   type RefusedCharge,
   type SettledCharge,
   settlementAnomaly,
@@ -35,6 +37,8 @@ import {
 } from '@/modules/charge/data-access.js';
 import { Outbox } from '@/modules/outbox/domain.js';
 import { paymentReactivated } from '@/modules/payment/cancel.js';
+import { PAYMENT_ORDER_PREFIX } from '@/modules/payment/matcher.js';
+import { WFP_REGULAR_MARKER } from '@/modules/wayforpay/contracts.js';
 
 /**
  * Charge pipeline (FR-007). A source `ingest`s a normalized charge onto the queue;
@@ -47,6 +51,30 @@ import { paymentReactivated } from '@/modules/payment/cancel.js';
 /** Deterministic event id from the source key, so replays dedupe in the outbox. */
 const eventId = (idemKey: string, suffix: string): string =>
   `evt_${idemKey}:${suffix}`;
+
+/**
+ * What started a matched charge (`ChargeKind`). The match kind is that origin: it is fixed
+ * by which record the charge's orderReference resolves to — an order the scheduler minted
+ * (`sub_<paymentId>_…`, the recurring matcher, `payment/matcher.ts`) or a checkout session
+ * (the checkout and card-change matchers, `checkout/domain.ts`). The scheduler's own call,
+ * the WayForPay callback and the poller all carry the same orderReference, so a scheduled
+ * renewal is `scheduled` whichever of them settles it, and a manual-renewal link — a
+ * checkout session — is `checkout` although it renews.
+ */
+export const chargeKindOf = (kind: MatchKind): ChargeKind =>
+  kind === 'recurring' ? 'scheduled' : 'checkout';
+
+/**
+ * The origin of a charge an operator binds by hand. It matched nothing, so there is no
+ * match kind; its orderReference is the only record left. One billing minted for a renewal
+ * (`sub_…`) or a WayForPay-managed regular payment of the migration tail (`…_WFPREG-…`,
+ * docs/15) was started by a schedule; anything else came through a checkout.
+ */
+export const boundChargeKind = (externalRef: string): ChargeKind =>
+  externalRef.startsWith(PAYMENT_ORDER_PREFIX) ||
+  externalRef.includes(WFP_REGULAR_MARKER)
+    ? 'scheduled'
+    : 'checkout';
 
 /** Shared success payload for the initial/recurring variants (docs/07). `nextPaymentDate`
  * is the next scheduled charge (null for a one-time purchase); `periodStart`/`periodEnd`
@@ -64,6 +92,7 @@ const succeededPayload = (
   method: match.method,
   period: match.period,
   source: event.source,
+  chargeKind: chargeKindOf(match.kind),
   nextPaymentDate: prolongation.nextPaymentDate?.toISOString() ?? null,
   periodStart: prolongation.periodStart?.toISOString() ?? null,
   periodEnd: prolongation.periodEnd?.toISOString() ?? null,
@@ -278,6 +307,7 @@ export const boundPaymentSucceeded = (
     method: bind.method,
     period: bind.period,
     source: event.source,
+    chargeKind: boundChargeKind(event.externalRef),
     // A bind reconciles a legacy/unknown payment: no scheduled charge, no known window,
     // and no checkout ever declared an intent for it.
     nextPaymentDate: null,

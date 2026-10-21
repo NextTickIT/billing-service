@@ -19,8 +19,10 @@ import {
 } from '@/modules/charge/contracts.js';
 import type { ChargeRepo, MatchOutcome } from '@/modules/charge/data-access.js';
 import {
+  boundChargeKind,
   cardChangeFailed,
   cardChangeSucceeded,
+  chargeKindOf,
   handleChargeEvent,
   ingest,
   initialPaymentFailed,
@@ -429,6 +431,8 @@ it('recurringPaymentSucceeded carries the docs/07 required payload fields', () =
     method: 1,
     period: 'P1M',
     source: 'test',
+    // A recurring match is billing's own renewal order: started by the schedule.
+    chargeKind: 'scheduled',
     nextPaymentDate: '2026-02-01T00:00:00.000Z',
     // The window the money bought, and the caller's own declaration echoed back.
     periodStart: '2026-01-01T00:00:00.000Z',
@@ -1063,5 +1067,74 @@ it.effect(
         'card_change_succeeded',
       ]);
       expect(h.matchResults.get('inc1')).toBe('matched');
+    }),
+);
+
+// What started the charge, never which path settled it (owner decision 2026-10-21).
+it.each([
+  [
+    'a renewal order billing minted (the recurring matcher)',
+    'recurring',
+    'scheduled',
+  ],
+  ['a checkout session', 'checkout', 'checkout'],
+  ['a card-change session', 'card_change', 'checkout'],
+] as const)('chargeKindOf: %s (%s) → %s', (_label, kind, expected) => {
+  expect(chargeKindOf(kind)).toBe(expected);
+});
+
+// A bound charge matched nothing, so its orderReference is the only record of its origin.
+it.each([
+  [
+    'billing’s own renewal order',
+    'sub_3f2a9c1e-0000-4000-8000-000000000001_1767225600000',
+    'scheduled',
+  ],
+  [
+    'a WayForPay-managed regular payment',
+    'ord_1712_WFPREG-48213-7',
+    'scheduled',
+  ],
+  [
+    'an invoice-style regular payment',
+    'invoice_1700000000_WFPREG-48213-2',
+    'scheduled',
+  ],
+  ['a checkout session reference', 'chk_8f1e2d', 'checkout'],
+  ['an unknown provider reference', 'order-2', 'checkout'],
+  ['a reference merely containing sub_ later', 'chk_sub_1', 'checkout'],
+] as const)(
+  'boundChargeKind: %s (%s) → %s',
+  (_label, externalRef, expected) => {
+    expect(boundChargeKind(externalRef)).toBe(expected);
+  },
+);
+
+it.effect(
+  'a bound charge reports the origin its orderReference shows: a WayForPay regular payment is scheduled',
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo();
+      const pub = recordingPublish();
+      const incId = yield* fake.repo.upsertIncomingCharge({
+        ...decodedCharge('k10'),
+        externalRef: 'ord_1712_WFPREG-48213-7',
+      });
+
+      yield* rebindFromPayload({
+        repo: fake.repo,
+        matcher: matcherOf({ matched: false }),
+        applier: noApplier,
+        publish: pub.publish,
+      })({
+        incomingEventId: incId,
+        quarantineId: 'q10',
+        externalUserId: 'sp:10',
+        subscriptionId: null,
+        period: 'P1M',
+        method: 0,
+      });
+
+      expect(pub.events[0]?.payload).toMatchObject({ chargeKind: 'scheduled' });
     }),
 );

@@ -351,6 +351,8 @@ retryably, never marks it delivered (§14.2). Connector: `modules/sinks/crm.ts`.
     "aggregate_id": "pay_…",
     "correlation_id": "w4pcb:pay_…|Approved",
     "amount": 150000,
+    "source": "wayforpay_callback",
+    "charge_kind": "scheduled",
     "next_payment_date": "2026-11-20T09:00:00.000Z",
     "metadata": { "planCode": "half_year" }
   }
@@ -373,6 +375,10 @@ retryably, never marks it delivered (§14.2). Connector: `modules/sinks/crm.ts`.
 - **No `*_formatted` twins** (those exist only for SendPulse flows that drop a value into a
   sentence).
 - `external_user_id` is null for `unknown_payment_quarantined`, as on every sink.
+- **`charge_kind`** (`scheduled` | `checkout`) rides in the payload of the three success
+  kinds: what started the charge, not the path that settled it (`source` is that path). The
+  example above is a scheduled renewal that the WayForPay callback brought in. docs/07 has
+  the rule. The CRM registry takes it as an optional field.
 
 The CRM side pins the same shape in guildmaster
 `packages/contract/src/crmEvents.billingWire.test.ts`; billing pins it in

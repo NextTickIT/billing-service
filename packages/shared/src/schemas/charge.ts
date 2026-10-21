@@ -19,6 +19,21 @@ export const ChargeStatus = Schema.Literal(...CHARGE_STATUSES);
 export type ChargeStatus = Schema.Schema.Type<typeof ChargeStatus>;
 
 /**
+ * What STARTED a successful charge, reported on every success event (owner decision
+ * 2026-10-21): `scheduled` — billing's own renewal charge of the stored token (the
+ * scheduler's `sub_…` order, or a WayForPay-managed regular payment of the migration
+ * tail); `checkout` — a payment through a checkout session (a first payment, a plain
+ * checkout, a manual-renewal link, a card change). It is the origin, never the path that
+ * settled it: a scheduled charge stays `scheduled` whether the scheduler's own call, the
+ * provider callback or the poller brought it in.
+ */
+export const CHARGE_KINDS = ['scheduled', 'checkout'] as const;
+
+export const ChargeKind = Schema.Literal(...CHARGE_KINDS);
+
+export type ChargeKind = Schema.Schema.Type<typeof ChargeKind>;
+
+/**
  * GET /api/quarantine response item: an open quarantine row joined with its
  * incoming charge (the operator queue view). `quarantineId` is the
  * quarantine_records.id used in subsequent bind calls.
