@@ -1,7 +1,7 @@
 import type { StoredEvent } from '@billing-service/shared';
 import { Duration, Effect, Either, Schema } from 'effect';
 
-import { isTransientStatus, retryTransient } from '@/infra/http/retry.js';
+import { isTransientStatus } from '@/infra/http/retry.js';
 import type { RateLimiter } from '@/infra/rate-limiter.js';
 import { SinkError, type SinkConnector } from '@/infra/sinks.js';
 import type { FetchLike } from '@/modules/sinks/sendpulse.js';
@@ -42,15 +42,16 @@ export interface CrmClient {
 }
 
 /**
- * How a failed POST is retried.
- * - `inCall`: a blip (network, 429, 5xx) — retried here with backoff, then by the queue.
- * - `queue`: worth asking again later, not right now — the queue's ladder only. A timeout
- *   is one: each in-call retry of a stalled CRM would hold the single dispatcher for
- *   another full deadline.
+ * How a failed POST is retried. There is no retry inside the call: the worker dispatches
+ * one message at a time, so in-call backoff (and a deadline per retry) against a CRM that
+ * is down held every other delivery behind it for about a minute per message. Each
+ * delivery attempt is one bounded POST; the queue's ladder does the retrying.
+ * - `queue`: worth asking again — a blip (network, 429, 5xx), a timeout, a 401 or 408, an
+ *   unreadable 2xx, a missing URL or token.
  * - `never`: the CRM refused the event; re-sending the same body cannot change that, so it
  *   dead-letters on this attempt.
  */
-type Retry = 'inCall' | 'queue' | 'never';
+type Retry = 'queue' | 'never';
 
 interface CrmFail {
   readonly retry: Retry;
@@ -114,15 +115,13 @@ const accepts = (name: StoredEvent['name'], status: SchemaStatus): boolean =>
  */
 const RETRYABLE_4XX: ReadonlySet<number> = new Set([401, 408]);
 
-const retryForStatus = (status: number): Retry => {
-  if (isTransientStatus(status)) {
-    return 'inCall';
-  }
-  if (RETRYABLE_4XX.has(status)) {
-    return 'queue';
-  }
-  return status >= 400 && status < 500 ? 'never' : 'queue';
-};
+const retryForStatus = (status: number): Retry =>
+  isTransientStatus(status) ||
+  RETRYABLE_4XX.has(status) ||
+  status < 400 ||
+  status >= 500
+    ? 'queue'
+    : 'never';
 
 /** Judge a 2xx body against the event it acknowledges. */
 const judgeAck = (
@@ -180,7 +179,7 @@ const post = (
           raw: await r.text(),
         })),
     catch: (cause): CrmFail => ({
-      retry: 'inCall',
+      retry: 'queue',
       message: 'crm network error',
       cause,
     }),
@@ -235,9 +234,7 @@ export const makeCrmConnector = (client: CrmClient): SinkConnector => ({
       );
     }
     return client.rateLimiter
-      .limit(
-        retryTransient(attempt(client, event), (e) => e.retry === 'inCall'),
-      )
+      .limit(attempt(client, event))
       .pipe(Effect.mapError(toSinkError));
   },
 });

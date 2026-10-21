@@ -523,9 +523,8 @@ const client = (
 });
 
 /**
- * Deliver once and settle every in-call backoff: the connector's retries sleep on the
- * clock, so the delivery runs in a fiber while the test clock is moved past the longest
- * schedule (1+2+4+8 s plus jitter).
+ * Deliver once. The delivery runs in a fiber while the test clock is moved a minute on, so
+ * a connector that slept — an in-call backoff, a deadline — settles instead of hanging.
  */
 const deliver = (crm: CrmClient, e: StoredEvent) =>
   Effect.gen(function* () {
@@ -539,9 +538,6 @@ const deliver = (crm: CrmClient, e: StoredEvent) =>
 const DELIVERED = { _tag: 'Right' };
 const PERMANENT = { _tag: 'Left', left: { sink: 'crm', permanent: true } };
 const RETRYABLE = { _tag: 'Left', left: { sink: 'crm', permanent: false } };
-
-/** One POST plus the four in-call retries of `retryTransient`. */
-const expectedPostsForABlip = 5;
 
 describe('makeCrmConnector — what the CRM stored', () => {
   // The success kinds move money; the CRM acts on them only once they are `validated`, so
@@ -654,7 +650,9 @@ describe('makeCrmConnector — HTTP status', () => {
     ['503', 503],
     ['429', 429],
   ] as const)(
-    '%s is retried in the call, then left to the queue',
+    // One bounded POST per delivery attempt: retrying inside the call held the single
+    // dispatcher, and every delivery behind it, for about a minute per message.
+    '%s is left to the queue, posted once',
     ([, status]) =>
       Effect.gen(function* () {
         const crm = crmAnswering({ status, body: '' });
@@ -662,23 +660,21 @@ describe('makeCrmConnector — HTTP status', () => {
         const result = yield* deliver(client(crm.fetch), event());
 
         expect(result).toMatchObject(RETRYABLE);
-        expect(crm.posts).toHaveLength(expectedPostsForABlip);
+        expect(crm.posts).toHaveLength(1);
       }),
   );
 
-  it.effect(
-    'a network error is retried in the call, then left to the queue',
-    () =>
-      Effect.gen(function* () {
-        const crm = crmAnswering({
-          networkError: new TypeError('fetch failed'),
-        });
+  it.effect('a network error is left to the queue, posted once', () =>
+    Effect.gen(function* () {
+      const crm = crmAnswering({
+        networkError: new TypeError('fetch failed'),
+      });
 
-        const result = yield* deliver(client(crm.fetch), event());
+      const result = yield* deliver(client(crm.fetch), event());
 
-        expect(result).toMatchObject(RETRYABLE);
-        expect(crm.posts).toHaveLength(expectedPostsForABlip);
-      }),
+      expect(result).toMatchObject(RETRYABLE);
+      expect(crm.posts).toHaveLength(1);
+    }),
   );
 });
 
