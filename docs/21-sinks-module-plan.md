@@ -407,8 +407,8 @@ marked failed.
 | 2xx, `unregistered` | permanent | delivered |
 | 2xx, `rejected` | permanent | permanent |
 | 2xx, body not `{status:'ok', event_id, schema_status}` | retryable (queue only) | retryable (queue only) |
-| 401 | retryable (queue only): a token the operator has not fixed yet | same |
-| other 4xx (400, 403, 404, 422, …) bar 429 | permanent | permanent |
+| 401, 408 | retryable (queue only): a token the operator has not fixed yet; a request timeout | same |
+| other 4xx (400, 403, 404, 422, …) bar 408 and 429 | permanent | permanent |
 | 429, 5xx, network error | retried in the call (4 backoff retries), then by the queue | same |
 | no complete answer within `CRM_TIMEOUT_MS` | retryable (queue only) | same |
 | enabled with empty URL or token | retryable (queue only), nothing sent | same |
