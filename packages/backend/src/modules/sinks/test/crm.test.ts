@@ -8,6 +8,7 @@ import { Duration, Effect, Fiber, TestClock } from 'effect';
 
 import type { RateLimiter } from '@/infra/rate-limiter.js';
 import {
+  CRM_SKIPPED_KINDS,
   type CrmClient,
   crmBody,
   makeCrmConnector,
@@ -859,5 +860,26 @@ describe('charge_kind', () => {
     expect([...CHARGE_KINDS].sort()).toEqual(
       [...expectedCrmChargeKinds].sort(),
     );
+  });
+});
+
+describe('makeCrmConnector — kinds the CRM never receives', () => {
+  // A quarantined payment is unfixed; the CRM gets it only once bound, as a success event.
+  it.effect('a quarantine event is delivered without a request', () =>
+    Effect.gen(function* () {
+      const crm = crmAnswering(ack('validated'));
+
+      const result = yield* deliver(
+        client(crm.fetch),
+        event({ name: 'unknown_payment_quarantined', externalUserId: null }),
+      );
+
+      expect(result).toMatchObject(DELIVERED);
+      expect(crm.posts).toHaveLength(0);
+    }),
+  );
+
+  it('skips exactly the quarantine kind', () => {
+    expect([...CRM_SKIPPED_KINDS]).toEqual(['unknown_payment_quarantined']);
   });
 });

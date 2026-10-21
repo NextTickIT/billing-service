@@ -361,4 +361,8 @@ B5 (the history backfill; not built yet, and not in this repo) re-posts stored
    matching `charges` row would be a defect. Stop and report it; do not guess.
 3. **Skip the second event of a doubled charge** that §7 gate (d) found. Re-post only the
    one the CRM owner chose to keep.
+4. **Skip quarantine events** (`unknown_payment_quarantined`), as the live sink does (owner
+   decision 2026-10-21; docs/21 §14.2). A quarantine that was later bound already has its
+   own `recurring_payment_succeeded`, which B5 sends like any success. One still open is
+   unfixed and is not sent at all.
 

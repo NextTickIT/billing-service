@@ -323,8 +323,8 @@ id yields a terminal delivery failure (§4.5) visible to the operator.
 
 A second event sink beside SendPulse: kind `Crm = 1`, code `crm`, seeded **disabled with an
 empty URL** by migration `0024_crm_sink`. The outbox fans each event out to one delivery per
-sink, so the CRM and SendPulse retry and fail independently. The CRM gets **every** event (no
-per-name opt-in, unlike SendPulse's `flows`), through its own rate limiter
+sink, so the CRM and SendPulse retry and fail independently. The CRM gets every event except
+the skipped kinds below (no per-name opt-in, unlike SendPulse's `flows`), through its own rate limiter
 (`CRM_RATE_LIMIT_RPS`, default 10), and every POST has one deadline covering connect, headers
 and the body read (`CRM_TIMEOUT_MS`, default 10 000; a zero, negative or unreadable value
 falls back to it). The connector never retries inside the call: each delivery attempt is
@@ -425,4 +425,17 @@ marked failed.
 A delivery whose sink is no longer enabled when it runs (disabled or removed after the event
 fanned out to it) is also permanent: `outbox/domain.ts` marks it failed and the dispatcher
 dead-letters it, where it used to be marked failed while its queue message succeeded.
+
+**Kinds the CRM never receives** (owner decision 2026-10-21; `CRM_SKIPPED_KINDS` in
+`sinks/crm.ts`):
+
+| Kind | Why | What the delivery does |
+|---|---|---|
+| `unknown_payment_quarantined` | an unfixed payment: billing could not tell whose it is, and the CRM must not record a payment before it is attributed | succeeds with no request, so the delivery is marked `delivered` (the same as an unmapped event on the SendPulse sink) |
+
+When an operator binds the quarantine, the bind emits an ordinary
+`recurring_payment_succeeded` (`boundPaymentSucceeded`, with `charge_kind` from the order
+reference), and that one reaches the CRM like any success. It is the only unfixed-payment
+kind billing emits: a refused settlement (`already_applied`, `intro_on_live`) quarantines
+through the same event. Every other kind in `EVENT_NAMES` is about a known payment.
 
