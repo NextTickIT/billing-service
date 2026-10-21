@@ -442,6 +442,45 @@ const recordMatchedSuccess = (
   });
 
 /**
+ * One success per scheduled order. The scheduler's own copy of an Approved CHARGE and the
+ * WayForPay callback for it carry different keys (`w4p:…|CHARGE|…` vs `w4pcb:…`), so both
+ * land as `charges` rows and both match the same `sub_…` order. Settling each would record
+ * two fixations and publish two `recurring_payment_succeeded` with different ids — two
+ * payments in every sink for one charge. A recurring order is charged at most once (its
+ * reference carries the due date, and a success moves the due date), so the second copy to
+ * arrive is closed as matched with nothing written, and logged. Checkout sessions already
+ * settle once (`claimForPayment`).
+ */
+const recordSuccessOnce = (
+  deps: HandleDeps,
+  event: Charge,
+  match: Match,
+  incomingId: string,
+) =>
+  Effect.gen(function* () {
+    if (
+      match.kind === 'recurring' &&
+      (yield* deps.repo.orderSettledByAnotherCopy(
+        event.externalRef,
+        incomingId,
+      ))
+    ) {
+      yield* Effect.logInfo(
+        'DUPLICATE_CHARGE_COPY order already settled by another copy; nothing written',
+      ).pipe(
+        Effect.annotateLogs({
+          idemKey: event.idemKey,
+          externalRef: event.externalRef,
+          source: event.source,
+        }),
+      );
+      yield* deps.repo.setMatchResult(incomingId, 'matched');
+      return;
+    }
+    yield* recordMatchedSuccess(deps, event, match, incomingId);
+  });
+
+/**
  * A card-change callback (docs/23). The applier has updated the stored token (and,
  * for an arrears change, advanced the existing payment — never create-or-extend, so the
  * one-active-payment invariant holds). A charge that moved money records the fixation
@@ -529,7 +568,7 @@ const process = (deps: HandleDeps, event: Charge) =>
           yield* deps.repo.setMatchResult(incomingId, 'matched');
           return;
         }
-        yield* recordMatchedSuccess(deps, event, match, incomingId);
+        yield* recordSuccessOnce(deps, event, match, incomingId);
       }),
     );
   });
