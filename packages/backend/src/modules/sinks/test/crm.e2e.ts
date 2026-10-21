@@ -104,6 +104,7 @@ const succeeded: DomainEvent = {
     method: 0,
     period: 'P1M',
     source: 'wayforpay_charge',
+    chargeKind: 'scheduled',
     nextPaymentDate: '2026-04-01T00:00:00.000Z',
     periodStart: '2026-03-01T00:00:00.000Z',
     periodEnd: '2026-04-01T00:00:00.000Z',

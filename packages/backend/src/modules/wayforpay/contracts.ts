@@ -9,6 +9,13 @@ import { Schema } from 'effect';
  * are DERIVED from the schemas so the decoded value and the static type never drift.
  */
 
+/**
+ * The marker WayForPay puts in the orderReference of a payment its own regular-payment
+ * schedule made: `<originalRef>_WFPREG-<regularId>-<n>` (docs/15). Such a charge was
+ * started by a schedule, not by a buyer at a checkout.
+ */
+export const WFP_REGULAR_MARKER = '_WFPREG-';
+
 export const REASON = {
   /** TRANSACTION_LIST / CHECK_STATUS: Ok. */
   OK: 1100,
