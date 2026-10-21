@@ -52,17 +52,23 @@ export interface Outcome {
 /**
  * Decide a finished attempt's outcome from whether it failed, the attempt number
  * just consumed (post-increment at claim time), and the clock. Success is
- * terminal; a failure retries with backoff until `maxAttempts`, then fails.
+ * terminal; a failure retries with backoff until `maxAttempts`, then fails. A
+ * `permanent` failure fails on this attempt: re-running it cannot succeed, and each
+ * re-run only delays the dead letter an operator has to see.
  */
 export const decideOutcome = (
-  params: { readonly failed: boolean; readonly attemptCount: number },
+  params: {
+    readonly failed: boolean;
+    readonly attemptCount: number;
+    readonly permanent?: boolean;
+  },
   nowMillis: number,
   config: RetryConfig,
 ): Outcome => {
   if (!params.failed) {
     return { status: 'success', retryAt: null, finished: true };
   }
-  if (params.attemptCount >= config.maxAttempts) {
+  if (params.permanent === true || params.attemptCount >= config.maxAttempts) {
     return { status: 'fail', retryAt: null, finished: true };
   }
   return {
@@ -71,6 +77,16 @@ export const decideOutcome = (
     finished: false,
   };
 };
+
+/**
+ * Did the handler declare this failure permanent? Structural (`permanent: true` on the
+ * failure value) so the queue stays free of any one handler's error types; `SinkError`
+ * sets it for an answer the receiver will never accept.
+ */
+export const isPermanentFailure = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  (error as { readonly permanent?: unknown }).permanent === true;
 
 /** Compact, JSON-serializable error shape for the `attempts.error` column. */
 export interface ErrorDetail {

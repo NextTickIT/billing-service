@@ -213,3 +213,28 @@ it.effect('deliverEvent is a no-op when already delivered', () =>
     expect(called).toBe(false);
   }),
 );
+
+it.effect(
+  'deliverEvent fails a delivery whose sink is no longer enabled permanently, so it dead-letters now',
+  () =>
+    Effect.gen(function* () {
+      const { repo, deliveries, eventsById } = makeFakeRepo();
+      eventsById.set('evt_1', event('evt_1'));
+      deliveries.set('d1', {
+        eventId: 'evt_1',
+        sink: 'crm',
+        status: 'pending',
+      });
+
+      const error = yield* deliverEvent({ repo, sinks: sinksOf(successSink) })(
+        'd1',
+      ).pipe(Effect.flip);
+
+      expect(deliveries.get('d1')?.status).toBe('failed');
+      expect(error).toMatchObject({
+        _tag: 'SinkError',
+        sink: 'crm',
+        permanent: true,
+      });
+    }),
+);

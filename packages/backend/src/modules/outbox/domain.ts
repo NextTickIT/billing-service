@@ -6,7 +6,7 @@ import { Cause, Context, Effect, Layer, Option, Schema } from 'effect';
 import { describeError } from '@/infra/queue/policy.js';
 import { Queue } from '@/infra/queue/service.js';
 import type { EnqueueInput, EnqueueResult } from '@/infra/queue/store.js';
-import { Sinks, type SinkError, type SinksService } from '@/infra/sinks.js';
+import { SinkError, Sinks, type SinksService } from '@/infra/sinks.js';
 import {
   DELIVER_EVENT,
   DeliverEventPayload,
@@ -79,11 +79,20 @@ export const deliverEvent =
       const sinks = yield* deps.sinks.all();
       const sink = sinks.find((s) => s.name === sinkName);
       if (sink === undefined) {
-        // Sink no longer configured: record and stop retrying (not transient).
-        yield* deps.repo.markFailed(deliveryId, {
-          message: `no sink named ${sinkName}`,
-        });
-        return;
+        // The sink was disabled or removed after this event fanned out to it. Retrying
+        // cannot help, but succeeding would mark the message done and the event would
+        // never reach that sink with nothing said: fail it permanently, so the queue
+        // dead-letters it on this attempt and the watchdog sees DEAD_LETTER.
+        const message = `no enabled sink named ${sinkName}`;
+        yield* deps.repo.markFailed(deliveryId, { message });
+        return yield* Effect.fail(
+          new SinkError({
+            sink: sinkName,
+            reason: message,
+            message: `${sinkName}: ${message}`,
+            permanent: true,
+          }),
+        );
       }
       yield* sink.deliver(event).pipe(
         Effect.matchCauseEffect({
