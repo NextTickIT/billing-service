@@ -169,14 +169,24 @@ header, which billing never sends, and 403 to a money kind even with one. Both a
 here. Check the client in the CRM's API-clients list before pasting
 the token.
 
-(c) **A test POST of each success kind answers `validated`.** Use the URL and the token you
-are about to paste, and a body in the docs/21 §14.1 shape: name
-`initial_payment_succeeded`, `recurring_payment_succeeded` and
-`one_time_purchase_succeeded` in turn, a fresh `id` each time, and an `external_user_id`
-that belongs to no real contact. Each must answer 200 with
-`"schema_status":"validated"`. Anything else (`unregistered`, `rejected`, 4xx) means the CRM
-would refuse real payments, so stop and fix the CRM side. These test events are real rows
-in the CRM. Agree with the CRM owner, before posting, how they are recognised and removed.
+(c) **A test POST of each success kind answers `validated`, made and cleaned up with the
+CRM owner's sign-off.** The test events are real rows in the CRM, and a validated success
+event is what the CRM pays and attributes on. So this step needs the CRM owner's sign-off
+before it starts, and runs in this order:
+
+1. Confirm with the CRM owner that the CRM's payments consumer switch is OFF. While it is
+   off, a stored event is not acted on.
+2. Post exactly one event of each success kind (`initial_payment_succeeded`,
+   `recurring_payment_succeeded`, `one_time_purchase_succeeded`). Use the URL and token you
+   are about to paste, the docs/21 §14.1 body shape, a fresh `id` each time, and one
+   dedicated test `external_user_id` that belongs to no real contact (agree the value with
+   the CRM owner and record it in the deploy log). Include `charge_kind` (`scheduled` or
+   `checkout`); the CRM registry accepts only those two values.
+3. Each must answer 200 with `"schema_status":"validated"`. Anything else (`unregistered`,
+   `rejected`, 4xx) means the CRM would refuse real payments: stop, delete what was posted
+   (step 4) and fix the CRM side.
+4. Delete the three test events through the CRM admin, by that `external_user_id`.
+5. Only then may the CRM owner turn the payments consumer switch on.
 
 ```sh
 curl -sS -X POST "$CRM_URL" \
@@ -191,6 +201,16 @@ refuses to enable it with either one missing (422). Watch `event_deliveries` for
 `sink = 'crm'`, and watch the watchdog for `DEAD_LETTER`. A refused payment logs
 `DEAD_LETTER queue message failed permanently` with `crm stored <kind> as <status>` in its
 error.
+
+**A misconfigured sink's dead letters have to be re-posted after the fix.** A delivery that
+fails because of configuration (a wrong or missing token, a wrong URL, a CRM refusing the
+payload) is retried five times over about 15 seconds (`QUEUE_MAX_ATTEMPTS`, default 5),
+then dead-letters. Fixing the configuration does not bring those events back. This repo
+offers **no** command or route to requeue a dead letter (`sinks/routes.ts`: "a dead letter is
+terminal, there is no requeue"). Do not reset `messages` rows by hand either: every status
+change appends its `message_status_events` row in the same statement (docs/09), and a hand
+`UPDATE` breaks that log. After the fix, list what the CRM lacks with the §2 step 2 query
+and hand the event ids to the B5 backfill, which re-posts them from outside this repo.
 
 ## 8. Accepted risk: a late remap retry can undo a revert
 
