@@ -190,6 +190,19 @@ const withConfig = (
   }
 };
 
+/**
+ * What an enabled CRM sink lacks to send anything. Checked on the merged row, so a patch
+ * that enables the seeded row (empty URL and token) without filling both is refused;
+ * disabling, or saving a half-filled row that stays disabled, is not.
+ */
+const crmMissing = (sink: Sink): readonly string[] =>
+  sink.kind === SinkKind.Crm && sink.enabled
+    ? [
+        sink.config.url === '' ? 'url' : null,
+        sink.auth.token === '' ? 'auth.token' : null,
+      ].filter((v): v is string => v !== null)
+    : [];
+
 export const mergeUpdate = (
   current: Sink,
   patch: UpdateSinkRequest,
@@ -200,13 +213,17 @@ export const mergeUpdate = (
       reason: `config does not match sink kind ${SinkKindCode[current.kind]}`,
     };
   }
-  return {
-    ok: true,
-    sink: {
-      ...withConfig(current, patch.config),
-      enabled: patch.enabled ?? current.enabled,
-      auth: mergeAuth(current.auth, patch.auth),
-      updatedAt: current.updatedAt, // the repo stamps `now()` on write
-    },
+  const sink: Sink = {
+    ...withConfig(current, patch.config),
+    enabled: patch.enabled ?? current.enabled,
+    auth: mergeAuth(current.auth, patch.auth),
+    updatedAt: current.updatedAt, // the repo stamps `now()` on write
   };
+  const missing = crmMissing(sink);
+  return missing.length > 0
+    ? {
+        ok: false,
+        reason: `cannot enable the crm sink without: ${missing.join(', ')}`,
+      }
+    : { ok: true, sink };
 };
