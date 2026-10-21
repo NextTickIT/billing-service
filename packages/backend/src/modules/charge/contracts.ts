@@ -41,10 +41,29 @@ export const RebindPayload = Schema.Struct({
 export type RebindPayload = Schema.Schema.Type<typeof RebindPayload>;
 
 /**
+ * What a source already credited when it settled the charge before handing it over: the
+ * window, the next charge date and the declaration the payment carried at that moment.
+ * Only the scheduler settles first (it advances the payment, then ingests its own charge),
+ * and the message can wait in the queue while the row moves on — a defer, an operator
+ * edit, the next renewal. The success event reports this snapshot, not the row as it is
+ * when the message is processed.
+ */
+export const Settlement = Schema.Struct({
+  periodStart: Schema.Date,
+  periodEnd: Schema.Date,
+  nextPaymentDate: Schema.Date,
+  metadata: Schema.NullOr(
+    Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+  ),
+});
+
+/**
  * A normalized incoming charge. `idemKey` is the source's dedup key (e.g.
  * `w4p:{orderReference}|{type}|{createdDate}`); `externalRef` is what matching
  * keys on (the provider orderReference). This shape is also the `payment_event_
- * received` message payload, decoded by the handler.
+ * received` message payload, decoded by the handler. `settlement` is set only by a
+ * source that settled first (see `Settlement`); a message without it — every other
+ * source, and one enqueued before the field existed — falls back to the payment row.
  */
 export const Charge = Schema.Struct({
   source: Schema.String,
@@ -56,6 +75,7 @@ export const Charge = Schema.Struct({
   status: ChargeStatus,
   occurredAt: Schema.Date,
   payload: Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+  settlement: Schema.optional(Settlement),
 });
 
 export type Charge = Schema.Schema.Type<typeof Charge>;

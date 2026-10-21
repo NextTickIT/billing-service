@@ -20,6 +20,7 @@ import { renewalScenarios } from '@/modules/charge/test/renewal.e2e.js';
 import { lapseScenarios } from '@/modules/payment/test/lapse.e2e.js';
 import { manualMinterScenarios } from '@/modules/billing/test/manual-minter.e2e.js';
 import { crmSinkScenarios } from '@/modules/sinks/test/crm.e2e.js';
+import { settlementScenarios } from '@/modules/billing/test/settlement.e2e.js';
 import { Outbox } from '@/modules/outbox/domain.js';
 import { sinkCancelled } from '@/modules/billing/events.js';
 import {
@@ -1469,4 +1470,5 @@ export const effectScenarios: readonly EffectScenario[] = [
   ...lapseScenarios,
   ...manualMinterScenarios,
   ...crmSinkScenarios,
+  ...settlementScenarios,
 ];
