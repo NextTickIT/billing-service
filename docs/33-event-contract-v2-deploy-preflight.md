@@ -54,9 +54,18 @@ rollback removes only their bookkeeping rows, plus the CRM sink row (step 4).
    does not fall, the CRM is failing: fix that first, or accept the loss and go on to the
    next step, which records what is owed.
 
-2. Disable the CRM sink (console → Sinks → CRM → off). Then list every event the CRM still
-   lacks: whatever was published between the drain and the switch, plus anything that
-   dead-lettered earlier. Record the ids in the deploy log; the B5 backfill re-posts them.
+2. Disable the CRM sink (console → Sinks → CRM → off) and **record the disable time (UTC)
+   in the deploy log**. From that moment no event gets a CRM delivery at all: publish fans
+   out only to enabled sinks. That covers the rest of this image's life and everything
+   58d80ef publishes until a roll-forward re-enables the sink. Those events have no
+   `sink = 'crm'` row, so no query over `event_deliveries` can list them. The B5 backfill
+   must re-post every event with `"occurredAt"` at or after the recorded disable time, up to
+   the moment the sink is enabled again.
+
+   Separately, list the events that did fan out to the CRM and never arrived: deliveries
+   that failed or dead-lettered, and any still pending from the window between the drain
+   and the switch. Record their ids in the deploy log; B5 re-posts these too. This query
+   covers only deliveries that exist.
 
    ```sql
    SELECT d."eventId", d.status, d."lastError"->>'message' AS error
@@ -209,8 +218,12 @@ then dead-letters. Fixing the configuration does not bring those events back. Th
 offers **no** command or route to requeue a dead letter (`sinks/routes.ts`: "a dead letter is
 terminal, there is no requeue"). Do not reset `messages` rows by hand either: every status
 change appends its `message_status_events` row in the same statement (docs/09), and a hand
-`UPDATE` breaks that log. After the fix, list what the CRM lacks with the §2 step 2 query
-and hand the event ids to the B5 backfill, which re-posts them from outside this repo.
+`UPDATE` breaks that log. After the fix, list the failed deliveries with the §2 step 2
+query and hand the event ids to the B5 backfill, which re-posts them from outside this repo.
+That query covers only events that fanned out to the CRM. If the sink was switched off
+while the fix was made, the events published while it was off have no CRM delivery row:
+record the off and on times, and have B5 re-post every event with `"occurredAt"` in that
+window as well.
 
 The backfill re-posts the events as they are stored. Any event stored before `chargeKind`
 shipped (412f876) has no `charge_kind`. That is expected: the CRM registry takes the field
@@ -225,7 +238,8 @@ remap. B is live again, and the relay calls billing's external-user-id rename ag
 is no idempotency key per remap through the relay and billing. The owner chose to accept
 this rather than add one.
 
-What it does to billing: the remap's billing rename stays on the `ingest` path. It moves
+What it does to billing: the remap's billing rename (`POST /api/payment/rename-external-user`,
+called by the relay) stays on the CRM's `ingest` path. It moves
 the payments and open sessions to the new id and does not re-fire events (`refireEvents`
 is not set, so no `external_user_id_changed` goes out; docs/31). A repeated rename moves
 data and sends nothing to any sink.
