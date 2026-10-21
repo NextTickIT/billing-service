@@ -1,7 +1,14 @@
+import { describe, expect, it } from '@effect/vitest';
 import { EVENT_NAMES, type StoredEvent } from '@billing-service/shared';
-import { describe, expect, it } from 'vitest';
+import { Effect, Fiber, TestClock } from 'effect';
 
-import { crmBody } from '@/modules/sinks/crm.js';
+import type { RateLimiter } from '@/infra/rate-limiter.js';
+import {
+  type CrmClient,
+  crmBody,
+  makeCrmConnector,
+} from '@/modules/sinks/crm.js';
+import type { FetchLike } from '@/modules/sinks/sendpulse.js';
 import { snakeCaseKeys, toSnakeCase } from '@/modules/sinks/snake-case.js';
 
 const event = (over: Partial<StoredEvent> = {}): StoredEvent => ({
@@ -445,4 +452,267 @@ describe('crmBody', () => {
     };
     expect(body.external_user_id).toBe(null);
   });
+});
+
+const noLimit: RateLimiter = { take: Effect.void, limit: (effect) => effect };
+
+interface Posted {
+  readonly url: string;
+  readonly method: string;
+  readonly headers: Record<string, string>;
+  readonly body: unknown;
+}
+
+/** The CRM's side of one POST: what it answers, or a transport failure. */
+type Answer =
+  | { readonly status: number; readonly body: string }
+  | { readonly networkError: Error };
+
+/** A CRM endpoint that records every POST and gives the same answer to each. */
+const crmAnswering = (answer: Answer) => {
+  const posts: Posted[] = [];
+  const fetch: FetchLike = (url, init) => {
+    posts.push({
+      url,
+      method: init.method,
+      headers: init.headers,
+      body: init.body === undefined ? undefined : JSON.parse(init.body),
+    });
+    return 'networkError' in answer
+      ? Promise.reject(answer.networkError)
+      : Promise.resolve({
+          ok: answer.status >= 200 && answer.status < 300,
+          status: answer.status,
+          text: () => Promise.resolve(answer.body),
+        });
+  };
+  return { posts, fetch };
+};
+
+const ack = (schemaStatus: string): Answer => ({
+  status: 200,
+  body: JSON.stringify({
+    status: 'ok',
+    event_id: 'crm_evt_1',
+    schema_status: schemaStatus,
+  }),
+});
+
+const client = (
+  fetch: FetchLike,
+  over: Partial<CrmClient> = {},
+): CrmClient => ({
+  token: 'crm-token',
+  url: 'https://crm.example/api/public/v1/events',
+  fetch,
+  rateLimiter: noLimit,
+  ...over,
+});
+
+/**
+ * Deliver once and settle every in-call backoff: the connector's retries sleep on the
+ * clock, so the delivery runs in a fiber while the test clock is moved past the longest
+ * schedule (1+2+4+8 s plus jitter).
+ */
+const deliver = (crm: CrmClient, e: StoredEvent) =>
+  Effect.gen(function* () {
+    const fiber = yield* Effect.fork(
+      Effect.either(makeCrmConnector(crm).deliver(e)),
+    );
+    yield* TestClock.adjust('1 minute');
+    return yield* Fiber.join(fiber);
+  });
+
+const DELIVERED = { _tag: 'Right' };
+const PERMANENT = { _tag: 'Left', left: { sink: 'crm', permanent: true } };
+const RETRYABLE = { _tag: 'Left', left: { sink: 'crm', permanent: false } };
+
+/** One POST plus the four in-call retries of `retryTransient`. */
+const expectedPostsForABlip = 5;
+
+describe('makeCrmConnector — what the CRM stored', () => {
+  // The success kinds move money; the CRM acts on them only once they are `validated`, so
+  // anything else would be acknowledged and never paid. Every other kind is delivered
+  // unless the CRM rejected it.
+  it.effect.each([
+    ['initial_payment_succeeded', 'validated', DELIVERED],
+    ['initial_payment_succeeded', 'unregistered', PERMANENT],
+    ['initial_payment_succeeded', 'rejected', PERMANENT],
+    ['recurring_payment_succeeded', 'validated', DELIVERED],
+    ['recurring_payment_succeeded', 'unregistered', PERMANENT],
+    ['recurring_payment_succeeded', 'rejected', PERMANENT],
+    ['one_time_purchase_succeeded', 'validated', DELIVERED],
+    ['one_time_purchase_succeeded', 'unregistered', PERMANENT],
+    ['one_time_purchase_succeeded', 'rejected', PERMANENT],
+    ['renewal_failed', 'validated', DELIVERED],
+    ['renewal_failed', 'unregistered', DELIVERED],
+    ['renewal_failed', 'rejected', PERMANENT],
+    ['upcoming_charge', 'validated', DELIVERED],
+    ['upcoming_charge', 'unregistered', DELIVERED],
+    ['upcoming_charge', 'rejected', PERMANENT],
+  ] as const)('%s stored %s → %o', ([name, schemaStatus, expected]) =>
+    Effect.gen(function* () {
+      const crm = crmAnswering(ack(schemaStatus));
+
+      const result = yield* deliver(client(crm.fetch), event({ name }));
+
+      expect(result).toMatchObject(expected);
+      expect(crm.posts).toHaveLength(1);
+    }),
+  );
+
+  it.effect('a refusal names the kind and how the CRM stored it', () =>
+    Effect.gen(function* () {
+      const crm = crmAnswering(ack('rejected'));
+
+      const result = yield* deliver(client(crm.fetch), event());
+
+      expect(result).toMatchObject({
+        _tag: 'Left',
+        left: {
+          reason:
+            'crm stored recurring_payment_succeeded as rejected (event crm_evt_1)',
+        },
+      });
+    }),
+  );
+});
+
+describe('makeCrmConnector — an unreadable 2xx', () => {
+  // Nothing in such a body says whether the CRM kept the event, so it is asked again
+  // later (it dedupes on `id`) — by the queue, not in a tight loop.
+  it.effect.each([
+    ['an HTML proxy page', '<html>502 Bad Gateway</html>'],
+    ['an empty body', ''],
+    ['JSON without schema_status', '{"status":"ok","event_id":"crm_evt_1"}'],
+    [
+      'an unknown schema_status',
+      '{"status":"ok","event_id":"crm_evt_1","schema_status":"queued"}',
+    ],
+    [
+      'a status other than ok',
+      '{"status":"error","event_id":"crm_evt_1","schema_status":"validated"}',
+    ],
+  ] as const)('%s is a retryable failure', ([, body]) =>
+    Effect.gen(function* () {
+      const crm = crmAnswering({ status: 200, body });
+
+      const result = yield* deliver(client(crm.fetch), event());
+
+      expect(result).toMatchObject(RETRYABLE);
+      expect(crm.posts).toHaveLength(1);
+    }),
+  );
+});
+
+describe('makeCrmConnector — HTTP status', () => {
+  it.effect.each([
+    ['400', 400],
+    ['403 (a token without the money_events scope)', 403],
+    ['404', 404],
+    ['422 (a rejected money-kind payload)', 422],
+  ] as const)('%s is permanent, posted once', ([, status]) =>
+    Effect.gen(function* () {
+      const crm = crmAnswering({ status, body: '{"error":"x"}' });
+
+      const result = yield* deliver(client(crm.fetch), event());
+
+      expect(result).toMatchObject(PERMANENT);
+      expect(crm.posts).toHaveLength(1);
+    }),
+  );
+
+  it.effect(
+    '401 waits for the operator to fix the token: retryable, posted once',
+    () =>
+      Effect.gen(function* () {
+        const crm = crmAnswering({ status: 401, body: '{"error":"x"}' });
+
+        const result = yield* deliver(client(crm.fetch), event());
+
+        expect(result).toMatchObject(RETRYABLE);
+        expect(crm.posts).toHaveLength(1);
+      }),
+  );
+
+  it.effect.each([
+    ['500', 500],
+    ['503', 503],
+    ['429', 429],
+  ] as const)(
+    '%s is retried in the call, then left to the queue',
+    ([, status]) =>
+      Effect.gen(function* () {
+        const crm = crmAnswering({ status, body: '' });
+
+        const result = yield* deliver(client(crm.fetch), event());
+
+        expect(result).toMatchObject(RETRYABLE);
+        expect(crm.posts).toHaveLength(expectedPostsForABlip);
+      }),
+  );
+
+  it.effect(
+    'a network error is retried in the call, then left to the queue',
+    () =>
+      Effect.gen(function* () {
+        const crm = crmAnswering({
+          networkError: new TypeError('fetch failed'),
+        });
+
+        const result = yield* deliver(client(crm.fetch), event());
+
+        expect(result).toMatchObject(RETRYABLE);
+        expect(crm.posts).toHaveLength(expectedPostsForABlip);
+      }),
+  );
+});
+
+describe('makeCrmConnector — an enabled sink missing its config', () => {
+  // A delivery that waits for the operator, never a silent success: the event is still
+  // owed to the CRM.
+  it.effect.each([
+    ['no url', { url: '' }, 'crm sink enabled without url'],
+    ['no token', { token: '' }, 'crm sink enabled without token'],
+    ['neither', { url: '', token: '' }, 'crm sink enabled without url, token'],
+  ] as const)(
+    '%s fails retryably and posts nothing',
+    ([, over, expectedReason]) =>
+      Effect.gen(function* () {
+        const crm = crmAnswering(ack('validated'));
+
+        const result = yield* deliver(client(crm.fetch, over), event());
+
+        expect(result).toMatchObject({
+          _tag: 'Left',
+          left: { permanent: false, reason: expectedReason },
+        });
+        expect(crm.posts).toHaveLength(0);
+      }),
+  );
+});
+
+describe('makeCrmConnector — the request', () => {
+  it.effect(
+    'POSTs the envelope to the configured url with the three headers',
+    () =>
+      Effect.gen(function* () {
+        const crm = crmAnswering(ack('validated'));
+        const e = event({ idempotencyKey: 'idem_evt_k1' });
+
+        yield* deliver(client(crm.fetch), e);
+
+        expect(crm.posts).toHaveLength(1);
+        expect(crm.posts[0]).toMatchObject({
+          url: 'https://crm.example/api/public/v1/events',
+          method: 'POST',
+          body: { id: 'evt_k1:succeeded', name: 'recurring_payment_succeeded' },
+        });
+        expect(crm.posts[0]?.headers).toEqual({
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer crm-token',
+          'Idempotency-Key': 'idem_evt_k1',
+        });
+      }),
+  );
 });

@@ -326,8 +326,9 @@ empty URL** by migration `0024_crm_sink`. The outbox fans each event out to one 
 sink, so the CRM and SendPulse retry and fail independently. The CRM gets **every** event (no
 per-name opt-in, unlike SendPulse's `flows`), through its own rate limiter
 (`CRM_RATE_LIMIT_RPS`, default 10). Config is `{ url }` (the full ingest endpoint) plus the bearer
-token in `auth.token`; an enabled row with an empty URL logs and succeeds rather than
-dead-lettering. Connector: `modules/sinks/crm.ts`.
+token in `auth.token`. The console refuses to enable the row while either is empty (422);
+an enabled row that still lacks one (the seed, a hand edit) fails every delivery
+retryably, never marks it delivered (§14.2). Connector: `modules/sinks/crm.ts`.
 
 ### 14.1 Wire dialect
 
@@ -374,4 +375,30 @@ The CRM side pins the same shape in guildmaster
 `packages/contract/src/crmEvents.billingWire.test.ts`; billing pins it in
 `modules/sinks/test/crm.test.ts`. Kinds the CRM has not registered (today
 `recurring_payment_failed`, `upcoming_charge`) are stored `unregistered`, not rejected.
+
+### 14.2 What counts as delivered
+
+A 2xx is not enough. The CRM door answers 200 `{ status: 'ok', event_id, schema_status }`
+for anything it stored, including a payload its registry rejected, and the CRM acts only on
+`validated` rows. So the connector reads the body and decides per kind. "Permanent" fails
+the delivery and marks it so the queue dead-letters it on this attempt (`SinkError.permanent`
+→ `isPermanentFailure` → `DEAD_LETTER queue message failed permanently`); "retryable" is the
+queue's ordinary ladder (`QUEUE_MAX_ATTEMPTS`, then `DEAD_LETTER … exhausted its retries`).
+This supersedes §4.5's "no per-error terminal split" for this sink only; SendPulse and
+email are unchanged.
+
+| CRM answer | `initial_payment_succeeded`, `recurring_payment_succeeded`, `one_time_purchase_succeeded` | every other kind |
+|---|---|---|
+| 2xx, `validated` | delivered | delivered |
+| 2xx, `unregistered` | permanent | delivered |
+| 2xx, `rejected` | permanent | permanent |
+| 2xx, body not `{status:'ok', event_id, schema_status}` | retryable (queue only) | retryable (queue only) |
+| 401 | retryable (queue only): a token the operator has not fixed yet | same |
+| other 4xx (400, 403, 404, 422, …) bar 429 | permanent | permanent |
+| 429, 5xx, network error | retried in the call (4 backoff retries), then by the queue | same |
+| enabled with empty URL or token | retryable (queue only), nothing sent | same |
+
+A delivery whose sink is no longer enabled when it runs (disabled or removed after the event
+fanned out to it) is also permanent: `outbox/domain.ts` marks it failed and the dispatcher
+dead-letters it, where it used to be marked failed while its queue message succeeded.
 
