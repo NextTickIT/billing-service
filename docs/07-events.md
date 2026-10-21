@@ -28,6 +28,15 @@ kind (`checkout` → initial, `recurring` → renewal); see 22.
 | `card_change_failed` | a card-change attempt was declined/errored (docs/23) | external_user_id, reason |
 | `unknown_payment_quarantined` | incoming charge went to quarantine | quarantine record reference |
 
+**`periodStart` / `periodEnd`** on the success events give the payment's paid-through
+coverage after the charge, not always the slice this charge bought. `periodEnd` is the new
+end. `periodStart` is where the continuous coverage ending there began. A charge that opens
+a fresh window has its own slice start there: a first payment, or a renewal paid at or after
+the old end, which is every on-time scheduled renewal. A charge stacked onto time still
+running keeps the earlier start of the whole coverage: a renewal paid early, or a prolong
+checkout. That charge's own slice is [the previous success event's `periodEnd`,
+`periodEnd`]. The anchors come from `stackAnchors` (`payment/domain.ts`).
+
 **`chargeKind`** (`charge_kind` on the CRM wire) on the three success events says what
 STARTED the charge (owner decision 2026-10-21): `scheduled` for billing's own renewal
 charge of the stored token, `checkout` for any payment through a checkout session (a first
