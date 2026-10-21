@@ -32,24 +32,53 @@ Main's server boot runs the same `unmatchedApplied` check (`infra/migrator.ts`).
 deploy the applied rows `22 event_idempotency_key`, `23 metadata_passthrough` and
 `24 crm_sink` have no file in image 58d80ef, so a plain redeploy of that image **refuses to
 start** ("Applied migrations have no matching file"). The migrations are additive, so the
-rollback removes only their bookkeeping rows.
+rollback removes only their bookkeeping rows, plus the CRM sink row (step 4).
 
 **Rollback procedure:**
 
-1. Stop the new image: the server AND the worker.
-2. Delete the three bookkeeping rows by hand:
+1. If the CRM sink was ever enabled, drain it **while it is still enabled**. Image 58d80ef
+   has no CRM connector: a `crm` delivery it picks up is marked failed and its queue message
+   succeeds, so nothing alerts and the event never reaches the CRM. Disabling first does not
+   help either. A delivery whose sink is disabled cannot be sent, so disabling before the
+   drain throws the backlog away (this image dead-letters each one; older images dropped
+   them silently). Leave the sink on and wait until this returns 0:
+
+   ```sql
+   SELECT count(*) FROM messages m
+   JOIN event_deliveries d ON d.id::text = m.payload->>'deliveryId'
+   WHERE m."messageType" = 'deliver_event' AND d.sink = 'crm'
+     AND m.status IN ('pending', 'in_progress', 'retry');
+   ```
+
+   A delivery in `retry` is waiting out its backoff, which is at most a minute. If the count
+   does not fall, the CRM is failing: fix that first, or accept the loss and go on to the
+   next step, which records what is owed.
+
+2. Disable the CRM sink (console → Sinks → CRM → off). Then list every event the CRM still
+   lacks: whatever was published between the drain and the switch, plus anything that
+   dead-lettered earlier. Record the ids in the deploy log; the B5 backfill re-posts them.
+
+   ```sql
+   SELECT d."eventId", d.status, d."lastError"->>'message' AS error
+   FROM event_deliveries d
+   WHERE d.sink = 'crm' AND d.status <> 'delivered'
+   ORDER BY d."createdAt";
+   ```
+
+3. Stop the new image: the server AND the worker.
+4. Delete the three bookkeeping rows and the CRM sink row by hand:
 
    ```sql
    DELETE FROM effect_sql_migrations WHERE migration_id IN (22, 23, 24);
+   DELETE FROM sinks WHERE kind = 1;
    ```
 
-3. Leave everything the migrations added in place (main ignores it, see below).
-4. Start image 58d80ef (server and worker).
+   The sink row has to go because main's `toView` has no case for kind 1, so its console
+   Sinks list answers 500 while the row exists (§5). The delete also removes the CRM
+   token, so a later roll-forward needs it pasted again.
 
-If the CRM sink was enabled before the rollback, its pending CRM deliveries are marked
-failed under 58d80ef, which has no CRM connector, and never reach the CRM unless the B5
-backfill re-posts them. So either disable the sink and let the queue drain before step 1,
-or record the range of event ids still undelivered to `crm` so they can be re-posted.
+5. Leave everything else the migrations added in place (main ignores it, see below).
+6. Start image 58d80ef (server and worker).
 
 **What stays behind, and why it is harmless to main:**
 
@@ -57,11 +86,15 @@ or record the range of event ids still undelivered to `crm` so they can be re-po
 |---|---|---|
 | 0022 | `domain_events."idempotencyKey"` text, nullable, no default (backfilled from `id`); index `domain_events_idempotency_key_idx` (NON-unique) | main never reads or writes it; its inserts leave it NULL |
 | 0023 | `checkout_sessions.metadata` jsonb, nullable; `payments.metadata` jsonb, nullable | main never reads or writes them; its inserts leave them NULL |
-| 0024 | `sinks` row `kind = 1` (CRM), disabled, `config = {"url":""}`, empty token | main's `buildConnector` drops the unknown kind; only main's console Sinks list can return 500 (§5) |
+| 0024 | `sinks` row `kind = 1` (CRM), disabled, `config = {"url":""}`, empty token | deleted by rollback step 4; left in place, main's console Sinks list would return 500 (§5) |
+
+The `event_deliveries` rows for `sink = 'crm'` also stay. Main runs nothing for them once
+step 1 has drained their queue messages; its operator deliveries list may still show them.
 
 Rolling forward again later is safe. 0022 re-runs as `ADD COLUMN IF NOT EXISTS`, then
 backfills only rows still NULL, which are the events written under 58d80ef. 0023 also uses
-`IF NOT EXISTS`, and 0024 uses `ON CONFLICT (kind) DO NOTHING`.
+`IF NOT EXISTS`. 0024 re-seeds the CRM row the rollback deleted, disabled with no URL or
+token, so §7 applies again.
 
 ## 3. Stuck lapses will fire at the first tick
 
@@ -117,7 +150,44 @@ The SendPulse connector spreads the whole payload into `external_data`. Success 
 also carry `periodStart`, `periodEnd`, `recurring` and `metadata` (the caller's nested object,
 echoed verbatim). When a checkout first carries metadata, check that delivery in SendPulse.
 
-## 7. After deploy: enable the CRM sink
+## 7. After deploy: enable the CRM sink, only once three gates hold
 
-Console → Sinks → CRM: paste the URL and the bearer token, then enable. Wire dialect:
-docs/21 §14. Watch `event_deliveries` for `sink = 'crm'` and the dead-letter watchdog.
+Enabling sends every billing event to the CRM, including the three success kinds the
+CRM pays and attributes on. Do not enable it until all three gates below hold. Record each
+one in the deploy log.
+
+(a) **guildmaster PR #28 is deployed** to the CRM this sink points at. That release makes
+the CRM door answer 422 for a money-kind payload its registry rejects, instead of 200
+`rejected`. Billing also refuses anything but `validated` for those kinds (docs/21 §14.2),
+but the CRM side has to be live too.
+
+(b) **The billing token is minted in the CRM with scopes `events` and `money_events`, and
+is NOT a trusted proxy.** Without `money_events` the door answers 403 to the success kinds.
+Billing treats a 403 as permanent, so every payment event would dead-letter. A trusted-proxy
+token is the Guild proxy's kind. The door answers 400 to it without a client fingerprint
+header, which billing never sends, and 403 to a money kind even with one. Both are permanent
+here. Check the client in the CRM's API-clients list before pasting
+the token.
+
+(c) **A test POST of each success kind answers `validated`.** Use the URL and the token you
+are about to paste, and a body in the docs/21 §14.1 shape: name
+`initial_payment_succeeded`, `recurring_payment_succeeded` and
+`one_time_purchase_succeeded` in turn, a fresh `id` each time, and an `external_user_id`
+that belongs to no real contact. Each must answer 200 with
+`"schema_status":"validated"`. Anything else (`unregistered`, `rejected`, 4xx) means the CRM
+would refuse real payments, so stop and fix the CRM side. These test events are real rows
+in the CRM. Agree with the CRM owner, before posting, how they are recognised and removed.
+
+```sh
+curl -sS -X POST "$CRM_URL" \
+  -H "Authorization: Bearer $CRM_TOKEN" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: preflight-recurring-1' \
+  --data @preflight-recurring_payment_succeeded.json
+# → {"status":"ok","event_id":"…","schema_status":"validated"}
+```
+
+Then: console → Sinks → CRM, paste the URL and the bearer token, and enable. The console
+refuses to enable it with either one missing (422). Watch `event_deliveries` for
+`sink = 'crm'`, and watch the watchdog for `DEAD_LETTER`. A refused payment logs
+`DEAD_LETTER queue message failed permanently` with `crm stored <kind> as <status>` in its
+error.
