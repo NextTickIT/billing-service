@@ -350,13 +350,19 @@ retryably, never marks it delivered (§14.2). Connector: `modules/sinks/crm.ts`.
   "correlation_id": "w4pcb:pay_…|Approved",
   "aggregate_id": "pay_…",
   "payload": {
-    "aggregate_id": "pay_…",
-    "correlation_id": "w4pcb:pay_…|Approved",
     "amount": 150000,
+    "currency": 0,
+    "method": 0,
+    "period": "P1M",
     "source": "wayforpay_callback",
     "charge_kind": "scheduled",
     "next_payment_date": "2026-11-20T09:00:00.000Z",
-    "metadata": { "planCode": "half_year" }
+    "period_start": "2026-10-20T09:00:00.000Z",
+    "period_end": "2026-11-20T09:00:00.000Z",
+    "recurring": true,
+    "metadata": { "planCode": "half_year" },
+    "aggregate_id": "pay_…",
+    "correlation_id": "w4pcb:pay_…|Approved"
   }
 }
 ```
@@ -369,8 +375,9 @@ retryably, never marks it delivered (§14.2). Connector: `modules/sinks/crm.ts`.
   CRM's door keeps only `id, name, occurred_at, external_user_id, payload` of the envelope and
   drops the rest, while its event registry requires both subject fields inside every billing
   kind's payload; a body with them only at the top level is stored `rejected`. The top-level
-  copies (and `idempotency_key`) stay for readers that key on the envelope. The payload's own
-  keys are spread after the two subject fields. Owner decision 1 (2026-10-20).
+  copies (and `idempotency_key`) stay for readers that key on the envelope. The two subject
+  fields are written after the payload's own keys, so a payload key of the same name can
+  never replace them. Owner decision 1 (2026-10-20); order fixed in the second review.
 - **Dedupe in the CRM is on the body `id`** (its natural key per client), never on
   `idempotency_key` or the header. The `Idempotency-Key` header is for a proxy or gateway in
   front of the CRM that wants to collapse a retry without parsing the body.
