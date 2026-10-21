@@ -143,6 +143,18 @@ const judgeAck = (
           ),
   });
 
+/**
+ * Kinds the CRM never receives (owner decision 2026-10-21). A quarantined payment is
+ * unfixed: billing could not tell whose it is, and the CRM must not record a payment
+ * before it is attributed. When an operator binds it, the bind emits an ordinary
+ * `recurring_payment_succeeded` (`boundPaymentSucceeded`), and that goes to the CRM. It
+ * is the only unfixed-payment kind billing emits; a refused settlement quarantines through
+ * the same event.
+ */
+export const CRM_SKIPPED_KINDS: ReadonlySet<StoredEvent['name']> = new Set([
+  'unknown_payment_quarantined',
+]);
+
 /** What the sink row lacks for a delivery to be attempted at all. */
 const missingConfig = (client: CrmClient): readonly string[] =>
   [
@@ -223,6 +235,11 @@ const toSinkError = (f: CrmFail): SinkError =>
 export const makeCrmConnector = (client: CrmClient): SinkConnector => ({
   name: SINK_NAME,
   deliver: (event: StoredEvent) => {
+    if (CRM_SKIPPED_KINDS.has(event.name)) {
+      // Like an unmapped event on the SendPulse sink: nothing to send, so the delivery
+      // succeeds without a request and is marked delivered.
+      return Effect.void;
+    }
     const missing = missingConfig(client);
     if (missing.length > 0) {
       // Enabled without an endpoint or a token (the console refuses that state, but the
