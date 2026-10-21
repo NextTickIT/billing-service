@@ -191,3 +191,17 @@ refuses to enable it with either one missing (422). Watch `event_deliveries` for
 `sink = 'crm'`, and watch the watchdog for `DEAD_LETTER`. A refused payment logs
 `DEAD_LETTER queue message failed permanently` with `crm stored <kind> as <status>` in its
 error.
+
+## 8. Accepted risk: a late remap retry can undo a revert
+
+Accepted by the owner on 2026-10-21. The CRM can remap a contact A→B and then revert it
+B→A. If a delayed retry of the first A→B arrives after the revert, it re-applies the old
+remap. B is live again, and the relay calls billing's external-user-id rename again. There
+is no idempotency key per remap through the relay and billing. The owner chose to accept
+this rather than add one.
+
+What it does to billing: the remap's billing rename stays on the `ingest` path. It moves
+the payments and open sessions to the new id and does not re-fire events (`refireEvents`
+is not set, so no `external_user_id_changed` goes out; docs/31). A repeated rename moves
+data and sends nothing to any sink.
+
