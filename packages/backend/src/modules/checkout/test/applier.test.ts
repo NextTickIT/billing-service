@@ -229,7 +229,8 @@ it.effect(
 it.effect(
   'a recurring match whose charge carries a settlement reports it, without reading the row',
   () =>
-    // `unusedSubs` dies on any read: what the scheduler credited is the whole answer, and
+    // The next charge date differs from the window's end on purpose, so a mix-up of the two
+    // shows. `unusedSubs` dies on any read: what the scheduler credited is the whole answer, and
     // the row — possibly moved on by a defer since — is never consulted.
     makeCheckoutApplier(unusedSubs, unusedCheckout)(
       {
@@ -237,7 +238,7 @@ it.effect(
         settlement: {
           periodStart: new Date('2026-02-01T00:00:00Z'),
           periodEnd: new Date('2026-03-01T00:00:00Z'),
-          nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+          nextPaymentDate: new Date('2026-03-04T00:00:00Z'),
           metadata: { planCode: 'half_year' },
         },
       },
@@ -257,7 +258,7 @@ it.effect(
           prolonged: false,
           periodStart: new Date('2026-02-01T00:00:00Z'),
           periodEnd: new Date('2026-03-01T00:00:00Z'),
-          nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+          nextPaymentDate: new Date('2026-03-04T00:00:00Z'),
           metadata: { planCode: 'half_year' },
         });
       }),
