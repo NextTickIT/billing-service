@@ -635,17 +635,18 @@ describe('makeCrmConnector — HTTP status', () => {
     }),
   );
 
-  it.effect(
-    '401 waits for the operator to fix the token: retryable, posted once',
-    () =>
-      Effect.gen(function* () {
-        const crm = crmAnswering({ status: 401, body: '{"error":"x"}' });
+  it.effect.each([
+    ['401 (a token the operator has not fixed yet)', 401],
+    ['408 (a request timeout: send it again)', 408],
+  ] as const)('%s is retryable on the queue, posted once', ([, status]) =>
+    Effect.gen(function* () {
+      const crm = crmAnswering({ status, body: '{"error":"x"}' });
 
-        const result = yield* deliver(client(crm.fetch), event());
+      const result = yield* deliver(client(crm.fetch), event());
 
-        expect(result).toMatchObject(RETRYABLE);
-        expect(crm.posts).toHaveLength(1);
-      }),
+      expect(result).toMatchObject(RETRYABLE);
+      expect(crm.posts).toHaveLength(1);
+    }),
   );
 
   it.effect.each([
