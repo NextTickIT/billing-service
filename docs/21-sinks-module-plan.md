@@ -393,8 +393,13 @@ for anything it stored, including a payload its registry rejected, and the CRM a
 the delivery and marks it so the queue dead-letters it on this attempt (`SinkError.permanent`
 → `isPermanentFailure` → `DEAD_LETTER queue message failed permanently`); "retryable" is the
 queue's ordinary ladder (`QUEUE_MAX_ATTEMPTS`, then `DEAD_LETTER … exhausted its retries`).
-This supersedes §4.5's "no per-error terminal split" for this sink only; SendPulse and
-email are unchanged.
+This supersedes §4.5's "no per-error terminal split" for the CRM connector. The SendPulse
+and email connectors never mark a failure permanent, so their own failures keep the
+ordinary ladder. One change does reach them: a delivery for **any** sink that is disabled
+or gone when it runs now dead-letters on its first attempt (next paragraph). Disabling
+SendPulse or email with deliveries in flight therefore gives one `DEAD_LETTER` alert per
+pending event, where before each message ended as a quiet success with its delivery
+marked failed.
 
 | CRM answer | `initial_payment_succeeded`, `recurring_payment_succeeded`, `one_time_purchase_succeeded` | every other kind |
 |---|---|---|
