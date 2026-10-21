@@ -20,6 +20,20 @@ SELECT kind, enabled, config FROM sinks ORDER BY kind;
 -- expect 0 (sendpulse) and 2 (email); a pre-existing kind 1 row would survive 0024's DO NOTHING
 ```
 
+**Migration 0022 rewrites all of `domain_events` at boot.** The server applies migrations
+before it starts serving. 0022 backfills `"idempotencyKey"` with one `UPDATE` over every
+historical row, then builds a (non-concurrent) index on the column. Both run inside the
+boot of the first new server. On a large table that boot takes visibly longer. While the
+index builds, inserts into `domain_events` wait, so the old image's event publishing pauses
+for that time. Size it before deploying:
+
+```sql
+SELECT count(*), pg_size_pretty(pg_total_relation_size('domain_events')) FROM domain_events;
+```
+
+Deploy at a quiet hour if the table runs to millions of rows. It is safe to re-run: the
+`UPDATE` touches only rows still NULL.
+
 A database that once ran PR #5's OLD numbering (0020–0022 as `event_idempotency_key`,
 `metadata_passthrough`, `crm_sink`) fails the boot check `unmatchedApplied`
 (`infra/migrator.ts`) with "Applied migrations have no matching file". Prod is very unlikely
@@ -174,24 +188,25 @@ The SendPulse connector spreads the whole payload into `external_data`. Success 
 also carry `periodStart`, `periodEnd`, `recurring` and `metadata` (the caller's nested object,
 echoed verbatim). When a checkout first carries metadata, check that delivery in SendPulse.
 
-## 7. After deploy: enable the CRM sink, only once three gates hold
+## 7. After deploy: enable the CRM sink, only once the gates hold
 
 Enabling sends every billing event to the CRM, including the three success kinds the
-CRM pays and attributes on. Do not enable it until all three gates below hold. Record each
-one in the deploy log.
+CRM pays and attributes on. Do not enable it until gates (a) to (c) hold, and do not let the
+CRM payments consumer be switched on until (d) holds too. Record each one in the deploy log.
 
 (a) **guildmaster PR #28 is deployed** to the CRM this sink points at. That release makes
 the CRM door answer 422 for a money-kind payload its registry rejects, instead of 200
 `rejected`. Billing also refuses anything but `validated` for those kinds (docs/21 §14.2),
 but the CRM side has to be live too.
 
-(b) **The billing token is minted in the CRM with scopes `events` and `money_events`, and
-is NOT a trusted proxy.** Without `money_events` the door answers 403 to the success kinds.
-Billing treats a 403 as permanent, so every payment event would dead-letter. A trusted-proxy
-token is the Guild proxy's kind. The door answers 400 to it without a client fingerprint
-header, which billing never sends, and 403 to a money kind even with one. Both are permanent
-here. Check the client in the CRM's API-clients list before pasting
-the token.
+(b) **The billing token is minted in the CRM with scopes `events`, `money_events` and
+`billing_events`, and is NOT a trusted proxy.** The CRM door requires `billing_events` for
+every billing kind, and `money_events` for its projected money kinds; without either it
+answers 403. Billing treats a 403 as permanent, so every such event would dead-letter. A
+trusted-proxy token is the Guild proxy's kind. The door answers 400 to it without a client
+fingerprint header, which billing never sends, and 403 to a billing or money kind even with
+one. Both are permanent here. Check the client's scopes and proxy flag in the CRM's
+API-clients list before pasting the token.
 
 (c) **A test POST of each success kind answers `validated`, made and cleaned up with the
 CRM owner's sign-off.** The test events are real rows in the CRM, and a validated success
@@ -204,8 +219,10 @@ before it starts, and runs in this order:
    `recurring_payment_succeeded`, `one_time_purchase_succeeded`). Use the URL and token you
    are about to paste, the docs/21 §14.1 body shape, a fresh `id` each time, and one
    dedicated test `external_user_id` that belongs to no real contact (agree the value with
-   the CRM owner and record it in the deploy log). Include `charge_kind` (`scheduled` or
-   `checkout`); the CRM registry accepts only those two values.
+   the CRM owner and record it in the deploy log). The payload must carry every field a
+   real success event does, as below: the CRM registry rejects a success payload that lacks
+   `currency`, `method` or `period`. `charge_kind` is `scheduled` or `checkout`, the only two
+   values the registry accepts.
 3. Each must answer 200 with `"schema_status":"validated"`. Anything else (`unregistered`,
    `rejected`, 4xx) means the CRM would refuse real payments: stop, delete what was posted
    (step 4) and fix the CRM side.
@@ -240,6 +257,35 @@ Record the event ids in the deploy log. The CRM owner decides, before the switch
 the CRM keeps; B5 must not re-post the other.
 
 ```sh
+# preflight-recurring_payment_succeeded.json, the shape crmBody sends (docs/21 §14.1).
+# For the other two kinds change name and id; one_time_purchase_succeeded has
+# "next_payment_date": null, "recurring": false, "charge_kind": "checkout".
+cat > preflight-recurring_payment_succeeded.json <<'JSON'
+{
+  "id": "evt_preflight_recurring_1",
+  "idempotency_key": "evt_preflight_recurring_1",
+  "name": "recurring_payment_succeeded",
+  "occurred_at": "2026-10-22T09:00:00.000Z",
+  "external_user_id": "<the agreed test external_user_id>",
+  "correlation_id": "preflight-recurring-1",
+  "aggregate_id": "preflight-payment-1",
+  "payload": {
+    "amount": 150000,
+    "currency": 0,
+    "method": 0,
+    "period": "P1M",
+    "source": "wayforpay_charge",
+    "charge_kind": "scheduled",
+    "next_payment_date": "2026-11-22T09:00:00.000Z",
+    "period_start": "2026-10-22T09:00:00.000Z",
+    "period_end": "2026-11-22T09:00:00.000Z",
+    "recurring": true,
+    "metadata": null,
+    "aggregate_id": "preflight-payment-1",
+    "correlation_id": "preflight-recurring-1"
+  }
+}
+JSON
 curl -sS -X POST "$CRM_URL" \
   -H "Authorization: Bearer $CRM_TOKEN" -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: preflight-recurring-1' \
