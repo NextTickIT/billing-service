@@ -31,6 +31,7 @@ export interface SinksLiveConfig {
   };
   readonly crm: {
     readonly rateLimitRps: number;
+    readonly timeoutMillis: number;
   };
 }
 
@@ -61,6 +62,7 @@ export const SinksLive = (
         fetch: (url, init) => globalThis.fetch(url, init),
         rateLimiter,
         crmRateLimiter,
+        crmTimeoutMillis: config.crm.timeoutMillis,
         apiUrl: config.sendpulse.apiUrl,
         emailApiUrl: config.email.apiUrl,
         emailRateLimiter,
