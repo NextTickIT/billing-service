@@ -22,6 +22,7 @@ import { manualMinterScenarios } from '@/modules/billing/test/manual-minter.e2e.
 import { crmSinkScenarios } from '@/modules/sinks/test/crm.e2e.js';
 import { settlementScenarios } from '@/modules/billing/test/settlement.e2e.js';
 import { chargeKindScenarios } from '@/modules/charge/test/charge-kind.e2e.js';
+import { duplicateOrderScenarios } from '@/modules/charge/test/duplicate-order.e2e.js';
 import { Outbox } from '@/modules/outbox/domain.js';
 import { sinkCancelled } from '@/modules/billing/events.js';
 import {
@@ -1476,4 +1477,5 @@ export const effectScenarios: readonly EffectScenario[] = [
   ...crmSinkScenarios,
   ...settlementScenarios,
   ...chargeKindScenarios,
+  ...duplicateOrderScenarios,
 ];
