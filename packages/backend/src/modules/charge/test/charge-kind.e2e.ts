@@ -172,6 +172,7 @@ const firstCheckout = Effect.gen(function* () {
     renewal: null,
     origin: null,
     renewalOf: null,
+    options: null,
     idempotencyKey: null,
     email: '',
     metadata: null,

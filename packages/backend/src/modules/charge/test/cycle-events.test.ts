@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Charge, Match } from '@/modules/charge/contracts.js';
+import type {
+  Charge,
+  Match,
+  Prolongation,
+} from '@/modules/charge/contracts.js';
 import {
   initialPaymentFailed,
   initialPaymentSucceeded,
@@ -35,12 +39,19 @@ const match: Match = {
 };
 
 const next = new Date('2026-04-09T00:00:00Z');
+// The window the three cycles bought: P4W × 3 from the charge, ending on the next charge.
+const prolongation: Prolongation = {
+  nextPaymentDate: next,
+  periodStart: new Date('2026-01-15T00:00:00Z'),
+  periodEnd: next,
+  metadata: null,
+};
 
 describe('events for a multi-cycle payment', () => {
   it('report the total charged, the time bought and the cycle count', () => {
     for (const built of [
-      initialPaymentSucceeded(event, match, 'sub_1', next).payload,
-      recurringPaymentSucceeded(event, match, 'sub_1', next).payload,
+      initialPaymentSucceeded(event, match, 'sub_1', prolongation).payload,
+      recurringPaymentSucceeded(event, match, 'sub_1', prolongation).payload,
       initialPaymentFailed(event, match).payload,
       recurringPaymentFailed(event, match).payload,
       paymentCreated(event, match, 'sub_1').payload,
@@ -52,8 +63,12 @@ describe('events for a multi-cycle payment', () => {
   it('a one-cycle pick on a page selling cycles reports cycles: 1', () => {
     const one = { ...match, cycles: 1 };
     expect(
-      recurringPaymentSucceeded({ ...event, amount: 5000 }, one, 'sub_1', next)
-        .payload,
+      recurringPaymentSucceeded(
+        { ...event, amount: 5000 },
+        one,
+        'sub_1',
+        prolongation,
+      ).payload,
     ).toMatchObject({ amount: 5000, period: 'P4W', cycles: 1 });
   });
 
@@ -65,7 +80,7 @@ describe('events for a multi-cycle payment', () => {
         { ...event, amount: 5000 },
         plain,
         'sub_1',
-        next,
+        prolongation,
       ).payload;
       expect(payload).toEqual({
         amount: 5000,
@@ -73,7 +88,12 @@ describe('events for a multi-cycle payment', () => {
         method: 1,
         period: 'P4W',
         source: 'whitepay_callback',
-        nextPaymentDate: next.toISOString(),
+        chargeKind: 'checkout',
+        nextPaymentDate: '2026-04-09T00:00:00.000Z',
+        periodStart: '2026-01-15T00:00:00.000Z',
+        periodEnd: '2026-04-09T00:00:00.000Z',
+        recurring: true,
+        metadata: null,
       });
     }
   });

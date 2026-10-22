@@ -136,6 +136,8 @@ const NOT_RENDERED: ReadonlyMap<string, string> = new Map([
   ['currency', 'numeric code, branched on rather than shown'],
   ['method', 'numeric; the flow writes its own wording for card vs crypto'],
   ['attempt', 'a number the flow branches on to escalate wording'],
+  ['cycles', 'a count of periods bought; the flow phrases its own sentence'],
+  ['cycleOptions', 'the cycle counts a link offers; the page shows the choice'],
   ['noticeDays', 'the offset that fired this notice, not customer-facing'],
   ['days', 'granted free days; the flow phrases its own sentence'],
   ['movedPayments', 'operational count, never messaged'],

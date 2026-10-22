@@ -63,6 +63,7 @@ const sub: Payment = {
   firstFailureAt: null,
   retryAttempt: 0,
   cancelRequestedAt: null,
+  metadata: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
 };
