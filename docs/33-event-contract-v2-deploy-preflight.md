@@ -1,27 +1,32 @@
 # 33 — Event contract v2 + CRM sink: deploy pre-flight (B4)
 
-Branch `event-contract-v2-main`: PR #5 (`wip/event-contract-v2`) replayed onto `main`
-(58d80ef), plus the CRM envelope (owner decision 1) and the manual-renewal pin (decision 7).
+Branch `event-contract-v2-rebase` (replaces PR #6, `event-contract-v2-main`): PR #5
+(`wip/event-contract-v2`) replayed onto `main`, plus the CRM envelope (owner decision 1) and
+the manual-renewal pin (decision 7), then replayed again onto `main` cdc3836 (checkout
+options, migration `0022_checkout_options`). Production still runs 58d80ef, so that main
+ships in the same deploy as this branch.
 This is the checklist for the deploy that ships it (work package B4). Source: the critic
 review of 2026-10-20. The runbook itself lives in `billing-service-deploy`
 (`20-deployment.md`); record the deploy there as usual and link this page.
 
-What the image adds to the database: migrations `0022_event_idempotency_key` (nullable
-`domain_events."idempotencyKey"`, backfill, NON-unique index), `0023_metadata_passthrough`
-(nullable `metadata` on checkout sessions and payments) and `0024_crm_sink` (sink row
-`kind = 1`, disabled, empty URL). All three are additive.
+What the image adds to the database: main's `0022_checkout_options`, then this branch's
+migrations `0023_event_idempotency_key` (nullable `domain_events."idempotencyKey"`, backfill,
+NON-unique index), `0024_metadata_passthrough` (nullable `metadata` on checkout sessions and
+payments) and `0025_crm_sink` (sink row `kind = 1`, disabled, empty URL). All three of this
+branch's are additive.
 
 ## 1. Run on every database before deploying (prod, staging, shared dev)
 
 ```sql
 SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id;
--- expect 1..21 ending 20 checkout_email, 21 checkout_renewal; nothing else
+-- expect 1..22 ending 21 checkout_renewal, 22 checkout_options; nothing else
+-- (prod, still on 58d80ef, shows 1..21: there main's 0022 applies in this same boot)
 SELECT kind, enabled, config FROM sinks ORDER BY kind;
--- expect 0 (sendpulse) and 2 (email); a pre-existing kind 1 row would survive 0024's DO NOTHING
+-- expect 0 (sendpulse) and 2 (email); a pre-existing kind 1 row would survive 0025's DO NOTHING
 ```
 
-**Migration 0022 rewrites all of `domain_events` at boot.** The server applies migrations
-before it starts serving. 0022 backfills `"idempotencyKey"` with one `UPDATE` over every
+**Migration 0023 rewrites all of `domain_events` at boot.** The server applies migrations
+before it starts serving. 0023 backfills `"idempotencyKey"` with one `UPDATE` over every
 historical row, then builds a (non-concurrent) index on the column. Both run inside the
 boot of the first new server. On a large table that boot takes visibly longer. While the
 index builds, inserts into `domain_events` wait, so the old image's event publishing pauses
@@ -38,19 +43,26 @@ A database that once ran PR #5's OLD numbering (0020–0022 as `event_idempotenc
 `metadata_passthrough`, `crm_sink`) fails the boot check `unmatchedApplied`
 (`infra/migrator.ts`) with "Applied migrations have no matching file". Prod is very unlikely
 to be in that state (it boots 58d80ef, which runs the same check); staging or a shared dev DB
-may be. Fix such a database before deploying to it.
+may be. The same goes for a database that ran PR #6's image (`event-contract-v2-main`), where
+0022–0024 are `event_idempotency_key`, `metadata_passthrough`, `crm_sink`: here those are
+0023–0025 and 22 is `checkout_options`. Fix such a database before deploying to it.
 
-## 2. Rollback to 58d80ef needs a manual step
+## 2. Rollback to cdc3836 needs a manual step
 
 Main's server boot runs the same `unmatchedApplied` check (`infra/migrator.ts`). After this
-deploy the applied rows `22 event_idempotency_key`, `23 metadata_passthrough` and
-`24 crm_sink` have no file in image 58d80ef, so a plain redeploy of that image **refuses to
+deploy the applied rows `23 event_idempotency_key`, `24 metadata_passthrough` and
+`25 crm_sink` have no file in image cdc3836 (main with checkout options), so a plain redeploy of that image **refuses to
 start** ("Applied migrations have no matching file"). The migrations are additive, so the
 rollback removes only their bookkeeping rows, plus the CRM sink row (step 4).
 
+The rollback target is cdc3836, not 58d80ef (what prod ran before this deploy): main's
+`22 checkout_options` stays applied and cdc3836 ships its file. Going back further, to
+58d80ef, would also need row 22 deleted and is a separate decision about checkout options;
+it is not covered here.
+
 **Rollback procedure:**
 
-1. If the CRM sink was ever enabled, drain it **while it is still enabled**. Image 58d80ef
+1. If the CRM sink was ever enabled, drain it **while it is still enabled**. Image cdc3836
    has no CRM connector: a `crm` delivery it picks up is marked failed and its queue message
    succeeds, so nothing alerts and the event never reaches the CRM. Disabling first does not
    help either. A delivery whose sink is disabled cannot be sent, so disabling before the
@@ -70,7 +82,7 @@ rollback removes only their bookkeeping rows, plus the CRM sink row (step 4).
 
 2. Disable the CRM sink (console → Sinks → CRM → off) and **record the disable time (UTC)
    in the deploy log**. Soon after, no event gets a CRM delivery at all: publish fans out
-   only to enabled sinks. That covers the rest of this image's life and everything 58d80ef
+   only to enabled sinks. That covers the rest of this image's life and everything cdc3836
    publishes until a roll-forward re-enables the sink. Those events have no
    `sink = 'crm'` row, so no query over `event_deliveries` can list them. The B5 backfill
    must re-post every event whose **`domain_events."createdAt"`** (when billing stored it)
@@ -107,7 +119,7 @@ rollback removes only their bookkeeping rows, plus the CRM sink row (step 4).
 4. Delete the three bookkeeping rows and the CRM sink row by hand:
 
    ```sql
-   DELETE FROM effect_sql_migrations WHERE migration_id IN (22, 23, 24);
+   DELETE FROM effect_sql_migrations WHERE migration_id IN (23, 24, 25);
    DELETE FROM sinks WHERE kind = 1;
    ```
 
@@ -116,22 +128,22 @@ rollback removes only their bookkeeping rows, plus the CRM sink row (step 4).
    token, so a later roll-forward needs it pasted again.
 
 5. Leave everything else the migrations added in place (main ignores it, see below).
-6. Start image 58d80ef (server and worker).
+6. Start image cdc3836 (server and worker).
 
 **What stays behind, and why it is harmless to main:**
 
-| Migration | Adds | Under 58d80ef |
+| Migration | Adds | Under cdc3836 |
 |---|---|---|
-| 0022 | `domain_events."idempotencyKey"` text, nullable, no default (backfilled from `id`); index `domain_events_idempotency_key_idx` (NON-unique) | main never reads or writes it; its inserts leave it NULL |
-| 0023 | `checkout_sessions.metadata` jsonb, nullable; `payments.metadata` jsonb, nullable | main never reads or writes them; its inserts leave them NULL |
-| 0024 | `sinks` row `kind = 1` (CRM), disabled, `config = {"url":""}`, empty token | deleted by rollback step 4; left in place, main's console Sinks list would return 500 (§5) |
+| 0023 | `domain_events."idempotencyKey"` text, nullable, no default (backfilled from `id`); index `domain_events_idempotency_key_idx` (NON-unique) | main never reads or writes it; its inserts leave it NULL |
+| 0024 | `checkout_sessions.metadata` jsonb, nullable; `payments.metadata` jsonb, nullable | main never reads or writes them; its inserts leave them NULL |
+| 0025 | `sinks` row `kind = 1` (CRM), disabled, `config = {"url":""}`, empty token | deleted by rollback step 4; left in place, main's console Sinks list would return 500 (§5) |
 
 The `event_deliveries` rows for `sink = 'crm'` also stay. Main runs nothing for them once
 step 1 has drained their queue messages; its operator deliveries list may still show them.
 
-Rolling forward again later is safe. 0022 re-runs as `ADD COLUMN IF NOT EXISTS`, then
-backfills only rows still NULL, which are the events written under 58d80ef. 0023 also uses
-`IF NOT EXISTS`. 0024 re-seeds the CRM row the rollback deleted, disabled with no URL or
+Rolling forward again later is safe. 0023 re-runs as `ADD COLUMN IF NOT EXISTS`, then
+backfills only rows still NULL, which are the events written under cdc3836. 0024 also uses
+`IF NOT EXISTS`. 0025 re-seeds the CRM row the rollback deleted, disabled with no URL or
 token, so §7 applies again.
 
 ## 3. Stuck lapses will fire at the first tick
@@ -178,7 +190,7 @@ WHERE status IN (0, 1)            -- Active, PastDue
 ## 5. Rolling window: the old image's Sinks list can 500
 
 Until the old server process is gone, main's `toView` has no case for kind 1, so the old
-image's console Sinks list can return a 500 once 0024 has run. Main's `buildConnector` drops
+image's console Sinks list can return a 500 once 0025 has run. Main's `buildConnector` drops
 unknown kinds and the row is disabled anyway, so no delivery is affected. Do not configure
 sinks until the old process is gone.
 
@@ -343,7 +355,7 @@ B5 (the history backfill; not built yet, and not in this repo) re-posts stored
    `recurring_payment_succeeded` and `one_time_purchase_succeeded`. Analytics reads
    `charge_kind` directly. It has no `source` fallback any more, and its derive run fails
    on a billing success without the field. An event stored before `chargeKind` shipped
-   (412f876) has none in its payload, so B5 derives it from the order reference, with the
+   (c70cd9a; 412f876 on PR #6) has none in its payload, so B5 derives it from the order reference, with the
    same rule billing applies to a bound charge (`boundChargeKind`, `charge/domain.ts`):
    reference starting `sub_` or containing `_WFPREG-` → `scheduled`; anything else →
    `checkout`. The reference is the `externalRef` of the charge the event came from. A

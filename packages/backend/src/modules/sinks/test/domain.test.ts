@@ -125,7 +125,7 @@ it('a rejected merge carries no sink for the route to write', () => {
   });
 });
 
-/** The CRM row as migration 0024 seeds it: disabled, no URL, no token. */
+/** The CRM row as migration 0025 seeds it: disabled, no URL, no token. */
 const seededCrm: Sink = {
   ...crm,
   auth: { kind: AuthKind.Bearer, token: '' },

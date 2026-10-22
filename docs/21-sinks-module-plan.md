@@ -322,7 +322,7 @@ id yields a terminal delivery failure (§4.5) visible to the operator.
 ## 14. CRM sink (event contract v2)
 
 A second event sink beside SendPulse: kind `Crm = 1`, code `crm`, seeded **disabled with an
-empty URL** by migration `0024_crm_sink`. The outbox fans each event out to one delivery per
+empty URL** by migration `0025_crm_sink`. The outbox fans each event out to one delivery per
 sink, so the CRM and SendPulse retry and fail independently. The CRM gets every event except
 the skipped kinds below (no per-name opt-in, unlike SendPulse's `flows`), through its own rate limiter
 (`CRM_RATE_LIMIT_RPS`, default 10), and every POST has one deadline covering connect, headers

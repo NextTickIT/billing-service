@@ -2,7 +2,7 @@ import { SqlClient } from '@effect/sql';
 import { Effect } from 'effect';
 
 /**
- * Migration 0022 — separate an event's IDENTITY from its DEDUPE SURFACE (docs/07).
+ * Migration 0023 — separate an event's IDENTITY from its DEDUPE SURFACE (docs/07).
  *
  * `domain_events.id` is what a sink reads as `event_id`, and live SendPulse flows branch
  * on it, so its format cannot change without coordinating every consumer. Dedupe moves to
