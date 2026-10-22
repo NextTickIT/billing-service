@@ -58,6 +58,7 @@ it('prolongSession is a recurring checkout at the sub terms, method-locked by or
     renewal: null,
     origin: 'prolong',
     renewalOf: 'sub_1',
+    options: null,
     idempotencyKey: 'idem-1',
     expiresAt: EXPIRES,
   });

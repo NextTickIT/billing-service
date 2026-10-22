@@ -44,7 +44,9 @@ import { makeRateLimiter } from '@/infra/rate-limiter.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
   checkoutPath,
+  cycleOptions,
   manualRenewalSession,
+  offeredCycles,
 } from '@/modules/checkout/domain.js';
 import { EXTERNAL_USER_ID_CHANGE } from '@/modules/identity/contracts.js';
 import { externalUserIdChangedNotify } from '@/modules/identity/domain.js';
@@ -162,11 +164,17 @@ export const manualCheckoutMinter =
       );
       const baseUrl = config.checkoutBaseUrl;
       const id = `chk_${randomUUID()}`;
-      const inserted = yield* repo.insert(
-        manualRenewalSession(sub, id, windowExpiresAt, idempotencyKey),
-      );
+      const cycles = config.scheduler.manualRenewalCycleOptions;
+      const inserted = yield* repo.insert({
+        ...manualRenewalSession(sub, id, windowExpiresAt, idempotencyKey),
+        options: cycleOptions(cycles),
+      });
       if (inserted) {
-        return { checkoutUrl: checkoutPath(baseUrl, id), windowExpiresAt };
+        return {
+          checkoutUrl: checkoutPath(baseUrl, id),
+          windowExpiresAt,
+          cycleOptions: cycles,
+        };
       }
       // A prior prompt this cycle already minted it — reuse that session/link. Ownership
       // is the key itself (it embeds this sub's id), not the contact: a docs/31 remap
@@ -188,9 +196,11 @@ export const manualCheckoutMinter =
           new ForeignManualCheckout({ paymentId: sub.id, idempotencyKey }),
         );
       }
+      // What that session offers, which a config change since it was minted does not move.
       return {
         checkoutUrl: checkoutPath(baseUrl, existing.value.id),
         windowExpiresAt: existing.value.expiresAt,
+        cycleOptions: offeredCycles(existing.value),
       };
     });
 

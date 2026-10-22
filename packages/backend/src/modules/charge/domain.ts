@@ -1,16 +1,17 @@
 import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
-import type {
-  CardChangeFailedEvent,
-  CardChangeSucceededEvent,
-  DomainEvent,
-  InitialPaymentFailedEvent,
-  InitialPaymentSucceededEvent,
-  OneTimePurchaseSucceededEvent,
-  PaymentCreatedEvent,
-  RecurringPaymentFailedEvent,
-  RecurringPaymentSucceededEvent,
-  UnknownPaymentQuarantinedEvent,
+import {
+  type CardChangeFailedEvent,
+  type CardChangeSucceededEvent,
+  type DomainEvent,
+  type InitialPaymentFailedEvent,
+  type InitialPaymentSucceededEvent,
+  type OneTimePurchaseSucceededEvent,
+  type PaymentCreatedEvent,
+  type RecurringPaymentFailedEvent,
+  type RecurringPaymentSucceededEvent,
+  scalePeriod,
+  type UnknownPaymentQuarantinedEvent,
 } from '@billing-service/shared';
 import { Context, Effect, Layer, Option, Schema } from 'effect';
 
@@ -47,6 +48,13 @@ import { paymentReactivated } from '@/modules/payment/cancel.js';
 const eventId = (idemKey: string, suffix: string): string =>
   `evt_${idemKey}:${suffix}`;
 
+/** The time a charge bought: the match's period, or for a multi-cycle purchase that
+ * period × `cycles`, reported with the cycle count. */
+const purchased = (match: Match) =>
+  match.cycles == null
+    ? { period: match.period }
+    : { period: scalePeriod(match.period, match.cycles), cycles: match.cycles };
+
 /** Shared success payload for the initial/recurring variants (docs/07). `nextPaymentDate`
  * is the next scheduled charge (null for a one-time purchase), serialized ISO-8601 to match
  * the payload-date convention (`payment_deferred.newPeriodEnd`, `charge_retry_failed`). */
@@ -58,7 +66,7 @@ const succeededPayload = (
   amount: event.amount,
   currency: event.currency,
   method: match.method,
-  period: match.period,
+  ...purchased(match),
   source: event.source,
   nextPaymentDate: nextPaymentDate?.toISOString() ?? null,
 });
@@ -169,7 +177,7 @@ export const initialPaymentFailed = (
     amount: event.amount,
     currency: event.currency,
     method: match.method,
-    period: match.period,
+    ...purchased(match),
     reason: declineReason(event.payload),
     source: event.source,
   },
@@ -195,7 +203,7 @@ export const recurringPaymentFailed = (
     amount: event.amount,
     currency: event.currency,
     method: match.method,
-    period: match.period,
+    ...purchased(match),
     reason: declineReason(event.payload),
     source: event.source,
   },
@@ -217,7 +225,7 @@ export const paymentCreated = (
     amount: event.amount,
     currency: event.currency,
     method: match.method,
-    period: match.period,
+    ...purchased(match),
     renewal: match.renewal ?? null,
   },
 });

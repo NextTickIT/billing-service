@@ -68,7 +68,10 @@ const succeededPayload = {
   // ISO-8601 date of the next scheduled charge; null for a one-time purchase (never
   // renews). A string (not Schema.Date) to match the payload-date convention used by
   // `payment_deferred.newPeriodEnd` / `charge_retry_failed.nextRetryDate`.
-  nextPaymentDate: Schema.NullOr(Schema.String),
+  nextPaymentDate: Schema.NullOr(Schema.String), // How many cycles of the subscription's terms a multi-cycle (manual renewal) checkout
+  // bought; absent when the charge was not such a purchase. `amount` is then the total
+  // charged and `period` the time bought, `cycles` × the subscription's period.
+  cycles: Schema.optional(Schema.Int),
 };
 
 export const InitialPaymentSucceededEvent = Schema.Struct({
@@ -113,6 +116,8 @@ const checkoutFailedPayload = {
   period: Schema.String,
   reason: Schema.String,
   source: Schema.String,
+  // As on the success variants.
+  cycles: Schema.optional(Schema.Int),
 };
 
 /**
@@ -155,7 +160,7 @@ export type RecurringPaymentFailedEvent = Schema.Schema.Type<
  * was paid and therefore how it renews — a card autocharges, crypto takes a manual
  * prompt (`payment_manual_required`) — so the event that states what the payment costs
  * per period also states how that money is taken. `amount`/`period` are the FIRST
- * charge; `renewal` carries the terms later renewals use when the checkout set them
+ * charge (its total and the time it bought); `renewal` carries the terms later renewals use when the checkout set them
  * (null when it did not, so renewals repeat the first charge).
  */
 export const PaymentCreatedEvent = Schema.Struct({
@@ -170,6 +175,9 @@ export const PaymentCreatedEvent = Schema.Struct({
     renewal: Schema.NullOr(
       Schema.Struct({ amount: Schema.Int, period: Schema.String }),
     ),
+    // As on the success variants: a multi-cycle first charge reports its total and the
+    // time it bought; the payment itself renews at one cycle's terms.
+    cycles: Schema.optional(Schema.Int),
   }),
 });
 
@@ -238,6 +246,11 @@ export const PaymentManualRequiredEvent = Schema.Struct({
      * this a flow could not say "we will remind you on the 5th".
      */
     nextRetryDate: Schema.String,
+    /**
+     * The cycle counts the linked page offers (`[1]` when it offers only this one). A
+     * flow can say "pay for 3 months at once" only when 3 is among them.
+     */
+    cycleOptions: Schema.Array(Schema.Int),
   }),
 });
 

@@ -150,6 +150,16 @@ describe('public session and prolong contracts', () => {
       renewal: null,
       methodLocked: true,
       prolong: true,
+      options: [
+        {
+          amount: 5000,
+          period: 'P4W',
+          promo: null,
+          renewal: null,
+          cycles: null,
+        },
+      ],
+      defaultOption: 0,
       // Internal columns a careless spread would leak: dropped, never echoed.
       origin: 'card_change_arrears',
       renewalOf: 'sub_1',

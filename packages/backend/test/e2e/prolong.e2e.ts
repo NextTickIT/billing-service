@@ -53,9 +53,9 @@ import {
  * production repos on the scenario's database.
  */
 
-type Json = Record<string, unknown>;
+export type Json = Record<string, unknown>;
 
-interface Http {
+export interface Http {
   readonly baseUrl: string;
   readonly query: (sql: string) => Promise<string>;
   readonly bff: (request: Request) => Promise<Response>;
@@ -68,7 +68,7 @@ interface PayResult {
   readonly body: Json;
 }
 
-const FAR = new Date('2030-01-01T00:00:00Z');
+export const FAR = new Date('2030-01-01T00:00:00Z');
 const PAST = new Date('2026-01-01T00:00:00Z');
 const CREATED = String(CheckoutSessionStatus.Created);
 const PENDING = String(CheckoutSessionStatus.Pending);
@@ -81,7 +81,7 @@ const INTRO = {
 };
 
 /** Run one effect on a worker runtime over this scenario's database. */
-const onDb = async <A, E>(
+export const onDb = async <A, E>(
   effect: Effect.Effect<A, E, WorkerContext>,
 ): Promise<A> => {
   let out: A | undefined;
@@ -92,7 +92,7 @@ const onDb = async <A, E>(
 };
 
 /** Seed recurring subs; resolves to a lookup of the inserted rows by contact. */
-const seedSubs = async (seeds: readonly SubSeed[]) => {
+export const seedSubs = async (seeds: readonly SubSeed[]) => {
   const rows = await onDb(
     Effect.flatMap(SqlClient.SqlClient, (sql) =>
       Effect.forEach(seeds, (s) => seedSub(makePaymentRepo(sql), s)),
@@ -103,7 +103,7 @@ const seedSubs = async (seeds: readonly SubSeed[]) => {
     assert.fail(`no seeded sub for ${externalUserId}`);
 };
 
-const insertSessions = (sessions: readonly NewCheckoutSession[]) =>
+export const insertSessions = (sessions: readonly NewCheckoutSession[]) =>
   onDb(
     Effect.flatMap(SqlClient.SqlClient, (sql) =>
       Effect.forEach(sessions, (s) => makeCheckoutRepo(sql).insert(s)),
@@ -111,7 +111,7 @@ const insertSessions = (sessions: readonly NewCheckoutSession[]) =>
   );
 
 /** A worker pass over the queue (the HTTP app runs no worker in e2e). */
-const drainQueue = () =>
+export const drainQueue = () =>
   onDb(
     Effect.gen(function* () {
       yield* registerHandlers;
@@ -119,7 +119,7 @@ const drainQueue = () =>
     }),
   );
 
-const httpContext = async (
+export const httpContext = async (
   baseUrl: string,
   query: Http['query'],
   alias: string,
@@ -158,10 +158,13 @@ const callProlong = (http: Http, externalUserId: string, key?: string) =>
     headers(http, key),
   );
 
-const createSession = (http: Http, body: Json, key?: string) =>
+export const createSession = (http: Http, body: Json, key?: string) =>
   postJson(`${http.baseUrl}/api/checkout-sessions`, body, headers(http, key));
 
-const sessionIdOf = async (res: Response, what: string): Promise<string> => {
+export const sessionIdOf = async (
+  res: Response,
+  what: string,
+): Promise<string> => {
   assert.equal(res.status, 201, `${what} → 201`);
   return ((await res.json()) as { sessionId: string }).sessionId;
 };
@@ -170,7 +173,7 @@ const prolongId = async (http: Http, contact: string): Promise<string> =>
   sessionIdOf(await callProlong(http, contact), `prolong ${contact}`);
 
 /** The public read the pay page loads (through the BFF). */
-const publicRead = async (http: Http, id: string): Promise<Json> => {
+export const publicRead = async (http: Http, id: string): Promise<Json> => {
   const res = await http.bff(
     new Request(`${http.baseUrl}/api/checkout-sessions/${id}`),
   );
@@ -203,7 +206,7 @@ const paidSession = (res: PayResult, what: string): string => {
   return String(res.body['url']).replace(`${WHITEPAY_PAY_URL}/`, '');
 };
 
-const scalar = async (http: Http, sql: string): Promise<string> =>
+export const scalar = async (http: Http, sql: string): Promise<string> =>
   (await http.query(sql)).trim();
 
 const statusOf = (http: Http, id: string) =>
@@ -266,6 +269,7 @@ const plainSession = (
   renewal: null,
   origin: null,
   renewalOf: null,
+  options: null,
   idempotencyKey: null,
   email: '',
   expiresAt: FAR,

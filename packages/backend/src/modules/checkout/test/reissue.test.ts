@@ -35,6 +35,7 @@ const session = (over: Partial<CheckoutSession> = {}): CheckoutSession => ({
   renewal: null,
   origin: null,
   renewalOf: null,
+  options: null,
   idempotencyKey: 'sp:1',
   email: 'buyer@example.com',
   expiresAt: new Date(NOW - HOUR), // lapsed an hour ago
@@ -271,6 +272,7 @@ describe("T23: a lapsed link re-mints at the live sub's current terms", () => {
       // An unlabelled re-mint: it renews no particular sub.
       origin: null,
       renewalOf: null,
+      options: null,
       idempotencyKey: null,
       // Where the buyer gets the receipt still belongs to the link they clicked.
       email: 'buyer@example.com',
@@ -288,6 +290,7 @@ describe("T23: a lapsed link re-mints at the live sub's current terms", () => {
         session({
           origin: 'prolong',
           renewalOf: 'pay_old',
+          options: null,
           promo: null,
           method: 0,
           idempotencyKey: null,
@@ -305,6 +308,7 @@ describe("T23: a lapsed link re-mints at the live sub's current terms", () => {
         renewal: null,
         origin: 'prolong',
         renewalOf: 'pay_live',
+        options: null,
         recurring: true,
         paymentId: null,
       });
@@ -323,6 +327,7 @@ describe('T23: a lapsed manual-renewal link', () => {
     expect(minted[0]).toMatchObject({
       origin: 'manual_renewal',
       renewalOf: 'pay_live',
+      options: null,
       amount: 7000,
     });
   });
@@ -341,6 +346,7 @@ describe('T23: a lapsed link with no live sub is cloned on its own terms', () =>
       period: 'P1M',
       origin: 'prolong',
       renewalOf: 'pay_dead',
+      options: null,
       method: 0,
     });
   });

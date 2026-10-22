@@ -46,6 +46,7 @@ const session = (over: Partial<CheckoutSession> = {}): CheckoutSession => ({
   renewal: null,
   origin: 'prolong',
   renewalOf: 'pay_live',
+  options: null,
   idempotencyKey: null,
   email: '',
   expiresAt: new Date(NOW + HOUR),
@@ -212,6 +213,7 @@ describe("T31: a lapsed prolong link re-mints locked to the sub's current method
       origin: 'prolong',
       method: PaymentMethod.Crypto,
       renewalOf: 'pay_live',
+      options: null,
     });
   });
 
@@ -282,6 +284,7 @@ describe('T35: Q8 — an intro offer is refused while a live sub exists', () => 
     session({
       origin: null,
       renewalOf: null,
+      options: null,
       amount: 100,
       period: 'P1W',
       renewal: { amount: 5000, period: 'P4W' },
@@ -380,6 +383,7 @@ describe('C2: a still-live renewal link that names another sub is re-minted', ()
       expect(writes.reissued[0]).toMatchObject({
         origin,
         renewalOf: 'pay_live',
+        options: null,
         amount: 5000,
         period: 'P4W',
         method: PaymentMethod.Card,
@@ -430,6 +434,7 @@ describe('C2: the prolong lock follows the live sub when its method changed', ()
       origin: 'prolong',
       method: PaymentMethod.Crypto,
       renewalOf: 'pay_live',
+      options: null,
     });
   });
 
@@ -450,6 +455,7 @@ describe('C3: intro pricing compares periods by value', () => {
       session({
         origin: null,
         renewalOf: null,
+        options: null,
         renewal: { amount: 5000, period: 'P28D' },
       }),
     ]);

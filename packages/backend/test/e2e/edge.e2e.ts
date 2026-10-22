@@ -8,6 +8,7 @@ import {
   postJson,
   signCallback,
 } from './http-harness.js';
+import { optionsScenarios } from './options.e2e.js';
 import { prolongScenarios } from './prolong.e2e.js';
 import type { Scenario } from './http-harness.js';
 
@@ -22,7 +23,8 @@ import type { Scenario } from './http-harness.js';
  *
  * Registered as an e2e scenario by the existing `run.ts` harness — same pattern
  * as `routes.e2e.ts`. The shared HTTP helpers live in `http-harness.ts`; the
- * prolong / method-lock / Q8 scenarios in `prolong.e2e.ts`.
+ * prolong / method-lock / Q8 scenarios in `prolong.e2e.ts`, the checkout options in
+ * `options.e2e.ts`.
  */
 
 function extractBssCookie(response: Response): string | null {
@@ -371,4 +373,5 @@ export const edgeScenarios: readonly Scenario[] = [
     },
   },
   ...prolongScenarios,
+  ...optionsScenarios,
 ];

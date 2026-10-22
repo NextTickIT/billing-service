@@ -1,13 +1,22 @@
 import type { SqlError } from '@effect/sql';
 import {
+  type CheckoutChoice,
+  type CheckoutCycleOption,
+  type CheckoutOptionPublic,
   type CheckoutOrigin,
   type CheckoutSession,
   CheckoutSessionKind,
   CheckoutSessionStatus,
+  type CheckoutTerms,
   type NewCheckoutSession,
+  optionTerms,
+  parseCheckoutRef,
   type Payment,
   PaymentMethod,
   PaymentStatus,
+  sameTerms,
+  scalePeriod,
+  type StoredCheckoutOption,
 } from '@billing-service/shared';
 import { Data, Effect, Option } from 'effect';
 
@@ -68,6 +77,7 @@ export const subscriptionTermsSession = (
   failureUrl: null,
   promo: null,
   renewal: null,
+  options: null,
   origin,
   // The sub this session renews: names it in a decline after the sub has died.
   renewalOf: origin === null ? null : sub.id,
@@ -96,6 +106,22 @@ export const manualRenewalSession = (
     origin: 'manual_renewal',
   });
 
+/**
+ * The stored options for a manual renewal that offers these cycle counts. Null when it
+ * offers only the one cycle, so a session minted with the default config is exactly the
+ * single-option session it always was.
+ */
+export const cycleOptions = (
+  cycles: readonly number[],
+): readonly CheckoutCycleOption[] | null =>
+  cycles.length > 1 ? cycles.map((n) => ({ cycles: n })) : null;
+
+/** The cycle counts a session's page offers: `[1]` when it sells no cycles. */
+export const offeredCycles = (session: CheckoutSession): readonly number[] => {
+  const cycles = (session.options ?? []).filter(isCycleOption);
+  return cycles.length === 0 ? [1] : cycles.map((o) => o.cycles);
+};
+
 /** The `/prolong` session: the sub's terms, its method locked (`origin='prolong'`). */
 export const prolongSession = (
   sub: Payment,
@@ -109,6 +135,122 @@ export const prolongSession = (
     idempotencyKey,
     origin: 'prolong',
   });
+
+const isCycleOption = (
+  option: StoredCheckoutOption,
+): option is CheckoutCycleOption => 'cycles' in option;
+
+const flatTerms = (session: CheckoutSession): CheckoutTerms => ({
+  amount: session.amount,
+  period: session.period,
+  promo: session.promo,
+  renewal: session.renewal,
+});
+
+const DEFAULT_CHOICE: CheckoutChoice = { kind: 'default' };
+
+/**
+ * What one choice on a session charges and buys. `terms` is what settlement stores — one
+ * cycle's terms for a multi-cycle choice, so the subscription keeps renewing at its base
+ * price; `total` is what the provider order charges; `cycles` is set only on a session
+ * that sells cycles.
+ */
+export interface ChosenTerms {
+  readonly terms: CheckoutTerms;
+  readonly cycles: number | null;
+  readonly total: number;
+}
+
+/** The terms a choice stands for on this session, or None when it offers no such choice
+ * (a reference naming an option the session does not have). */
+export const chosenTerms = (
+  session: CheckoutSession,
+  choice: CheckoutChoice,
+): Option.Option<ChosenTerms> => {
+  const flat = flatTerms(session);
+  const options = session.options ?? [];
+  if (choice.kind === 'option') {
+    const option = options[choice.index];
+    return option === undefined || isCycleOption(option)
+      ? Option.none()
+      : Option.some({
+          terms: optionTerms(option),
+          cycles: null,
+          total: option.amount,
+        });
+  }
+  if (choice.kind === 'cycles') {
+    const offered = options.some(
+      (o) => isCycleOption(o) && o.cycles === choice.cycles,
+    );
+    return offered
+      ? Option.some({
+          terms: flat,
+          cycles: choice.cycles,
+          total: flat.amount * choice.cycles,
+        })
+      : Option.none();
+  }
+  const cycles = options.some(isCycleOption) ? 1 : null;
+  return Option.some({ terms: flat, cycles, total: flat.amount });
+};
+
+/** The choice the page's option `index` stands for, or None when there is no such
+ * option. The flat terms are the default wherever they sit in the list. */
+export const choiceAt = (
+  session: CheckoutSession,
+  index: number,
+): Option.Option<CheckoutChoice> => {
+  if (session.options === null) {
+    return index === 0 ? Option.some(DEFAULT_CHOICE) : Option.none();
+  }
+  const option = session.options[index];
+  if (option === undefined) {
+    return Option.none();
+  }
+  if (isCycleOption(option)) {
+    return Option.some(
+      option.cycles === 1
+        ? DEFAULT_CHOICE
+        : { kind: 'cycles', cycles: option.cycles },
+    );
+  }
+  return Option.some(
+    sameTerms(optionTerms(option), flatTerms(session))
+      ? DEFAULT_CHOICE
+      : { kind: 'option', index },
+  );
+};
+
+/** The index of the default (the flat terms) among the page's options. */
+export const defaultOptionIndex = (session: CheckoutSession): number =>
+  Math.max(
+    0,
+    (session.options ?? []).findIndex((_, i) =>
+      Option.exists(choiceAt(session, i), (c) => c.kind === 'default'),
+    ),
+  );
+
+/** Every option as the page shows it, in order; the flat terms alone when the session
+ * offers no choice. A cycle option shows its total and the time it buys. */
+export const publicOptions = (
+  session: CheckoutSession,
+): readonly CheckoutOptionPublic[] => {
+  const flat = flatTerms(session);
+  if (session.options === null) {
+    return [{ ...flat, cycles: null }];
+  }
+  return session.options.map((option) =>
+    isCycleOption(option)
+      ? {
+          ...flat,
+          amount: flat.amount * option.cycles,
+          period: scalePeriod(flat.period, option.cycles),
+          cycles: option.cycles,
+        }
+      : { ...optionTerms(option), cycles: null },
+  );
+};
 
 /**
  * A caller-supplied post-payment redirect must point at an allowed host (docs/30). An
@@ -181,7 +323,11 @@ export const planMethodChange = (
  * differing amount is routine (WhitePay reports the converted crypto value): settle on
  * the session's price and leave a trace.
  */
-const settlesOnSession = (event: Charge, session: CheckoutSession) =>
+const settlesOnSession = (
+  event: Charge,
+  session: CheckoutSession,
+  total: number,
+) =>
   Effect.gen(function* () {
     if (event.status !== 'succeeded') {
       return true;
@@ -194,50 +340,75 @@ const settlesOnSession = (event: Charge, session: CheckoutSession) =>
       );
       return false;
     }
-    if (event.amount !== session.amount) {
+    if (event.amount !== total) {
       yield* Effect.logWarning('settlement: amount differs from session').pipe(
         Effect.annotateLogs({
           idemKey: event.idemKey,
           externalRef: event.externalRef,
           amount: event.amount,
-          sessionAmount: session.amount,
+          sessionAmount: total,
         }),
       );
     }
     return true;
   });
 
-/** The checkout match for an open session: its own price, terms and labels. */
+/** The checkout match for an open session: the chosen option's price and terms, and the
+ * session's labels. */
 const checkoutMatch = (
   session: CheckoutSession,
+  { terms, cycles }: ChosenTerms,
   prolongOf: string | null,
 ): Match => ({
   matched: true,
   kind: 'checkout',
   subscriptionId: null,
   externalUserId: session.externalUserId,
-  period: session.period,
+  period: terms.period,
   method: session.method ?? PaymentMethod.Card,
   recurring: session.recurring,
-  // A one-time bonus period the session carried; applied once on the create path.
-  promoBonus: session.promo?.additionalFreePeriod ?? null,
-  renewal: session.renewal,
+  // A one-time bonus period the option carried; applied once on the create path.
+  promoBonus: terms.promo?.additionalFreePeriod ?? null,
+  renewal: terms.renewal,
   origin: session.origin,
   renewalOf: session.renewalOf,
   prolongOf,
-  amount: session.amount,
+  amount: terms.amount,
   currency: session.currency,
+  cycles,
 });
 
+/** The session a provider reference names and the terms of the option it paid for; None
+ * for a reference we did not mint or an option the session does not offer. */
+const sessionOfRef = (repo: CheckoutRepo, ref: string) =>
+  Effect.gen(function* () {
+    const parsed = parseCheckoutRef(ref);
+    if (parsed === null) {
+      return Option.none();
+    }
+    const found = yield* repo.findById(parsed.sessionId);
+    return Option.flatMap(found, (session) =>
+      Option.map(chosenTerms(session, parsed.choice), (chosen) => ({
+        session,
+        chosen,
+      })),
+    );
+  });
+
+/** The session id a provider reference was minted for (the reference itself when it is
+ * not one of ours, so a settlement claim on it simply finds nothing). */
+const sessionIdOfRef = (ref: string): string =>
+  parseCheckoutRef(ref)?.sessionId ?? ref;
+
 /**
- * Checkout matcher: an incoming event whose `externalRef` is a known checkout
- * session id resolves to a `checkout` match. A succeeded event is create-or-extend;
+ * Checkout matcher: an incoming event whose `externalRef` names a known checkout
+ * session and one of its options (`parseCheckoutRef`) resolves to a `checkout` match. A succeeded event is create-or-extend;
  * a declined one is a first-payment failure (the pipeline emits
  * `initial_payment_failed`, FR-003) — both are OUR session, not an unknown payment.
  * Intermediate/other statuses (pending, refunded) still fall through to quarantine,
  * as do events for an unknown ref. Poller/legacy events never match here (no session).
  *
- * The match carries the session's own price and renewal terms (what gets stored, never
+ * The match carries the chosen option's price and renewal terms (what gets stored, never
  * the callback's), its `origin` and `renewalOf`, and, for a declined recurring session
  * whose contact holds a live sub, that sub as `prolongOf` (a failed prolongation).
  */
@@ -251,16 +422,16 @@ export const makeCheckoutMatcher =
       if (event.status !== 'succeeded' && event.status !== 'failed') {
         return { matched: false };
       }
-      const found = yield* repo.findById(event.externalRef);
+      const found = yield* sessionOfRef(repo, event.externalRef);
       // A card-change session is handled by its own matcher/applier — never as a
       // first checkout (which would create-or-extend a second payment).
       if (
         Option.isNone(found) ||
-        found.value.kind !== CheckoutSessionKind.Checkout
+        found.value.session.kind !== CheckoutSessionKind.Checkout
       ) {
         return { matched: false };
       }
-      const session = found.value;
+      const { session, chosen } = found.value;
       // A session is completed on the FIRST successful charge. A second success (crypto
       // double-pay: two paid orders for one session) or a late decline arriving after
       // completion must NOT re-credit or emit a spurious failure — fall through to
@@ -271,7 +442,7 @@ export const makeCheckoutMatcher =
         }
         return { matched: false };
       }
-      if (!(yield* settlesOnSession(event, session))) {
+      if (!(yield* settlesOnSession(event, session, chosen.total))) {
         return { matched: false };
       }
       const live =
@@ -280,6 +451,7 @@ export const makeCheckoutMatcher =
           : Option.none<Payment>();
       return checkoutMatch(
         session,
+        chosen,
         Option.getOrNull(Option.map(live, (sub) => sub.id)),
       );
     });
@@ -308,11 +480,11 @@ export const makeCardChangeMatcher =
       if (event.status !== 'succeeded' && event.status !== 'failed') {
         return { matched: false };
       }
-      const found = yield* repo.findById(event.externalRef);
+      const found = yield* sessionOfRef(repo, event.externalRef);
       if (Option.isNone(found)) {
         return { matched: false };
       }
-      const session = found.value;
+      const { session } = found.value;
       if (
         session.kind !== CheckoutSessionKind.CardChange ||
         session.paymentId === null
@@ -370,7 +542,9 @@ const applyCardChange =
     Effect.gen(function* () {
       // Exactly one charge settles a session; a replay of the same charge never gets
       // here (the pipeline's matchResult lock), so a loss is a different charge.
-      if (!(yield* checkout.completeIfOpen(event.externalRef))) {
+      if (
+        !(yield* checkout.completeIfOpen(sessionIdOfRef(event.externalRef)))
+      ) {
         return alreadyApplied(paymentId);
       }
       // Persist the rail the payment ACTUALLY came in on — keyed on the event SOURCE, not on
@@ -446,7 +620,9 @@ const applyCheckout =
     match: Match,
   ): Effect.Effect<AppliedCharge, SqlError.SqlError> =>
     Effect.gen(function* () {
-      if (!(yield* checkout.completeIfOpen(event.externalRef))) {
+      if (
+        !(yield* checkout.completeIfOpen(sessionIdOfRef(event.externalRef)))
+      ) {
         return alreadyApplied(null);
       }
       const applied = yield* createOrExtend(payments)({
@@ -463,6 +639,9 @@ const applyCheckout =
         // One-time bonus period from the session; extends the paid-through anchor once.
         promoBonus: match.promoBonus ?? null,
         renewal: match.renewal ?? null,
+        // A multi-cycle renewal stacks that many periods; `amount`/`period` above stay one
+        // cycle's, so the subscription keeps its base terms.
+        cycles: match.cycles ?? 1,
         source: event.source,
         recurringTokenRef: recToken(event.payload),
         paidAt: event.occurredAt,

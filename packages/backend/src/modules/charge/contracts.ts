@@ -121,6 +121,9 @@ export type MatchResult =
       /** The session's own price, the terms a checkout stores (never the callback's). */
       readonly amount?: number;
       readonly currency?: number;
+      /** A multi-cycle manual renewal: how many `period`s at `amount` the charge bought.
+       * Null or absent for any other charge. */
+      readonly cycles?: number | null;
     }
   | { readonly matched: false };
 

@@ -24,6 +24,21 @@ export const isNonZeroPeriod = (period: string): boolean => {
   return match.slice(1).some((part) => Number(part) > 0);
 };
 
+/**
+ * `period` taken `times` times as one duration, every component multiplied ('P4W' × 3 =
+ * 'P12W', 'P1Y2M' × 2 = 'P2Y4M'). It names the time a multi-cycle purchase buys; it is
+ * not how that time is added (the backend steps cycle by cycle so month-end clamping
+ * matches separate payments). An unparseable period is returned unchanged.
+ */
+export const scalePeriod = (period: string, times: number): string => {
+  const match = DURATION.exec(period);
+  if (match === null || period === 'P') return period;
+  const part = (count: string | undefined, unit: string): string =>
+    count === undefined ? '' : `${String(Number(count) * times)}${unit}`;
+  const [, years, months, weeks, days] = match;
+  return `P${part(years, 'Y')}${part(months, 'M')}${part(weeks, 'W')}${part(days, 'D')}`;
+};
+
 export const IsoPeriod = Schema.String.pipe(
   Schema.filter(isValidPeriod, {
     message: () => 'must be an ISO-8601 duration (e.g. P1M, P4W)',

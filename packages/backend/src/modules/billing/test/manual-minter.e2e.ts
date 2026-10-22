@@ -72,6 +72,7 @@ const driveTick = (config: AppConfig, holder: Holder) =>
       renewal: null,
       origin: holder.origin,
       renewalOf: holder.renewalOf,
+      options: null,
       idempotencyKey: `manual:${sub.id}:${anchor.getTime().toString()}`,
       expiresAt: new Date(Date.now() + DAY),
     });

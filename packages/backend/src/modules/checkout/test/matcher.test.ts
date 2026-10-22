@@ -29,6 +29,7 @@ const session: CheckoutSession = {
   renewal: null,
   origin: null,
   renewalOf: null,
+  options: null,
   idempotencyKey: null,
   email: '',
   expiresAt: new Date(0),
@@ -172,6 +173,7 @@ const prolongSessionRow: CheckoutSession = {
   renewal: { amount: 5000, period: 'P4W' },
   origin: 'manual_renewal',
   renewalOf: 'sub_dead',
+  options: null,
 };
 
 it.effect(

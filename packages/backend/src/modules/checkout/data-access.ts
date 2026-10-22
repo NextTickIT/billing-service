@@ -38,7 +38,7 @@ export interface CheckoutRepo {
    *
    * Terms are matched, not just liveness: handing back a session at a different amount
    * or period would silently charge something other than what this link promised. So
-   * are `renewal`, `origin` and `renewalOf`: a replacement for one subscription is never
+   * are `renewal`, `options`, `origin` and `renewalOf`: a replacement for one subscription is never
    * handed to a link for another on the same terms, and a method-locked prolong
    * replacement is reused only for the same method.
    */
@@ -96,6 +96,7 @@ const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
   // never the jsonb `'null'` literal — mirrors the queue/outbox jsonb convention.
   const promo = input.promo === null ? null : JSON.stringify(input.promo);
   const renewal = input.renewal === null ? null : JSON.stringify(input.renewal);
+  const options = input.options === null ? null : JSON.stringify(input.options);
   // ON CONFLICT keys on the partial unique index (idempotencyKey IS NOT NULL): a repeat
   // or concurrent create with the same key hits DO NOTHING and returns no row; a null key
   // is outside the index, so it never conflicts and always inserts.
@@ -103,13 +104,14 @@ const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
     INSERT INTO checkout_sessions
       (id, "externalUserId", amount, currency, period, method, kind, recurring,
        "paymentId", "successUrl", "failureUrl", promo, "idempotencyKey", email,
-       "expiresAt", renewal, origin, "renewalOf")
+       "expiresAt", renewal, origin, "renewalOf", options)
     VALUES
       (${input.id}, ${input.externalUserId}, ${input.amount}, ${input.currency},
        ${input.period}, ${input.method ?? null}, ${input.kind}, ${input.recurring},
        ${input.paymentId}, ${input.successUrl}, ${input.failureUrl},
        ${promo}::jsonb, ${input.idempotencyKey}, ${input.email},
-       ${input.expiresAt}, ${renewal}::jsonb, ${input.origin}, ${input.renewalOf})
+       ${input.expiresAt}, ${renewal}::jsonb, ${input.origin}, ${input.renewalOf},
+       ${options}::jsonb)
     ON CONFLICT ("idempotencyKey") WHERE "idempotencyKey" IS NOT NULL DO NOTHING
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
@@ -130,6 +132,8 @@ const reissueLapsed =
   (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
     const renewal =
       input.renewal === null ? null : JSON.stringify(input.renewal);
+    const options =
+      input.options === null ? null : JSON.stringify(input.options);
     return sql.withTransaction(
       Effect.gen(function* () {
         // Serialize per user for the read-then-insert below. Without it two tabs both
@@ -157,6 +161,7 @@ const reissueLapsed =
               AND currency = ${input.currency}
               AND period = ${input.period}
               AND renewal IS NOT DISTINCT FROM ${renewal}::jsonb
+              AND options IS NOT DISTINCT FROM ${options}::jsonb
               AND origin IS NOT DISTINCT FROM ${input.origin}
               AND "renewalOf" IS NOT DISTINCT FROM ${input.renewalOf}
               AND (origin IS DISTINCT FROM 'prolong' OR method = ${input.method ?? null})

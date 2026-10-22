@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { SqlClient, type SqlError } from '@effect/sql';
 import {
   CardChangeRequest,
+  checkoutRef,
   type CheckoutOrigin,
   type CheckoutSession,
   CheckoutSessionKind,
@@ -50,9 +51,13 @@ import {
 } from '@/modules/checkout/data-access.js';
 import {
   checkoutPath,
+  choiceAt,
+  chosenTerms,
+  defaultOptionIndex,
   type MethodChangePlan,
   planMethodChange,
   prolongSession,
+  publicOptions,
   redirectHostAllowed,
   subscriptionTermsSession,
 } from '@/modules/checkout/domain.js';
@@ -120,10 +125,14 @@ const assertRedirects = (
 
 /** A promo's bonus must be a period in our format (an ISO-8601 duration). Reject a
  * malformed one at creation with a 422 rather than let it throw when the charge applies
- * it in the worker (where it would fail the attempt instead of the caller's request). */
+ * it in the worker (where it would fail the attempt instead of the caller's request).
+ * Every option's promo is held to the same rule. */
 const assertPromo = (input: CreateCheckoutSession) => {
-  const promo = input.promo;
-  if (promo !== undefined && !isValidPeriod(promo.additionalFreePeriod)) {
+  const promo = [
+    input.promo,
+    ...(input.options ?? []).map((o) => o.promo),
+  ].find((p) => p !== undefined && !isValidPeriod(p.additionalFreePeriod));
+  if (promo !== undefined) {
     return Effect.fail(
       new UnprocessableEntity({
         reason: `unsupported promo period '${promo.additionalFreePeriod}'`,
@@ -211,6 +220,9 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
         promo: input.promo ?? null,
         // Renewal terms when they differ from the first charge (see CheckoutRenewal).
         renewal: input.renewal ?? null,
+        // What the payer may pick instead of the flat terms (the schema checked that the
+        // flat terms are among them).
+        options: input.options ?? null,
         // Caller-created: no internal origin, renews no particular subscription.
         origin: null,
         renewalOf: null,
@@ -251,6 +263,8 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
     // `origin` itself is never returned (X11); the page sees only what it acts on.
     const prolong = origin === 'prolong';
     return {
+      options: publicOptions(found.value),
+      defaultOption: defaultOptionIndex(found.value),
       amount,
       currency,
       period,
@@ -268,7 +282,8 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
   });
 
 /** Card (WayForPay): a 0-amount card change verifies the card (buildVerify) when verify
- * is enabled; otherwise a signed Purchase form the browser POSTs to the provider. */
+ * is enabled; otherwise a signed Purchase form the browser POSTs to the provider.
+ * `session` is the provider order (`orderFor`): its id is the order reference. */
 const payCard = (
   session: CheckoutSession,
   request: FastifyRequest,
@@ -289,7 +304,8 @@ const payCard = (
 /** Crypto (WhitePay): mint a FRESH order on-click and hand back its hosted redirect —
  * minting here (not at session creation) keeps WhitePay's ~2-min rate lock fresh (docs/26).
  * Guarded by `enabled` so a dark deploy refuses crypto (503) instead of calling with an
- * empty slug/token (docs/25). `external_order_id` = the session id, the callback match key. */
+ * empty slug/token (docs/25). `external_order_id` = the order reference (`orderFor`), the
+ * callback match key. */
 const payCrypto = (
   session: CheckoutSession,
   request: FastifyRequest,
@@ -430,6 +446,8 @@ const clonedIntent = (
   // The same intent renews on the same terms, and keeps its attribution: a plain clone
   // of a prolong/manual-renewal link still names the subscription it renews.
   renewal: session.renewal,
+  // The same choices too, so the option index the page sent still means the same option.
+  options: session.options,
   origin: session.origin,
   renewalOf: session.renewalOf,
   // Never copied: the key is unique across live rows, and the clone is a new checkout,
@@ -511,6 +529,9 @@ const remintedIntent = (
   successUrl: session.successUrl,
   failureUrl: session.failureUrl,
   email: session.email,
+  // A manual renewal keeps its cycle choices: they are multiples of whatever the live
+  // sub's terms are. A caller's priced options are the stale link's terms, so they go.
+  options: origin === 'manual_renewal' ? session.options : null,
 });
 
 /** The replacement for a lapsed, re-issuable recurring checkout (rules on
@@ -654,6 +675,43 @@ export const resolvePayableSessionId = (
     return yield* repo.reissueLapsed(effective.intent);
   });
 
+/**
+ * The provider order for the option the payer picked: the claimed session under that
+ * option's reference (`checkoutRef`), priced at the option's total. An option the session
+ * does not offer is a 422. A session without options charges its flat terms whatever was
+ * sent: a re-mint at the live sub's terms drops the stale link's options by design. A
+ * non-default option is held to Q8 on its own terms — an intro option paid on a live sub
+ * would only be refused at settlement, after the money moved.
+ */
+const orderFor = (
+  session: CheckoutSession,
+  option: number | undefined,
+  findActiveRecurring: FindActiveRecurring,
+) =>
+  Effect.gen(function* () {
+    const index =
+      option === undefined || session.options === null
+        ? defaultOptionIndex(session)
+        : option;
+    const choice = Option.getOrNull(choiceAt(session, index));
+    const chosen =
+      choice === null ? null : Option.getOrNull(chosenTerms(session, choice));
+    if (choice === null || chosen === null) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({ reason: 'unknown checkout option' }),
+      );
+    }
+    if (choice.kind !== 'default') {
+      const live = liveOf(yield* findActiveRecurring(session.externalUserId));
+      yield* assertNotIntroOnLiveSub({ ...session, ...chosen.terms }, live);
+    }
+    return {
+      ...session,
+      id: checkoutRef(session.id, choice),
+      amount: chosen.total,
+    } satisfies CheckoutSession;
+  });
+
 const pay = (input: SelectMethod, request: FastifyRequest) =>
   Effect.gen(function* () {
     assertBffSecret(request);
@@ -672,21 +730,27 @@ const pay = (input: SelectMethod, request: FastifyRequest) =>
       nowMillis,
       request.server.appConfig.wayforpay.sessionTtlSeconds,
     );
-    const session = yield* claimPayableSession(
+    const claimed = yield* claimPayableSession(
       repos,
       id,
       input.method,
       nowMillis,
     );
+    // A refused option releases the claim, like a failed crypto mint below.
+    const order = yield* orderFor(
+      claimed,
+      input.option,
+      repos.findActiveRecurring,
+    ).pipe(Effect.tapError(() => repo.releasePending(id)));
     // A card handoff is a pure signed form (WayForPay dedups on our orderReference), so it
     // cannot fail. Only crypto calls out to WhitePay: if that mint fails (5xx / disabled),
     // release the claim so the buyer can retry or switch method instead of bricking here.
     if (input.method === PaymentMethod.Crypto) {
-      return yield* payCrypto(session, request).pipe(
+      return yield* payCrypto(order, request).pipe(
         Effect.tapError(() => repo.releasePending(id)),
       );
     }
-    return yield* payCard(session, request);
+    return yield* payCard(order, request);
   });
 
 const providerOf = (request: FastifyRequest): string =>
@@ -791,6 +855,7 @@ const changeSession = (
   failureUrl: null,
   promo: null,
   renewal: null,
+  options: null,
   origin,
   renewalOf: null,
   idempotencyKey: null,

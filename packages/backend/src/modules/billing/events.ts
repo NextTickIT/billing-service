@@ -105,6 +105,8 @@ export const sinkCancelled = (
 export interface ManualCheckout {
   readonly checkoutUrl: string;
   readonly windowExpiresAt: Date;
+  /** The cycle counts the linked page offers (`[1]` for the single-cycle page). */
+  readonly cycleOptions: readonly number[];
 }
 
 /** Where a manual prompt sits on the retry ladder: which attempt, and the next ladder date. */
@@ -140,6 +142,7 @@ export const paymentManualRequired = (
     windowExpiresAt: checkout.windowExpiresAt.toISOString(),
     attempt: ladder.attempt,
     nextRetryDate: ladder.nextRetryDate.toISOString(),
+    cycleOptions: checkout.cycleOptions,
   },
 });
 

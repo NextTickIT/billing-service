@@ -62,6 +62,7 @@ const sessionWith = (promo: CheckoutPromo | null): CheckoutSession => ({
   renewal: null,
   origin: null,
   renewalOf: null,
+  options: null,
   idempotencyKey: null,
   email: '',
   expiresAt: new Date(0),

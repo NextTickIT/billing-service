@@ -128,6 +128,12 @@ export interface SchedulerConfig {
    * `upcoming_charge` is mapped to a SendPulse flow, so enabling this alone is safe.
    */
   readonly upcomingChargeNoticeDays: readonly number[];
+  /**
+   * How many cycles a manual (crypto) renewal page lets the payer buy at once
+   * (`MANUAL_RENEWAL_CYCLE_OPTIONS`, e.g. "1,3,6"; default "1", a single-cycle page as
+   * before). Must contain 1, so the page always has its one-cycle default.
+   */
+  readonly manualRenewalCycleOptions: readonly number[];
 }
 
 /**
@@ -289,6 +295,26 @@ const noticeDays = (raw: string | undefined): readonly number[] => {
   return [...new Set(parsed)].sort((a, b) => b - a);
 };
 
+/**
+ * Parse `MANUAL_RENEWAL_CYCLE_OPTIONS` ("1,3,6"). Unlike the notice days, a bad value
+ * fails the boot: dropping a typo would silently sell a different set of prices than
+ * the one OPERATOR configured, on a page customers pay from.
+ */
+const cycleOptions = (raw: string | undefined): readonly number[] => {
+  const parts = (raw ?? '1').split(',').map((part) => part.trim());
+  const parsed = parts.map(Number);
+  const valid =
+    parsed.every((n, i) => Number.isInteger(n) && n > 0 && parts[i] !== '') &&
+    new Set(parsed).size === parsed.length &&
+    parsed.includes(1);
+  if (!valid) {
+    throw new Error(
+      `MANUAL_RENEWAL_CYCLE_OPTIONS must be unique positive integers including 1, got '${raw ?? ''}'`,
+    );
+  }
+  return parsed;
+};
+
 const loadSchedulerConfig = (): SchedulerConfig => ({
   enabled: process.env['SCHEDULER_ENABLED'] === 'true',
   intervalSeconds: Number(process.env['SCHEDULER_INTERVAL_SECONDS'] ?? '300'),
@@ -299,6 +325,9 @@ const loadSchedulerConfig = (): SchedulerConfig => ({
   ),
   upcomingChargeNoticeDays: noticeDays(
     process.env['UPCOMING_CHARGE_NOTICE_DAYS'],
+  ),
+  manualRenewalCycleOptions: cycleOptions(
+    process.env['MANUAL_RENEWAL_CYCLE_OPTIONS'],
   ),
 });
 

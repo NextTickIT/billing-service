@@ -861,6 +861,7 @@ const driveT24Decline = Effect.gen(function* () {
     externalUserId: 'sp:t24-new',
     origin: null,
     renewalOf: null,
+    options: null,
   });
   const prolong = callback(
     'chk_t24d',
@@ -1185,6 +1186,7 @@ const legacyCardChange = (sub: Payment): NewCheckoutSession => ({
   paymentId: sub.id,
   origin: null,
   renewalOf: null,
+  options: null,
 });
 
 /** What the old worker leaves: the message claimed (in_progress), the charge upserted
@@ -1446,6 +1448,7 @@ const legacyRow = (
   renewal: null,
   origin: null,
   renewalOf: null,
+  options: null,
   idempotencyKey,
   email: '',
   expiresAt: FAR,

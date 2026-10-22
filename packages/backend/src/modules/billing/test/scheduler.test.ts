@@ -76,6 +76,7 @@ const manualCheckoutStub =
       return {
         checkoutUrl: `https://bill.example/checkout/chk_${sub.id}`,
         windowExpiresAt: new Date(now.getTime() + 7 * 24 * 3600 * 1000),
+        cycleOptions: [1],
       };
     });
 

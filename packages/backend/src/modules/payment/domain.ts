@@ -11,7 +11,12 @@ import type {
   AdvanceAnchor,
   PaymentRepo,
 } from '@/modules/payment/data-access.js';
-import { addDays, addPeriod, samePeriod } from '@/modules/payment/period.js';
+import {
+  addDays,
+  addPeriod,
+  addPeriods,
+  samePeriod,
+} from '@/modules/payment/period.js';
 
 /**
  * The billing terms a successful charge establishes for a user (FR-003). A recurring
@@ -43,6 +48,12 @@ export interface ApplyPaymentParams {
   readonly renewal?: CheckoutRenewal | null;
   /** The charge's source; picks the token and method a prolongation keeps (`tokenRule`). */
   readonly source?: string;
+  /**
+   * How many `period`s this one charge pays for (a multi-cycle manual renewal); 1 when
+   * absent. Only the anchors move further: `amount`/`period` stay one cycle's terms, so
+   * the row keeps renewing at them.
+   */
+  readonly cycles?: number;
 }
 
 export interface ApplyPaymentResult {
@@ -72,7 +83,11 @@ interface PeriodAnchors {
 }
 
 const periodAnchors = (params: ApplyPaymentParams): PeriodAnchors => {
-  const paidThrough = addPeriod(params.paidAt, params.period);
+  const paidThrough = addPeriods(
+    params.paidAt,
+    params.period,
+    params.cycles ?? 1,
+  );
   // A promo grants free time ON TOP of the paid period, once: it pushes the paid-through
   // anchor further, and the next charge date derives from that anchor — so the bonus
   // shifts both together and drift stays impossible (CLAUDE.md §6). Applied only here, on
@@ -128,14 +143,15 @@ const insertNew =
  * `period`, never `paidAt` plus it, so paid time is never lost. A row still inside its
  * period keeps its start; a row already past its end (PastDue) starts the new period at
  * the old end. No promo: a live contact never stacks free time. Compared by `getTime()`,
- * so equal-valued distinct Dates count as equal.
+ * so equal-valued distinct Dates count as equal. `cycles` stacks that many periods.
  */
 export const stackAnchors = (
   row: Pick<Payment, 'currentPeriodStart' | 'currentPeriodEnd'>,
   period: string,
   paidAt: Date,
+  cycles = 1,
 ): AdvanceAnchor => {
-  const end = addPeriod(row.currentPeriodEnd, period);
+  const end = addPeriods(row.currentPeriodEnd, period, cycles);
   return {
     currentPeriodStart:
       row.currentPeriodEnd.getTime() <= paidAt.getTime()
@@ -224,7 +240,12 @@ export const createOrExtend =
         }
         // The promo is dropped here: a live contact paying a promo link stacks the paid
         // period only, never free time.
-        const stacked = stackAnchors(row, params.period, params.paidAt);
+        const stacked = stackAnchors(
+          row,
+          params.period,
+          params.paidAt,
+          params.cycles,
+        );
         yield* repo.extend(row.id, {
           amount: params.renewal?.amount ?? params.amount,
           currency: params.currency,
