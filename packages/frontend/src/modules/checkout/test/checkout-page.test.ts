@@ -103,15 +103,19 @@ describe('CheckoutPage', () => {
     expect(amountRow(html)).toBe('50.00 USD');
   });
 
-  it('renders one radio row per option, with a promo badge and cycle labels', async () => {
+  it('renders caller options by their own period, with a promo badge', async () => {
     const html = await render(callerOptions);
     expect(html.match(/type="radio"/g)).toHaveLength(3);
-    expect(html).toContain('1 цикл');
-    expect(html).toContain('3 цикли');
-    // P1M is no multiple of P4W: labelled by its own period.
+    expect(html).toContain('4 тижні');
+    expect(html).toContain('12 тижнів');
     expect(html).toContain('1 місяць');
     expect(html).toContain('+7 днів');
-    expect(html).toContain('1 цикл = 4 тижні');
+    // Cycles are a manual-renewal concept only.
+    expect(html).not.toContain('цикл');
+  });
+
+  it('manual-renewal cycles show the cycle footer', async () => {
+    expect(await render(cycles)).toContain('1 цикл = 4 тижні');
   });
 
   it('"Сума" shows the selected option, the default when the page opens', async () => {

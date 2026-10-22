@@ -6,12 +6,10 @@ import {
   type CheckoutOptionPublic,
   CheckoutSessionKind,
   CheckoutSessionStatus,
-  DURATION,
   formatPeriod,
   isRenderablePeriod,
   parseCheckoutRef,
   PaymentMethod,
-  scalePeriod,
 } from '@billing-service/shared';
 import { afterOptionPick, useCheckoutStore } from './store.js';
 import { formatDate } from '@/app/datetime.js';
@@ -183,28 +181,14 @@ const selected = computed<CheckoutOptionPublic | null>(
     null,
 );
 
-// The default option is one cycle: every other option is labelled by how many of it
-// it buys, when it says so (`cycles`) or its period is a whole multiple of it.
+// The default option is one cycle. Only billing-minted manual renewals offer cycles
+// (`cycles` set); caller options are labelled by their own period.
 const base = computed<CheckoutOptionPublic | null>(
   () => options.value[store.session?.defaultOption ?? 0] ?? null,
 );
 
-/** How many times `period` holds `unit` exactly (P12W in P4W: 3), else null. */
-function multipleOf(period: string, unit: string): number | null {
-  const parts = DURATION.exec(unit);
-  const lead = parts?.findIndex((part, i) => i > 0 && Number(part ?? 0) > 0);
-  if (parts === null || lead === undefined || lead < 0) return null;
-  const n = Number(DURATION.exec(period)?.[lead] ?? 0) / Number(parts[lead]);
-  return Number.isInteger(n) && n > 0 && scalePeriod(unit, n) === period
-    ? n
-    : null;
-}
-
 function cyclesOf(option: CheckoutOptionPublic): number | null {
-  if (option.cycles !== null) return option.cycles;
-  return base.value === null
-    ? null
-    : multipleOf(option.period, base.value.period);
+  return option.cycles;
 }
 
 // Plural forms come from Intl, not a rule table: uk/ru need one / few / many.
@@ -358,21 +342,6 @@ const legalLinks = [
               })
             }}
           </p>
-          <p
-            v-if="
-              store.session.recurring &&
-              options.length > 1 &&
-              labelledInCycles &&
-              base
-            "
-            class="checkout__renewal"
-          >
-            {{
-              t('checkout.cycleIs', {
-                period: formatPeriod(base.period, locale),
-              })
-            }}
-          </p>
           <p class="checkout__expiry">
             {{
               t('checkout.linkValidUntil', {
@@ -420,6 +389,21 @@ const legalLinks = [
             />
           </div>
           <div class="checkout__legal">
+            <p
+              v-if="
+                store.session.recurring &&
+                options.length > 1 &&
+                labelledInCycles &&
+                base
+              "
+              class="checkout__legal-note"
+            >
+              {{
+                t('checkout.cycleIs', {
+                  period: formatPeriod(base.period, locale),
+                })
+              }}
+            </p>
             <p class="checkout__legal-note">{{ t('checkout.legalNote') }}</p>
             <p class="checkout__legal-links">
               <template v-for="(l, i) in legalLinks" :key="l.url">
@@ -517,26 +501,41 @@ const legalLinks = [
 .checkout__options {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 14px;
+  margin-bottom: 8px;
 }
 .checkout__option {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 12px;
+  padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 6px;
   cursor: pointer;
 }
+.checkout__option input {
+  accent-color: var(--green);
+}
 .checkout__option--on {
-  border-color: var(--txt);
+  border: 2px solid var(--green);
+  padding: 13px 15px;
 }
 .checkout__option-label {
   color: var(--txt);
 }
+/* The promo pill sits on the row's top edge, right-aligned. */
 .checkout__badge {
+  position: absolute;
+  top: -10px;
+  right: 14px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--red);
+  color: #fff;
   font-size: 12px;
-  color: var(--green);
+  font-weight: 600;
+  line-height: 1.4;
 }
 .checkout__option-amount {
   margin-left: auto;
