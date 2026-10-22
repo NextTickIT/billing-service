@@ -1603,7 +1603,7 @@ const racedMethodLock = (sql: SqlClient.SqlClient) =>
       claimPayableSession(
         { sessions, findActiveRecurring },
         'chk_bs_lock',
-        PaymentMethod.Crypto,
+        { method: PaymentMethod.Crypto },
         Date.now(),
       ),
     );
@@ -1626,7 +1626,7 @@ const lateLiveSub = (sql: SqlClient.SqlClient) =>
       }),
     );
     const now = Date.now();
-    const card = PaymentMethod.Card;
+    const card = { method: PaymentMethod.Card };
     const id = yield* resolvePayableSessionId(
       repos,
       'chk_bs_intro',
@@ -1708,7 +1708,7 @@ const claimByCard = (sql: SqlClient.SqlClient, id: string) =>
         makePaymentRepo(sql).findActiveRecurringByExternalUser,
     };
     const now = Date.now();
-    const card = PaymentMethod.Card;
+    const card = { method: PaymentMethod.Card };
     const payable = yield* resolvePayableSessionId(repos, id, card, now, 3600);
     yield* claimPayableSession(repos, payable, card, now);
   });

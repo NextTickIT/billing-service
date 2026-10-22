@@ -122,7 +122,7 @@ const resolve = (repo: CheckoutRepo, found: Payment | null, method: number) =>
     resolvePayableSessionId(
       { sessions: repo, findActiveRecurring: live(found) },
       'chk_old',
-      method,
+      { method },
       NOW,
       TTL_SECONDS,
     ).pipe(Effect.either),
@@ -138,7 +138,7 @@ const claim = (
     claimPayableSession(
       { sessions: repo, findActiveRecurring: live(found) },
       id,
-      method,
+      { method },
       NOW,
     ).pipe(Effect.either),
   );
@@ -462,5 +462,128 @@ describe('C3: intro pricing compares periods by value', () => {
     expect(resolve(repo, sub(), PaymentMethod.Card)).toEqual(
       Either.right('chk_old'),
     );
+  });
+});
+
+const resolvePick = (
+  repo: CheckoutRepo,
+  found: Payment | null,
+  option: number,
+) =>
+  Effect.runSync(
+    resolvePayableSessionId(
+      { sessions: repo, findActiveRecurring: live(found) },
+      'chk_old',
+      { method: PaymentMethod.Card, option },
+      NOW,
+      TTL_SECONDS,
+    ).pipe(Effect.either),
+  );
+
+const claimPick = (repo: CheckoutRepo, found: Payment | null, option: number) =>
+  Effect.runSync(
+    claimPayableSession(
+      { sessions: repo, findActiveRecurring: live(found) },
+      'chk_old',
+      { method: PaymentMethod.Card, option },
+      NOW,
+    ).pipe(Effect.either),
+  );
+
+const standard = { amount: 5000, period: 'P4W' };
+const introTerms = {
+  amount: 100,
+  period: 'P1W',
+  renewal: { amount: 5000, period: 'P4W' },
+};
+
+describe('Q8 runs on the picked option, at preflight and at claim', () => {
+  test('an intro default does not block a live subscriber picking the standard option', () => {
+    const { repo } = repoWith([
+      session({
+        origin: null,
+        renewalOf: null,
+        ...introTerms,
+        options: [introTerms, standard],
+      }),
+    ]);
+    expect(resolvePick(repo, sub(), 1)).toEqual(Either.right('chk_old'));
+    expect(Either.isRight(claimPick(repo, sub(), 1))).toBe(true);
+  });
+
+  test('a standard default does not let a live subscriber pick the intro option', () => {
+    const { repo, writes } = repoWith([
+      session({
+        origin: null,
+        renewalOf: null,
+        options: [standard, introTerms],
+      }),
+    ]);
+    expect(leftTag(resolvePick(repo, sub(), 1))).toBe('AlreadySubscribed');
+    expect(leftTag(claimPick(repo, sub(), 1))).toBe('AlreadySubscribed');
+    expect(writes).toEqual({ released: [], reissued: [], claimed: [] });
+  });
+
+  test('an option the session does not offer → 422, nothing written', () => {
+    const { repo, writes } = repoWith([
+      session({ origin: null, renewalOf: null, options: [standard] }),
+    ]);
+    expect(leftTag(resolvePick(repo, sub(), 3))).toBe('UnprocessableEntity');
+    expect(writes).toEqual({ released: [], reissued: [], claimed: [] });
+  });
+});
+
+describe('a re-mint never swaps the picked option', () => {
+  const lapsed = new Date(NOW - HOUR);
+  const twelveWeeks = { amount: 13000, period: 'P12W' };
+
+  test('a caller option dropped by a re-mint at the PastDue sub’s terms → OptionUnavailable, nothing written', () => {
+    const { repo, writes } = repoWith([
+      session({
+        origin: null,
+        renewalOf: null,
+        expiresAt: lapsed,
+        options: [standard, twelveWeeks],
+      }),
+    ]);
+    const result = resolvePick(repo, sub({ status: PaymentStatus.PastDue }), 1);
+    expect(leftTag(result)).toBe('OptionUnavailable');
+    expect(writes).toEqual({ released: [], reissued: [], claimed: [] });
+  });
+
+  test('the default pick on the same re-mint, at unchanged terms, still pays', () => {
+    const { repo, writes } = repoWith([
+      session({
+        origin: null,
+        renewalOf: null,
+        expiresAt: lapsed,
+        options: [standard, twelveWeeks],
+      }),
+    ]);
+    const result = resolvePick(repo, sub({ status: PaymentStatus.PastDue }), 0);
+    expect(Either.isRight(result)).toBe(true);
+    expect(writes.reissued).toHaveLength(1);
+  });
+
+  const manual = (over: Partial<CheckoutSession> = {}) =>
+    session({
+      origin: 'manual_renewal',
+      expiresAt: lapsed,
+      options: [{ cycles: 1 }, { cycles: 3 }],
+      ...over,
+    });
+
+  test('a cycle option re-priced by the re-mint → OptionUnavailable', () => {
+    const { repo, writes } = repoWith([manual()]);
+    expect(leftTag(resolvePick(repo, sub({ amount: 6000 }), 1))).toBe(
+      'OptionUnavailable',
+    );
+    expect(writes.reissued).toEqual([]);
+  });
+
+  test('a cycle option the re-mint keeps at the same total still pays', () => {
+    const { repo, writes } = repoWith([manual()]);
+    expect(Either.isRight(resolvePick(repo, sub(), 1))).toBe(true);
+    expect(writes.reissued[0]?.options).toEqual([{ cycles: 1 }, { cycles: 3 }]);
   });
 });

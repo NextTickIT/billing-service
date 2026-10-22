@@ -34,6 +34,7 @@ import {
   Conflict,
   MethodLocked,
   NotFound,
+  OptionUnavailable,
   Unauthorized,
   UnprocessableEntity,
 } from '@/infra/http/errors.js';
@@ -51,14 +52,15 @@ import {
 } from '@/modules/checkout/data-access.js';
 import {
   checkoutPath,
-  choiceAt,
-  chosenTerms,
   defaultOptionIndex,
   type MethodChangePlan,
+  type PickedOption,
+  pickOption,
   planMethodChange,
   prolongSession,
   publicOptions,
   redirectHostAllowed,
+  samePick,
   subscriptionTermsSession,
 } from '@/modules/checkout/domain.js';
 import type { MethodChangeNotify } from '@/modules/payment/contracts.js';
@@ -358,6 +360,49 @@ const assertClaimable = (
   return Effect.void;
 };
 
+/** The option `/pay` picked on `session`, or a 422 when the session offers no such one. */
+const pickedOn = (
+  session: CheckoutSession | NewCheckoutSession,
+  option: number | undefined,
+): Effect.Effect<PickedOption, UnprocessableEntity> =>
+  Option.match(pickOption(session, option), {
+    onNone: () =>
+      Effect.fail(
+        new UnprocessableEntity({ reason: 'unknown checkout option' }),
+      ),
+    onSome: Effect.succeed,
+  });
+
+/** The option `/pay` picked, held to Q8 on its own terms (the session at that option's
+ * price and renewal), not the flat ones. */
+const eligiblePick = (
+  session: CheckoutSession,
+  option: number | undefined,
+  live: Option.Option<Payment>,
+) =>
+  Effect.tap(pickedOn(session, option), (picked) =>
+    assertNotIntroOnLiveSub({ ...session, ...picked.chosen.terms }, live),
+  );
+
+/**
+ * A lapsed link re-mints at the live sub's terms, which can drop the caller's options or
+ * re-price a cycle option. A non-default pick must still charge exactly what the payer
+ * picked; otherwise refuse before anything is written, so nothing is charged that the
+ * page did not show. A default pick keeps the re-mint rules it always had.
+ */
+const assertPickKept = (
+  intent: NewCheckoutSession,
+  picked: PickedOption,
+): Effect.Effect<void, OptionUnavailable> => {
+  if (picked.choice.kind === 'default') {
+    return Effect.void;
+  }
+  const again = pickOption(intent, picked.index);
+  return Option.exists(again, (p) => samePick(p, picked))
+    ? Effect.void
+    : Effect.fail(new OptionUnavailable({ option: picked.index }));
+};
+
 /**
  * Resolve a session and atomically claim it for payment, or fail: 404 when unknown, 409
  * when terminal (completed/expired) or already claimed. The claim IS the idempotency
@@ -369,7 +414,7 @@ const assertClaimable = (
 export const claimPayableSession = (
   { sessions: repo, findActiveRecurring }: PayRepos,
   id: string,
-  method: number,
+  { method, option }: SelectMethod,
   nowMillis: number,
 ) =>
   Effect.gen(function* () {
@@ -382,7 +427,7 @@ export const claimPayableSession = (
     // have gone live, or the session been swapped, since `resolvePayableSessionId` read.
     const live = liveOf(yield* findActiveRecurring(found.value.externalUserId));
     yield* assertMethodAllowed(found.value, method);
-    yield* assertNotIntroOnLiveSub(found.value, live);
+    yield* eligiblePick(found.value, option, live);
     const claimed = yield* repo.claimForPayment(id, method);
     if (!claimed) {
       // The SQL backstop refuses a locked method too; tell that apart from a lost race.
@@ -631,7 +676,7 @@ export const effectivePayable = (
 export const resolvePayableSessionId = (
   { sessions: repo, findActiveRecurring }: PayRepos,
   id: string,
-  method: number,
+  { method, option }: SelectMethod,
   nowMillis: number,
   ttlSeconds: number,
 ) =>
@@ -642,7 +687,7 @@ export const resolvePayableSessionId = (
     }
     const session = found.value;
     const live = liveOf(yield* findActiveRecurring(session.externalUserId));
-    yield* assertNotIntroOnLiveSub(session, live);
+    const picked = yield* eligiblePick(session, option, live);
     const effective = yield* effectivePayable(
       session,
       live,
@@ -653,6 +698,9 @@ export const resolvePayableSessionId = (
       effective._tag === 'Stored' ? session : effective.intent,
       method,
     );
+    if (effective._tag === 'Reissue') {
+      yield* assertPickKept(effective.intent, picked);
+    }
     if (effective._tag === 'Stored') {
       // A live link the buyer already pressed Pay on. `claimForPayment` only moves
       // Created → Pending, so without this the second press 409s and the buyer is shut
@@ -677,40 +725,16 @@ export const resolvePayableSessionId = (
 
 /**
  * The provider order for the option the payer picked: the claimed session under that
- * option's reference (`checkoutRef`), priced at the option's total. An option the session
- * does not offer is a 422. A session without options charges its flat terms whatever was
- * sent: a re-mint at the live sub's terms drops the stale link's options by design. A
- * non-default option is held to Q8 on its own terms — an intro option paid on a live sub
- * would only be refused at settlement, after the money moved.
+ * option's reference (`checkoutRef`), priced at the option's total. The claim already
+ * resolved the pick and ran its eligibility rules on it. A session without options
+ * charges its flat terms; a non-default pick never reaches here on one (`assertPickKept`).
  */
-const orderFor = (
-  session: CheckoutSession,
-  option: number | undefined,
-  findActiveRecurring: FindActiveRecurring,
-) =>
-  Effect.gen(function* () {
-    const index =
-      option === undefined || session.options === null
-        ? defaultOptionIndex(session)
-        : option;
-    const choice = Option.getOrNull(choiceAt(session, index));
-    const chosen =
-      choice === null ? null : Option.getOrNull(chosenTerms(session, choice));
-    if (choice === null || chosen === null) {
-      return yield* Effect.fail(
-        new UnprocessableEntity({ reason: 'unknown checkout option' }),
-      );
-    }
-    if (choice.kind !== 'default') {
-      const live = liveOf(yield* findActiveRecurring(session.externalUserId));
-      yield* assertNotIntroOnLiveSub({ ...session, ...chosen.terms }, live);
-    }
-    return {
-      ...session,
-      id: checkoutRef(session.id, choice),
-      amount: chosen.total,
-    } satisfies CheckoutSession;
-  });
+const orderFor = (session: CheckoutSession, option: number | undefined) =>
+  Effect.map(pickedOn(session, option), (picked) => ({
+    ...session,
+    id: checkoutRef(session.id, picked.choice),
+    amount: picked.chosen.total,
+  }));
 
 const pay = (input: SelectMethod, request: FastifyRequest) =>
   Effect.gen(function* () {
@@ -726,22 +750,16 @@ const pay = (input: SelectMethod, request: FastifyRequest) =>
     const id = yield* resolvePayableSessionId(
       repos,
       readId(request),
-      input.method,
+      input,
       nowMillis,
       request.server.appConfig.wayforpay.sessionTtlSeconds,
     );
-    const claimed = yield* claimPayableSession(
-      repos,
-      id,
-      input.method,
-      nowMillis,
+    const claimed = yield* claimPayableSession(repos, id, input, nowMillis);
+    // The claim resolved this same pick; a refusal here still releases it, like a failed
+    // crypto mint below.
+    const order = yield* orderFor(claimed, input.option).pipe(
+      Effect.tapError(() => repo.releasePending(id)),
     );
-    // A refused option releases the claim, like a failed crypto mint below.
-    const order = yield* orderFor(
-      claimed,
-      input.option,
-      repos.findActiveRecurring,
-    ).pipe(Effect.tapError(() => repo.releasePending(id)));
     // A card handoff is a pure signed form (WayForPay dedups on our orderReference), so it
     // cannot fail. Only crypto calls out to WhitePay: if that mint fails (5xx / disabled),
     // release the claim so the buyer can retry or switch method instead of bricking here.

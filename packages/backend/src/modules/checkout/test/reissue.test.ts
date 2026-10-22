@@ -104,7 +104,7 @@ const run = (
     resolvePayableSessionId(
       { sessions: repo, findActiveRecurring: findActive },
       'chk_old',
-      method,
+      { method },
       NOW,
       TTL_SECONDS,
     ).pipe(Effect.either),

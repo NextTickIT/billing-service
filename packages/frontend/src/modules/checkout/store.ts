@@ -28,11 +28,13 @@ const errorKeyFor = (e: unknown): string => {
 /**
  * A refused pay the buyer can act on without the page giving up on them. `key` is an
  * i18n key, like `error`; `retryable` keeps the Pay button, because a locked method has
- * already been switched in and pressing Pay again is the fix.
+ * already been switched in and pressing Pay again is the fix. `perOption` marks a refusal
+ * of the picked option only: picking another option clears it (`afterOptionPick`).
  */
 interface Notice {
   readonly key: string;
   readonly retryable: boolean;
+  readonly perOption?: boolean;
 }
 
 /**
@@ -57,14 +59,35 @@ const recoverableRefusal = (
           : { ...session, method: e.method, methodLocked: true },
     };
   // A 409, but telling a paying customer their link is invalid reads as us being
-  // broken. Nothing to retry: they are already covered.
+  // broken. Nothing to retry: they are already covered — unless the page offers other
+  // options, since the refusal is about the picked option's terms (an intro offer).
   if (e.code === 'already_subscribed')
     return {
-      notice: { key: 'checkout.errors.alreadySubscribed', retryable: false },
+      notice: {
+        key: 'checkout.errors.alreadySubscribed',
+        retryable: false,
+        perOption: (session?.options.length ?? 0) > 1,
+      },
+      session,
+    };
+  // The link re-mints at new terms that no longer carry the picked option: the page goes
+  // back to the default (CheckoutPage watches for this key) and the buyer presses again.
+  if (e.code === 'option_unavailable')
+    return {
+      notice: {
+        key: 'checkout.notices.optionUnavailable',
+        retryable: true,
+        perOption: true,
+      },
       session,
     };
   return null;
 };
+
+/** The notice once the buyer picks another option: a refusal of the previous pick no
+ * longer applies; a session-wide one does. */
+export const afterOptionPick = (notice: Notice | null): Notice | null =>
+  notice?.perOption === true ? null : notice;
 
 export const useCheckoutStore = defineStore('checkout', () => {
   const session = ref<CheckoutSessionPublic | null>(null);

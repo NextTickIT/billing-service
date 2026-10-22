@@ -140,7 +140,10 @@ const isCycleOption = (
   option: StoredCheckoutOption,
 ): option is CheckoutCycleOption => 'cycles' in option;
 
-const flatTerms = (session: CheckoutSession): CheckoutTerms => ({
+/** What a stored session or a session about to be minted offers. */
+type Offer = CheckoutTerms & Pick<CheckoutSession, 'options'>;
+
+const flatTerms = (session: Offer): CheckoutTerms => ({
   amount: session.amount,
   period: session.period,
   promo: session.promo,
@@ -164,7 +167,7 @@ export interface ChosenTerms {
 /** The terms a choice stands for on this session, or None when it offers no such choice
  * (a reference naming an option the session does not have). */
 export const chosenTerms = (
-  session: CheckoutSession,
+  session: Offer,
   choice: CheckoutChoice,
 ): Option.Option<ChosenTerms> => {
   const flat = flatTerms(session);
@@ -198,7 +201,7 @@ export const chosenTerms = (
 /** The choice the page's option `index` stands for, or None when there is no such
  * option. The flat terms are the default wherever they sit in the list. */
 export const choiceAt = (
-  session: CheckoutSession,
+  session: Offer,
   index: number,
 ): Option.Option<CheckoutChoice> => {
   if (session.options === null) {
@@ -223,13 +226,47 @@ export const choiceAt = (
 };
 
 /** The index of the default (the flat terms) among the page's options. */
-export const defaultOptionIndex = (session: CheckoutSession): number =>
+export const defaultOptionIndex = (session: Offer): number =>
   Math.max(
     0,
     (session.options ?? []).findIndex((_, i) =>
       Option.exists(choiceAt(session, i), (c) => c.kind === 'default'),
     ),
   );
+
+/** The option a `/pay` picked: its index, the choice it names and what it charges. */
+export interface PickedOption {
+  readonly index: number;
+  readonly choice: CheckoutChoice;
+  readonly chosen: ChosenTerms;
+}
+
+/**
+ * The option `/pay` picked on this session: the sent index, or the default when none was
+ * sent or the session offers no choice. None when the session has no such option.
+ */
+export const pickOption = (
+  session: Offer,
+  option: number | undefined,
+): Option.Option<PickedOption> => {
+  const index =
+    option === undefined || session.options === null
+      ? defaultOptionIndex(session)
+      : option;
+  return Option.flatMap(choiceAt(session, index), (choice) =>
+    Option.map(chosenTerms(session, choice), (chosen) => ({
+      index,
+      choice,
+      chosen,
+    })),
+  );
+};
+
+/** Whether two picks charge the same total for the same terms and cycles. */
+export const samePick = (a: PickedOption, b: PickedOption): boolean =>
+  a.chosen.total === b.chosen.total &&
+  a.chosen.cycles === b.chosen.cycles &&
+  sameTerms(a.chosen.terms, b.chosen.terms);
 
 /** Every option as the page shows it, in order; the flat terms alone when the session
  * offers no choice. A cycle option shows its total and the time it buys. */

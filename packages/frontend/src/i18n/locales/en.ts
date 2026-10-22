@@ -61,6 +61,8 @@ export default {
     notices: {
       methodChanged:
         'This link now pays with the method shown below. Press Pay again to continue.',
+      optionUnavailable:
+        'That option is no longer available on this link. The standard option is selected — press Pay again to continue.',
     },
     periodLabel: 'Billing period',
     renewalThen: 'Then {amount} every {period}',

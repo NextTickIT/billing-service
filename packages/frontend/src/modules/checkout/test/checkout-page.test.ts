@@ -16,7 +16,7 @@ import en from '@/i18n/locales/en.js';
 import ru from '@/i18n/locales/ru.js';
 import uk from '@/i18n/locales/uk.js';
 import CheckoutPage from '@/modules/checkout/CheckoutPage.vue';
-import { useCheckoutStore } from '@/modules/checkout/store.js';
+import { afterOptionPick, useCheckoutStore } from '@/modules/checkout/store.js';
 
 const ID = 'chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab';
 
@@ -155,5 +155,59 @@ describe('pay', () => {
       method: PaymentMethod.Crypto,
       option: 2,
     });
+  });
+});
+
+describe('option refusals', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const refuse = (code: string) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ error: 'refused', code }), {
+            status: 409,
+          }),
+        ),
+      ),
+    );
+  };
+
+  it('an already-subscribed refusal of one option clears when another is picked', async () => {
+    refuse('already_subscribed');
+    const store = useCheckoutStore(createPinia());
+    store.session = callerOptions;
+    await store.pay(ID, PaymentMethod.Card, 1);
+    expect(store.notice).toMatchObject({
+      key: 'checkout.errors.alreadySubscribed',
+      retryable: false,
+    });
+    store.notice = afterOptionPick(store.notice);
+    expect(store.notice).toBeNull();
+  });
+
+  it('on a single-option page the refusal is session-wide and stays', async () => {
+    refuse('already_subscribed');
+    const store = useCheckoutStore(createPinia());
+    store.session = single;
+    await store.pay(ID, PaymentMethod.Card, 0);
+    store.notice = afterOptionPick(store.notice);
+    expect(store.notice?.key).toBe('checkout.errors.alreadySubscribed');
+  });
+
+  it('an unavailable option is retryable and clears on the next pick', async () => {
+    refuse('option_unavailable');
+    const store = useCheckoutStore(createPinia());
+    store.session = callerOptions;
+    await store.pay(ID, PaymentMethod.Card, 1);
+    expect(store.notice).toMatchObject({
+      key: 'checkout.notices.optionUnavailable',
+      retryable: true,
+    });
+    store.notice = afterOptionPick(store.notice);
+    expect(store.notice).toBeNull();
   });
 });

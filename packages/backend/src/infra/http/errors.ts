@@ -58,6 +58,26 @@ export class AlreadySubscribed extends Data.TaggedError('AlreadySubscribed')<{
 }
 
 /**
+ * The option the buyer picked is not on offer at the same terms any more: a lapsed link
+ * re-minted at the subscription's current terms dropped it or re-priced it. Refused
+ * before any provider handoff, so the page can return the buyer to the link's default
+ * rather than charge something they did not pick. `code` is what the page branches on.
+ */
+export class OptionUnavailable extends Data.TaggedError('OptionUnavailable')<{
+  readonly option: number;
+}> {
+  toHttp(): HttpReply {
+    return {
+      status: 409,
+      body: {
+        error: 'the picked option is no longer offered on these terms',
+        code: 'option_unavailable',
+      },
+    };
+  }
+}
+
+/**
  * The buyer picked a method this checkout does not take: a `/prolong` session is locked
  * to the subscription's current method. 400, not 409 — the request is wrong, not the
  * state — and nothing was written. `method` is the one the page must switch to (it can

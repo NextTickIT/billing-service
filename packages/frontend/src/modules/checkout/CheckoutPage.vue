@@ -13,7 +13,7 @@ import {
   PaymentMethod,
   scalePeriod,
 } from '@billing-service/shared';
-import { useCheckoutStore } from './store.js';
+import { afterOptionPick, useCheckoutStore } from './store.js';
 import { formatDate } from '@/app/datetime.js';
 import { useMoney } from '@/app/money.js';
 import BaseSpinner from '@/components/BaseSpinner.vue';
@@ -167,6 +167,16 @@ watch(
   { immediate: true },
 );
 
+// A refused option sends the page back to the link's default, which is what the
+// replacement still sells; the notice stays until the buyer picks again.
+watch(
+  () => store.notice,
+  (notice) => {
+    if (notice?.key === 'checkout.notices.optionUnavailable' && store.session)
+      selectedOption.value = store.session.defaultOption;
+  },
+);
+
 const selected = computed<CheckoutOptionPublic | null>(
   () =>
     options.value[selectedOption.value ?? store.session?.defaultOption ?? 0] ??
@@ -299,6 +309,7 @@ const legalLinks = [
                 name="checkout-option"
                 :value="i"
                 :disabled="store.submitting"
+                @change="store.notice = afterOptionPick(store.notice)"
               />
               <span class="checkout__option-label">{{ optionLabel(o) }}</span>
               <span v-if="o.promo" class="checkout__badge">
