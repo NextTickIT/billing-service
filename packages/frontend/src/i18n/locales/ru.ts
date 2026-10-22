@@ -62,6 +62,15 @@ export default {
     },
     periodLabel: 'Расчётный период',
     renewalThen: 'Далее {amount} за {period}',
+    // Keyed by Intl.PluralRules category: ru needs one / few / many.
+    cycles: {
+      one: '{n} цикл',
+      few: '{n} цикла',
+      many: '{n} циклов',
+      other: '{n} цикла',
+    },
+    cycleIs: '1 цикл = {period}',
+    bonus: '+{period}',
     typeSubscription: 'Подписка',
     typeOneTime: 'Разовый платёж',
     linkValidUntil: 'Ссылка на оплату действительна до {date}',

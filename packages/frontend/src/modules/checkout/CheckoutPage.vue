@@ -3,10 +3,15 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import {
+  type CheckoutOptionPublic,
   CheckoutSessionKind,
   CheckoutSessionStatus,
+  DURATION,
   formatPeriod,
+  isRenderablePeriod,
+  parseCheckoutRef,
   PaymentMethod,
+  scalePeriod,
 } from '@billing-service/shared';
 import { useCheckoutStore } from './store.js';
 import { formatDate } from '@/app/datetime.js';
@@ -22,7 +27,10 @@ const { formatAmount } = useMoney();
 const route = useRoute();
 const store = useCheckoutStore();
 
-const id = route.params['id'] as string;
+// A provider's failure link brings the payer back with its order reference, which names
+// the option after the session id (`chk_<uuid>_c3`); the page is the session's.
+const orderRef = route.params['id'] as string;
+const id = parseCheckoutRef(orderRef)?.sessionId ?? orderRef;
 
 // A 0-amount card change is a WayForPay Card Verify: the cardholder enters the new
 // card in the provider's hosted widget, not our page. It hands off the SAME way as a
@@ -137,8 +145,76 @@ watch(
   { immediate: true },
 );
 
+// The options the payer picks from; one entry (the flat terms) when there is no choice,
+// and the page then reads exactly as a single-offer page always has.
+const options = computed<readonly CheckoutOptionPublic[]>(
+  () => store.session?.options ?? [],
+);
+
+// The picked option's index. Seeded with the default once, and kept across a session
+// refresh (a method-locked refusal swaps the session in) so the payer's pick survives.
+const selectedOption = ref<number | null>(null);
+
+watch(
+  () => store.session,
+  (session) => {
+    if (!session) return;
+    const current = selectedOption.value;
+    if (current === null || current >= session.options.length) {
+      selectedOption.value = session.defaultOption;
+    }
+  },
+  { immediate: true },
+);
+
+const selected = computed<CheckoutOptionPublic | null>(
+  () =>
+    options.value[selectedOption.value ?? store.session?.defaultOption ?? 0] ??
+    null,
+);
+
+// The default option is one cycle: every other option is labelled by how many of it
+// it buys, when it says so (`cycles`) or its period is a whole multiple of it.
+const base = computed<CheckoutOptionPublic | null>(
+  () => options.value[store.session?.defaultOption ?? 0] ?? null,
+);
+
+/** How many times `period` holds `unit` exactly (P12W in P4W: 3), else null. */
+function multipleOf(period: string, unit: string): number | null {
+  const parts = DURATION.exec(unit);
+  const lead = parts?.findIndex((part, i) => i > 0 && Number(part ?? 0) > 0);
+  if (parts === null || lead === undefined || lead < 0) return null;
+  const n = Number(DURATION.exec(period)?.[lead] ?? 0) / Number(parts[lead]);
+  return Number.isInteger(n) && n > 0 && scalePeriod(unit, n) === period
+    ? n
+    : null;
+}
+
+function cyclesOf(option: CheckoutOptionPublic): number | null {
+  if (option.cycles !== null) return option.cycles;
+  return base.value === null
+    ? null
+    : multipleOf(option.period, base.value.period);
+}
+
+// Plural forms come from Intl, not a rule table: uk/ru need one / few / many.
+function optionLabel(option: CheckoutOptionPublic): string {
+  const n = cyclesOf(option);
+  if (n !== null) {
+    const form = new Intl.PluralRules(locale.value).select(n);
+    return t(`checkout.cycles.${form}`, { n });
+  }
+  return isRenderablePeriod(option.period)
+    ? formatPeriod(option.period, locale.value)
+    : '';
+}
+
+const labelledInCycles = computed(() =>
+  options.value.some((o) => cyclesOf(o) !== null),
+);
+
 async function onPay(): Promise<void> {
-  await store.pay(id, selectedMethod.value);
+  await store.pay(id, selectedMethod.value, selectedOption.value ?? undefined);
 }
 
 // Legal documents (Offer / Privacy / Data consent), hosted on the marketing site,
@@ -201,29 +277,88 @@ const legalLinks = [
                 : t('checkout.typeOneTime')
             }}
           </p>
+          <div
+            v-if="options.length > 1"
+            class="checkout__options"
+            role="radiogroup"
+            :aria-label="
+              store.session.recurring
+                ? t('checkout.typeSubscription')
+                : t('checkout.typeOneTime')
+            "
+          >
+            <label
+              v-for="(o, i) in options"
+              :key="i"
+              class="checkout__option"
+              :class="{ 'checkout__option--on': selectedOption === i }"
+            >
+              <input
+                v-model="selectedOption"
+                type="radio"
+                name="checkout-option"
+                :value="i"
+                :disabled="store.submitting"
+              />
+              <span class="checkout__option-label">{{ optionLabel(o) }}</span>
+              <span v-if="o.promo" class="checkout__badge">
+                {{
+                  t('checkout.bonus', {
+                    period: formatPeriod(o.promo.additionalFreePeriod, locale),
+                  })
+                }}
+              </span>
+              <span class="checkout__option-amount">
+                {{ formatAmount(o.amount, store.session.currency) }}
+              </span>
+            </label>
+          </div>
           <div class="checkout__row">
             <span class="checkout__label">{{ t('common.amount') }}</span>
             <span class="checkout__value">
-              {{ formatAmount(store.session.amount, store.session.currency) }}
+              {{
+                formatAmount(
+                  selected?.amount ?? store.session.amount,
+                  store.session.currency,
+                )
+              }}
             </span>
           </div>
-          <div v-if="store.session.recurring" class="checkout__row">
+          <div
+            v-if="store.session.recurring && options.length <= 1"
+            class="checkout__row"
+          >
             <span class="checkout__label">{{ t('checkout.periodLabel') }}</span>
             <span class="checkout__value">
               {{ formatPeriod(store.session.period, locale) }}
             </span>
           </div>
           <p
-            v-if="store.session.recurring && store.session.renewal"
+            v-if="store.session.recurring && selected?.renewal"
             class="checkout__renewal"
           >
             {{
               t('checkout.renewalThen', {
                 amount: formatAmount(
-                  store.session.renewal.amount,
+                  selected.renewal.amount,
                   store.session.currency,
                 ),
-                period: formatPeriod(store.session.renewal.period, locale),
+                period: formatPeriod(selected.renewal.period, locale),
+              })
+            }}
+          </p>
+          <p
+            v-if="
+              store.session.recurring &&
+              options.length > 1 &&
+              labelledInCycles &&
+              base
+            "
+            class="checkout__renewal"
+          >
+            {{
+              t('checkout.cycleIs', {
+                period: formatPeriod(base.period, locale),
               })
             }}
           </p>
@@ -365,6 +500,36 @@ const legalLinks = [
   margin: 0;
   font-size: 13px;
   color: var(--muted);
+}
+
+/* The option picker: one row per option, its label, any promo badge, and its price. */
+.checkout__options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.checkout__option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.checkout__option--on {
+  border-color: var(--txt);
+}
+.checkout__option-label {
+  color: var(--txt);
+}
+.checkout__badge {
+  font-size: 12px;
+  color: var(--green);
+}
+.checkout__option-amount {
+  margin-left: auto;
+  color: var(--txt);
 }
 
 /* The link's own TTL is checkout housekeeping, not a term of the purchase: smaller and

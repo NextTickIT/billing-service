@@ -64,6 +64,13 @@ export default {
     },
     periodLabel: 'Billing period',
     renewalThen: 'Then {amount} every {period}',
+    // Keyed by Intl.PluralRules category.
+    cycles: {
+      one: '{n} cycle',
+      other: '{n} cycles',
+    },
+    cycleIs: '1 cycle = {period}',
+    bonus: '+{period}',
     typeSubscription: 'Subscription',
     typeOneTime: 'One-time payment',
     linkValidUntil: 'Payment link valid until {date}',

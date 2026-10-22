@@ -48,18 +48,19 @@ export async function getCheckoutSession(
 }
 
 /**
- * Select a method and get the handoff: a card method returns a `form` to POST to
- * WayForPay; a crypto method returns a `redirect` to the WhitePay hosted page (the
- * page branches on `kind`).
+ * Select a method (and an option, by index into the session's `options`) and get the
+ * handoff: a card method returns a `form` to POST to WayForPay; a crypto method returns
+ * a `redirect` to the WhitePay hosted page (the page branches on `kind`).
  */
 export async function pay(
   id: string,
   method: PaymentMethod,
+  option?: number,
 ): Promise<PayInstruction> {
   const res = await fetch(`/api/checkout-sessions/${id}/pay`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ method }),
+    body: JSON.stringify({ method, option }),
   });
   if (!res.ok) {
     // 422 is the one status whose body explains something the buyer can act on (e.g.

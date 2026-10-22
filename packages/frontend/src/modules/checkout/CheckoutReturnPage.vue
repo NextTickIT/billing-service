@@ -2,7 +2,10 @@
 import { onMounted, onUnmounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
-import { CheckoutSessionStatus } from '@billing-service/shared';
+import {
+  CheckoutSessionStatus,
+  parseCheckoutRef,
+} from '@billing-service/shared';
 import { getCheckoutSession } from './api.js';
 import { isNetworkError } from '@/infra/errors.js';
 import BaseSpinner from '@/components/BaseSpinner.vue';
@@ -15,7 +18,10 @@ type ReturnState = 'polling' | 'confirmed' | 'timeout' | 'declined';
 
 const { t } = useI18n();
 const route = useRoute();
-const id = route.params['id'] as string;
+// The provider returns here with its order reference, which names the option paid for
+// after the session id (`chk_<uuid>_c3`); the session is what we poll.
+const orderRef = route.params['id'] as string;
+const id = parseCheckoutRef(orderRef)?.sessionId ?? orderRef;
 
 const state = ref<ReturnState>('polling');
 let timer: ReturnType<typeof setInterval> | null = null;

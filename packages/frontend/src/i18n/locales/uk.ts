@@ -64,6 +64,15 @@ export default {
     },
     periodLabel: 'Розрахунковий період',
     renewalThen: 'Далі {amount} за {period}',
+    // Keyed by Intl.PluralRules category: uk needs one / few / many.
+    cycles: {
+      one: '{n} цикл',
+      few: '{n} цикли',
+      many: '{n} циклів',
+      other: '{n} циклу',
+    },
+    cycleIs: '1 цикл = {period}',
+    bonus: '+{period}',
     typeSubscription: 'Підписка',
     typeOneTime: 'Одноразовий платіж',
     linkValidUntil: 'Посилання на оплату дійсне до {date}',

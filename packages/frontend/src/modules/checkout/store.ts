@@ -104,6 +104,7 @@ export const useCheckoutStore = defineStore('checkout', () => {
   async function pay(
     id: string,
     method: PaymentMethod = PaymentMethod.Card,
+    option?: number,
   ): Promise<void> {
     // Re-entry guard: the single source of truth for "a pay is already in flight". The
     // button's `:loading` disables it, but reactivity flushes on the next tick, so a
@@ -118,7 +119,7 @@ export const useCheckoutStore = defineStore('checkout', () => {
       // On success we leave `submitting` true: the caller immediately hands off (form
       // POST or redirect) to the provider, so the button stays busy through the
       // navigation (no re-enable, no double submit).
-      instruction.value = await payApi(id, method);
+      instruction.value = await payApi(id, method, option);
     } catch (e) {
       const refusal = recoverableRefusal(e, session.value);
       if (refusal === null) {
