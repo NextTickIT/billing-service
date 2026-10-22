@@ -138,6 +138,11 @@ const reissueLapsed =
       input.renewal === null ? null : JSON.stringify(input.renewal);
     const options =
       input.options === null ? null : JSON.stringify(input.options);
+    // The declaration is part of the intent: the success event echoes the paid session's,
+    // so a live session declaring another purchase must not be handed back. NULL and `{}`
+    // stay distinct (`Metadata`); jsonb equality ignores key order.
+    const metadata =
+      input.metadata == null ? null : JSON.stringify(input.metadata);
     return sql.withTransaction(
       Effect.gen(function* () {
         // Serialize per user for the read-then-insert below. Without it two tabs both
@@ -166,6 +171,7 @@ const reissueLapsed =
               AND period = ${input.period}
               AND renewal IS NOT DISTINCT FROM ${renewal}::jsonb
               AND options IS NOT DISTINCT FROM ${options}::jsonb
+              AND metadata IS NOT DISTINCT FROM ${metadata}::jsonb
               AND origin IS NOT DISTINCT FROM ${input.origin}
               AND "renewalOf" IS NOT DISTINCT FROM ${input.renewalOf}
               AND (origin IS DISTINCT FROM 'prolong' OR method = ${input.method ?? null})
