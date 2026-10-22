@@ -64,6 +64,7 @@ export default {
     },
     periodLabel: 'Расчётный период',
     renewalThen: 'Далее {amount} за {period}',
+    renewalPerCycle: 'Далее {amount} за цикл*',
     // Keyed by Intl.PluralRules category: ru needs one / few / many.
     cycles: {
       one: '{n} цикл',

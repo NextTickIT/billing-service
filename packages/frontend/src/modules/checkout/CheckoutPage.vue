@@ -21,7 +21,7 @@ import LangSwitch from '@/components/LangSwitch.vue';
 import ThemeToggle from '@/components/ThemeToggle.vue';
 
 const { t, locale } = useI18n();
-const { formatAmount } = useMoney();
+const { formatPrice } = useMoney();
 const route = useRoute();
 const store = useCheckoutStore();
 
@@ -181,14 +181,23 @@ const selected = computed<CheckoutOptionPublic | null>(
     null,
 );
 
-// The default option is one cycle. Only billing-minted manual renewals offer cycles
-// (`cycles` set); caller options are labelled by their own period.
+// A cycle is 4 weeks on caller options; a manual renewal's cycle is the sub's own
+// period (its options carry `cycles`). Options in cycles are starred and the note
+// under the Pay row says what one cycle is; any other period is shown as is.
+const CYCLE_WEEKS = 4;
+
 const base = computed<CheckoutOptionPublic | null>(
   () => options.value[store.session?.defaultOption ?? 0] ?? null,
 );
 
+const manualCycles = computed(() =>
+  options.value.some((o) => o.cycles !== null),
+);
+
 function cyclesOf(option: CheckoutOptionPublic): number | null {
-  return option.cycles;
+  if (option.cycles !== null) return option.cycles;
+  const weeks = Number(/^P(\d+)W$/.exec(option.period)?.[1] ?? 0);
+  return weeks > 0 && weeks % CYCLE_WEEKS === 0 ? weeks / CYCLE_WEEKS : null;
 }
 
 // Plural forms come from Intl, not a rule table: uk/ru need one / few / many.
@@ -196,7 +205,7 @@ function optionLabel(option: CheckoutOptionPublic): string {
   const n = cyclesOf(option);
   if (n !== null) {
     const form = new Intl.PluralRules(locale.value).select(n);
-    return t(`checkout.cycles.${form}`, { n });
+    return `${t(`checkout.cycles.${form}`, { n })}*`;
   }
   return isRenderablePeriod(option.period)
     ? formatPeriod(option.period, locale.value)
@@ -205,6 +214,22 @@ function optionLabel(option: CheckoutOptionPublic): string {
 
 const labelledInCycles = computed(() =>
   options.value.some((o) => cyclesOf(o) !== null),
+);
+
+const cyclePeriod = computed(() =>
+  manualCycles.value && base.value ? base.value.period : `P${CYCLE_WEEKS}W`,
+);
+
+// "Then $50 per cycle*" when the renewal runs one cycle at a time.
+const renewalPerCycle = computed(
+  () => selected.value?.renewal?.period === cyclePeriod.value,
+);
+
+const showCycleNote = computed(
+  () =>
+    store.session?.recurring === true &&
+    (renewalPerCycle.value ||
+      (options.value.length > 1 && labelledInCycles.value)),
 );
 
 async function onPay(): Promise<void> {
@@ -304,7 +329,7 @@ const legalLinks = [
                 }}
               </span>
               <span class="checkout__option-amount">
-                {{ formatAmount(o.amount, store.session.currency) }}
+                {{ formatPrice(o.amount, store.session.currency) }}
               </span>
             </label>
           </div>
@@ -312,7 +337,7 @@ const legalLinks = [
             <span class="checkout__label">{{ t('common.amount') }}</span>
             <span class="checkout__value">
               {{
-                formatAmount(
+                formatPrice(
                   selected?.amount ?? store.session.amount,
                   store.session.currency,
                 )
@@ -333,13 +358,20 @@ const legalLinks = [
             class="checkout__renewal"
           >
             {{
-              t('checkout.renewalThen', {
-                amount: formatAmount(
-                  selected.renewal.amount,
-                  store.session.currency,
-                ),
-                period: formatPeriod(selected.renewal.period, locale),
-              })
+              renewalPerCycle
+                ? t('checkout.renewalPerCycle', {
+                    amount: formatPrice(
+                      selected.renewal.amount,
+                      store.session.currency,
+                    ),
+                  })
+                : t('checkout.renewalThen', {
+                    amount: formatPrice(
+                      selected.renewal.amount,
+                      store.session.currency,
+                    ),
+                    period: formatPeriod(selected.renewal.period, locale),
+                  })
             }}
           </p>
           <p class="checkout__expiry">
@@ -389,18 +421,11 @@ const legalLinks = [
             />
           </div>
           <div class="checkout__legal">
-            <p
-              v-if="
-                store.session.recurring &&
-                options.length > 1 &&
-                labelledInCycles &&
-                base
-              "
-              class="checkout__legal-note"
-            >
+            <p v-if="showCycleNote" class="checkout__legal-note">
+              *
               {{
                 t('checkout.cycleIs', {
-                  period: formatPeriod(base.period, locale),
+                  period: formatPeriod(cyclePeriod, locale),
                 })
               }}
             </p>

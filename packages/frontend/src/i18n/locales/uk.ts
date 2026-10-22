@@ -66,6 +66,7 @@ export default {
     },
     periodLabel: 'Розрахунковий період',
     renewalThen: 'Далі {amount} за {period}',
+    renewalPerCycle: 'Далі {amount} за цикл*',
     // Keyed by Intl.PluralRules category: uk needs one / few / many.
     cycles: {
       one: '{n} цикл',

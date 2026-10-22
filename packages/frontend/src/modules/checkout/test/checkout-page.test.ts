@@ -100,29 +100,44 @@ describe('CheckoutPage', () => {
     const html = await render(single);
     expect(html).not.toContain('checkout__options');
     expect(html).toContain('Розрахунковий період');
-    expect(amountRow(html)).toBe('50.00 USD');
+    expect(amountRow(html)).toBe('$50');
   });
 
-  it('renders caller options by their own period, with a promo badge', async () => {
+  it('caller options: multiples of 4 weeks in starred cycles, others by period', async () => {
     const html = await render(callerOptions);
     expect(html.match(/type="radio"/g)).toHaveLength(3);
-    expect(html).toContain('4 тижні');
-    expect(html).toContain('12 тижнів');
+    expect(html).toContain('1 цикл*');
+    expect(html).toContain('3 цикли*');
+    // P1M is not a multiple of P4W: shown as its own period, unstarred.
     expect(html).toContain('1 місяць');
+    expect(html).not.toContain('1 місяць*');
     expect(html).toContain('+7 днів');
-    // Cycles are a manual-renewal concept only.
-    expect(html).not.toContain('цикл');
+    expect(html).toMatch(/\*\s*1 цикл = 4 тижні/);
   });
 
-  it('manual-renewal cycles show the cycle footer', async () => {
-    expect(await render(cycles)).toContain('1 цикл = 4 тижні');
+  it('manual-renewal cycles are starred, with the cycle footnote', async () => {
+    const html = await render(cycles);
+    expect(html).toContain('6 циклів*');
+    expect(html).toMatch(/\*\s*1 цикл = 4 тижні/);
+  });
+
+  it('a renewal of one cycle reads "per cycle", priced with the symbol', async () => {
+    const html = await render({
+      ...callerOptions,
+      defaultOption: 1,
+      options: callerOptions.options.map((o, i) =>
+        i === 1 ? { ...o, renewal: { amount: 5000, period: 'P4W' } } : o,
+      ),
+    });
+    expect(html).toContain('Далі $50 за цикл*');
+    expect(html).not.toContain('USD');
   });
 
   it('"Сума" shows the selected option, the default when the page opens', async () => {
-    expect(amountRow(await render(callerOptions))).toBe('50.00 USD');
+    expect(amountRow(await render(callerOptions))).toBe('$50');
     expect(
       amountRow(await render({ ...callerOptions, defaultOption: 1 })),
-    ).toBe('130.00 USD');
+    ).toBe('$130');
   });
 
   it('cycle options use the language’s plural forms', async () => {

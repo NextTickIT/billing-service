@@ -66,6 +66,7 @@ export default {
     },
     periodLabel: 'Billing period',
     renewalThen: 'Then {amount} every {period}',
+    renewalPerCycle: 'Then {amount} per cycle*',
     // Keyed by Intl.PluralRules category.
     cycles: {
       one: '{n} cycle',
