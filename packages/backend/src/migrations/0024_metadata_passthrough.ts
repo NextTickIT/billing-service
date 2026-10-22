@@ -2,7 +2,7 @@ import { SqlClient } from '@effect/sql';
 import { Effect } from 'effect';
 
 /**
- * Migration 0023 — caller `metadata` passthrough (docs/07).
+ * Migration 0024 — caller `metadata` passthrough (docs/07).
  *
  * An opaque jsonb the external system attaches to a checkout and we hand back on every
  * event that checkout's payment produces. Billing never reads it, so there is no shape to

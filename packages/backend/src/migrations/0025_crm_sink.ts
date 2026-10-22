@@ -2,7 +2,7 @@ import { SqlClient } from '@effect/sql';
 import { Effect } from 'effect';
 
 /**
- * Migration 0024 — seed the CRM sink row (docs/21).
+ * Migration 0025 — seed the CRM sink row (docs/21).
  *
  * `kind = 1`, DISABLED, with an empty URL and an empty token. The sinks table was built so
  * that a new sink is a new row and no schema change (AC8), so this is the whole of it.
