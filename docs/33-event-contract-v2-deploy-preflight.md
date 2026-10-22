@@ -260,12 +260,15 @@ the CRM keeps; B5 must not re-post the other.
 # preflight-recurring_payment_succeeded.json, the shape crmBody sends (docs/21 §14.1).
 # For the other two kinds change name and id; one_time_purchase_succeeded has
 # "next_payment_date": null, "recurring": false, "charge_kind": "checkout".
-cat > preflight-recurring_payment_succeeded.json <<'JSON'
+# occurred_at must be the current UTC time: the CRM answers 400 occurred_at_in_future to
+# a time ahead of its clock (beyond its skew allowance), so never paste a fixed date here.
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+cat > preflight-recurring_payment_succeeded.json <<JSON
 {
   "id": "evt_preflight_recurring_1",
   "idempotency_key": "evt_preflight_recurring_1",
   "name": "recurring_payment_succeeded",
-  "occurred_at": "2026-10-22T09:00:00.000Z",
+  "occurred_at": "${NOW}",
   "external_user_id": "<the agreed test external_user_id>",
   "correlation_id": "preflight-recurring-1",
   "aggregate_id": "preflight-payment-1",
