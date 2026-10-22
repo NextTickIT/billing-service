@@ -241,7 +241,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const { calls, repo } = recordingRepo();
-      const checkout = completingCheckout(() => {});
+      const checkout = completingCheckout(() => undefined);
 
       // An Approved WayForPay charge can omit recToken (docs/14). It must keep the sub on
       // card: do NOT clear the existing token (that would silently strip a live card sub to
@@ -262,7 +262,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const { calls, repo } = recordingRepo();
-      const checkout = completingCheckout(() => {});
+      const checkout = completingCheckout(() => undefined);
 
       // WhitePay (crypto) success → CRYPTO: an owed crypto change pays arrears in crypto,
       // advances, and clears the token so the scheduler's token-less branch prompts a manual
