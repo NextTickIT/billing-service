@@ -46,6 +46,7 @@ const base: CheckoutSession = {
   origin: null,
   renewalOf: null,
   options: null,
+  metadata: null,
   idempotencyKey: null,
   email: '',
   expiresAt: d('2030-01-01'),
@@ -242,6 +243,7 @@ const live: Payment = {
   firstFailureAt: null,
   retryAttempt: 0,
   cancelRequestedAt: null,
+  metadata: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
 };
@@ -275,6 +277,7 @@ const settlementRepos = (row: Payment | null, writes: Writes) => {
           ...input,
           id: 'sub_new',
           cancelRequestedAt: null,
+          metadata: input.metadata ?? null,
           createdAt: new Date(0),
           updatedAt: new Date(0),
         };
@@ -385,12 +388,12 @@ describe('settlement clamping and caller options', () => {
         const { writes, match } = yield* settle(monthly, row, event);
         // The sink grants access to the anchor plus the event's period, so settlement
         // must land on that same date: Jan 31 + P3M = Apr 30.
-        const { period } = recurringPaymentSucceeded(
-          event,
-          match,
-          'sub_1',
-          null,
-        ).payload;
+        const { period } = recurringPaymentSucceeded(event, match, 'sub_1', {
+          nextPaymentDate: null,
+          periodStart: null,
+          periodEnd: null,
+          metadata: null,
+        }).payload;
         expect(period).toBe('P3M');
         expect(writes.extended?.currentPeriodEnd).toEqual(
           addPeriod(row.currentPeriodEnd, period),
