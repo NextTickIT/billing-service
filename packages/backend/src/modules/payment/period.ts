@@ -50,17 +50,6 @@ export const addPeriod = (date: Date, period: string): Date => {
   return result;
 };
 
-/**
- * `period` added `times` times in a row, each step clamped on its own: three P1M cycles
- * from Jan 31 land on Apr 28, exactly where three separate monthly payments would, not
- * on the Apr 30 that one P3M step gives.
- */
-export const addPeriods = (date: Date, period: string, times: number): Date =>
-  Array.from({ length: times }).reduce<Date>(
-    (at) => addPeriod(at, period),
-    date,
-  );
-
 // Fixed UTC instants whose following month and year differ in length (31 vs 28 days,
 // 365 vs 366), so no day count matches a month or a year on all of them.
 const PERIOD_ANCHORS = [

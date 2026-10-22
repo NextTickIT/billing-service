@@ -10,6 +10,7 @@ import { Effect, Option } from 'effect';
 import { describe, expect } from 'vitest';
 
 import type { Charge, Match } from '@/modules/charge/contracts.js';
+import { recurringPaymentSucceeded } from '@/modules/charge/domain.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
   choiceAt,
@@ -323,7 +324,7 @@ const settle = (session: CheckoutSession, row: Payment | null, event: Charge) =>
       event,
       match as Match,
     );
-    return { applied, writes };
+    return { applied, writes, match: match as Match };
   });
 
 const threeCycles = (from: Date) =>
@@ -371,7 +372,7 @@ describe('settlement of a multi-cycle payment', () => {
 
 describe('settlement clamping and caller options', () => {
   it.effect(
-    'three monthly cycles from Jan 31 land where three separate payments would',
+    'three monthly cycles from Jan 31 end where the event says access ends',
     () =>
       Effect.gen(function* () {
         const monthly = { ...manual, period: 'P1M' };
@@ -380,13 +381,21 @@ describe('settlement clamping and caller options', () => {
           period: 'P1M',
           currentPeriodEnd: d('2026-01-31'),
         };
-        const { writes } = yield* settle(
-          monthly,
-          row,
-          charge(`${ID}_c3`, 15000),
+        const event = charge(`${ID}_c3`, 15000);
+        const { writes, match } = yield* settle(monthly, row, event);
+        // The sink grants access to the anchor plus the event's period, so settlement
+        // must land on that same date: Jan 31 + P3M = Apr 30.
+        const { period } = recurringPaymentSucceeded(
+          event,
+          match,
+          'sub_1',
+          null,
+        ).payload;
+        expect(period).toBe('P3M');
+        expect(writes.extended?.currentPeriodEnd).toEqual(
+          addPeriod(row.currentPeriodEnd, period),
         );
-        // Jan 31 → Feb 28 → Mar 28 → Apr 28, not the Apr 30 one P3M step gives.
-        expect(writes.extended?.currentPeriodEnd).toEqual(d('2026-04-28'));
+        expect(writes.extended?.currentPeriodEnd).toEqual(d('2026-04-30'));
       }),
   );
 

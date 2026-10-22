@@ -4,6 +4,7 @@ import {
   type Payment,
   PaymentMethod,
   PaymentStatus,
+  scalePeriod,
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
@@ -11,12 +12,7 @@ import type {
   AdvanceAnchor,
   PaymentRepo,
 } from '@/modules/payment/data-access.js';
-import {
-  addDays,
-  addPeriod,
-  addPeriods,
-  samePeriod,
-} from '@/modules/payment/period.js';
+import { addDays, addPeriod, samePeriod } from '@/modules/payment/period.js';
 
 /**
  * The billing terms a successful charge establishes for a user (FR-003). A recurring
@@ -50,8 +46,10 @@ export interface ApplyPaymentParams {
   readonly source?: string;
   /**
    * How many `period`s this one charge pays for (a multi-cycle manual renewal); 1 when
-   * absent. Only the anchors move further: `amount`/`period` stay one cycle's terms, so
-   * the row keeps renewing at them.
+   * absent. Only the anchors move further, by `period` × cycles as one duration — the
+   * same `scalePeriod` the events report, so the access a sink grants ends on the date
+   * billing does. `amount`/`period` stay one cycle's terms, so the row keeps renewing
+   * at them.
    */
   readonly cycles?: number;
 }
@@ -83,10 +81,9 @@ interface PeriodAnchors {
 }
 
 const periodAnchors = (params: ApplyPaymentParams): PeriodAnchors => {
-  const paidThrough = addPeriods(
+  const paidThrough = addPeriod(
     params.paidAt,
-    params.period,
-    params.cycles ?? 1,
+    scalePeriod(params.period, params.cycles ?? 1),
   );
   // A promo grants free time ON TOP of the paid period, once: it pushes the paid-through
   // anchor further, and the next charge date derives from that anchor — so the bonus
@@ -143,7 +140,8 @@ const insertNew =
  * `period`, never `paidAt` plus it, so paid time is never lost. A row still inside its
  * period keeps its start; a row already past its end (PastDue) starts the new period at
  * the old end. No promo: a live contact never stacks free time. Compared by `getTime()`,
- * so equal-valued distinct Dates count as equal. `cycles` stacks that many periods.
+ * so equal-valued distinct Dates count as equal. `cycles` stacks `period` × cycles as one
+ * duration (see `ApplyPaymentParams.cycles`).
  */
 export const stackAnchors = (
   row: Pick<Payment, 'currentPeriodStart' | 'currentPeriodEnd'>,
@@ -151,7 +149,7 @@ export const stackAnchors = (
   paidAt: Date,
   cycles = 1,
 ): AdvanceAnchor => {
-  const end = addPeriods(row.currentPeriodEnd, period, cycles);
+  const end = addPeriod(row.currentPeriodEnd, scalePeriod(period, cycles));
   return {
     currentPeriodStart:
       row.currentPeriodEnd.getTime() <= paidAt.getTime()
