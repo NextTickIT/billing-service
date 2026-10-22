@@ -26,9 +26,10 @@ export const isNonZeroPeriod = (period: string): boolean => {
 
 /**
  * `period` taken `times` times as one duration, every component multiplied ('P4W' × 3 =
- * 'P12W', 'P1Y2M' × 2 = 'P2Y4M'). It names the time a multi-cycle purchase buys; it is
- * not how that time is added (the backend steps cycle by cycle so month-end clamping
- * matches separate payments). An unparseable period is returned unchanged.
+ * 'P12W', 'P1Y2M' × 2 = 'P2Y4M'). It is the time a multi-cycle purchase buys, both as
+ * the events report it and as settlement adds it (one `addPeriod` of the scaled
+ * duration, so Jan 31 + 3 × P1M = Apr 30 on both sides). An unparseable period is
+ * returned unchanged.
  */
 export const scalePeriod = (period: string, times: number): string => {
   const match = DURATION.exec(period);

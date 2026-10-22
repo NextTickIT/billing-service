@@ -581,6 +581,15 @@ describe('a re-mint never swaps the picked option', () => {
     expect(writes.reissued).toEqual([]);
   });
 
+  test('a cycle option re-minted in another currency → OptionUnavailable, nothing written', () => {
+    const { repo, writes } = repoWith([manual()]);
+    // The stored link is in currency 1; the live sub now bills in 0 at the same amount.
+    expect(leftTag(resolvePick(repo, sub({ currency: 0 }), 1))).toBe(
+      'OptionUnavailable',
+    );
+    expect(writes).toEqual({ released: [], reissued: [], claimed: [] });
+  });
+
   test('a cycle option the re-mint keeps at the same total still pays', () => {
     const { repo, writes } = repoWith([manual()]);
     expect(Either.isRight(resolvePick(repo, sub(), 1))).toBe(true);

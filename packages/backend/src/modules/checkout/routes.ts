@@ -385,12 +385,13 @@ const eligiblePick = (
   );
 
 /**
- * A lapsed link re-mints at the live sub's terms, which can drop the caller's options or
- * re-price a cycle option. A non-default pick must still charge exactly what the payer
- * picked; otherwise refuse before anything is written, so nothing is charged that the
- * page did not show. A default pick keeps the re-mint rules it always had.
+ * A lapsed link re-mints at the live sub's terms, which can drop the caller's options,
+ * re-price a cycle option or change the currency. A non-default pick must still charge
+ * exactly what the payer picked, in the currency the page showed; otherwise refuse
+ * before anything is written. A default pick keeps the re-mint rules it always had.
  */
 const assertPickKept = (
+  session: CheckoutSession,
   intent: NewCheckoutSession,
   picked: PickedOption,
 ): Effect.Effect<void, OptionUnavailable> => {
@@ -398,7 +399,8 @@ const assertPickKept = (
     return Effect.void;
   }
   const again = pickOption(intent, picked.index);
-  return Option.exists(again, (p) => samePick(p, picked))
+  return intent.currency === session.currency &&
+    Option.exists(again, (p) => samePick(p, picked))
     ? Effect.void
     : Effect.fail(new OptionUnavailable({ option: picked.index }));
 };
@@ -699,7 +701,7 @@ export const resolvePayableSessionId = (
       method,
     );
     if (effective._tag === 'Reissue') {
-      yield* assertPickKept(effective.intent, picked);
+      yield* assertPickKept(session, effective.intent, picked);
     }
     if (effective._tag === 'Stored') {
       // A live link the buyer already pressed Pay on. `claimForPayment` only moves
