@@ -68,7 +68,8 @@ const succeededPayload = {
   // ISO-8601 date of the next scheduled charge; null for a one-time purchase (never
   // renews). A string (not Schema.Date) to match the payload-date convention used by
   // `payment_deferred.newPeriodEnd` / `charge_retry_failed.nextRetryDate`.
-  nextPaymentDate: Schema.NullOr(Schema.String), // How many cycles of the subscription's terms a multi-cycle (manual renewal) checkout
+  nextPaymentDate: Schema.NullOr(Schema.String),
+  // How many cycles of the subscription's terms a multi-cycle (manual renewal) checkout
   // bought; absent when the charge was not such a purchase. `amount` is then the total
   // charged and `period` the time bought, `cycles` × the subscription's period.
   cycles: Schema.optional(Schema.Int),
@@ -160,8 +161,9 @@ export type RecurringPaymentFailedEvent = Schema.Schema.Type<
  * was paid and therefore how it renews — a card autocharges, crypto takes a manual
  * prompt (`payment_manual_required`) — so the event that states what the payment costs
  * per period also states how that money is taken. `amount`/`period` are the FIRST
- * charge (its total and the time it bought); `renewal` carries the terms later renewals use when the checkout set them
- * (null when it did not, so renewals repeat the first charge).
+ * charge (its total and the time it bought); `renewal` carries the terms later renewals
+ * use when the checkout set them (null when it did not, so renewals repeat the first
+ * charge).
  */
 export const PaymentCreatedEvent = Schema.Struct({
   ...envelope,

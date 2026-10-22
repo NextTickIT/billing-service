@@ -8,8 +8,8 @@ import {
   CheckoutSessionStatus,
   formatPeriod,
   isRenderablePeriod,
-  parseCheckoutRef,
   PaymentMethod,
+  sessionIdOfRef,
 } from '@billing-service/shared';
 import { afterOptionPick, useCheckoutStore } from './store.js';
 import { formatDate } from '@/app/datetime.js';
@@ -27,8 +27,7 @@ const store = useCheckoutStore();
 
 // A provider's failure link brings the payer back with its order reference, which names
 // the option after the session id (`chk_<uuid>_c3`); the page is the session's.
-const orderRef = route.params['id'] as string;
-const id = parseCheckoutRef(orderRef)?.sessionId ?? orderRef;
+const id = sessionIdOfRef(route.params['id'] as string);
 
 // A 0-amount card change is a WayForPay Card Verify: the cardholder enters the new
 // card in the provider's hosted widget, not our page. It hands off the SAME way as a

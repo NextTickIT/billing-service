@@ -227,7 +227,7 @@ export type CheckoutChoice =
   | { readonly kind: 'option'; readonly index: number }
   | { readonly kind: 'cycles'; readonly cycles: number };
 
-const DEFAULT_CHOICE: CheckoutChoice = { kind: 'default' };
+export const DEFAULT_CHOICE: CheckoutChoice = { kind: 'default' };
 
 /**
  * The provider order reference for a choice: the bare session id for the default (so a
@@ -276,6 +276,11 @@ export const parseCheckoutRef = (
   const choice = suffix === '' ? DEFAULT_CHOICE : choiceOfSuffix(suffix);
   return choice === null ? null : { sessionId, choice };
 };
+
+/** The session id a provider reference was minted for (the reference itself when it is
+ * not one of ours, so a lookup by it simply finds nothing). */
+export const sessionIdOfRef = (ref: string): string =>
+  parseCheckoutRef(ref)?.sessionId ?? ref;
 
 /** Insert params: the server owns status/createdAt. `method` is the default preselected
  * at creation (Card unless the create request said otherwise); optional so a session may

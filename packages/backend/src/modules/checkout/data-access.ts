@@ -38,9 +38,9 @@ export interface CheckoutRepo {
    *
    * Terms are matched, not just liveness: handing back a session at a different amount
    * or period would silently charge something other than what this link promised. So
-   * are `renewal`, `options`, `origin` and `renewalOf`: a replacement for one subscription is never
-   * handed to a link for another on the same terms, and a method-locked prolong
-   * replacement is reused only for the same method.
+   * are `renewal`, `options`, `origin` and `renewalOf`: a replacement for one
+   * subscription is never handed to a link for another on the same terms, and a
+   * method-locked prolong replacement is reused only for the same method.
    */
   readonly reissueLapsed: (
     input: NewCheckoutSession,

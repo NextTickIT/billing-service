@@ -8,6 +8,7 @@ import {
   CheckoutSessionKind,
   CheckoutSessionStatus,
   type CheckoutTerms,
+  DEFAULT_CHOICE,
   type NewCheckoutSession,
   optionTerms,
   parseCheckoutRef,
@@ -16,6 +17,7 @@ import {
   PaymentStatus,
   sameTerms,
   scalePeriod,
+  sessionIdOfRef,
   type StoredCheckoutOption,
 } from '@billing-service/shared';
 import { Data, Effect, Option } from 'effect';
@@ -149,8 +151,6 @@ const flatTerms = (session: Offer): CheckoutTerms => ({
   promo: session.promo,
   renewal: session.renewal,
 });
-
-const DEFAULT_CHOICE: CheckoutChoice = { kind: 'default' };
 
 /**
  * What one choice on a session charges and buys. `terms` is what settlement stores — one
@@ -432,16 +432,12 @@ const sessionOfRef = (repo: CheckoutRepo, ref: string) =>
     );
   });
 
-/** The session id a provider reference was minted for (the reference itself when it is
- * not one of ours, so a settlement claim on it simply finds nothing). */
-const sessionIdOfRef = (ref: string): string =>
-  parseCheckoutRef(ref)?.sessionId ?? ref;
-
 /**
  * Checkout matcher: an incoming event whose `externalRef` names a known checkout
- * session and one of its options (`parseCheckoutRef`) resolves to a `checkout` match. A succeeded event is create-or-extend;
- * a declined one is a first-payment failure (the pipeline emits
- * `initial_payment_failed`, FR-003) — both are OUR session, not an unknown payment.
+ * session and one of its options (`parseCheckoutRef`) resolves to a `checkout` match.
+ * A succeeded event is create-or-extend; a declined one is a first-payment failure (the
+ * pipeline emits `initial_payment_failed`, FR-003) — both are OUR session, not an
+ * unknown payment.
  * Intermediate/other statuses (pending, refunded) still fall through to quarantine,
  * as do events for an unknown ref. Poller/legacy events never match here (no session).
  *

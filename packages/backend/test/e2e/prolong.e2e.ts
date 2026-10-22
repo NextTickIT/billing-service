@@ -81,7 +81,7 @@ const INTRO = {
 };
 
 /** Run one effect on a worker runtime over this scenario's database. */
-export const onDb = async <A, E>(
+const onDb = async <A, E>(
   effect: Effect.Effect<A, E, WorkerContext>,
 ): Promise<A> => {
   let out: A | undefined;
