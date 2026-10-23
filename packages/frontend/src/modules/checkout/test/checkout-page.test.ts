@@ -55,6 +55,21 @@ const callerOptions: CheckoutSessionPublic = {
   ],
 };
 
+// `P0D` is the "no bonus days" promo: it adds nothing, so there is nothing to badge.
+const zeroPromo: CheckoutSessionPublic = {
+  ...single,
+  options: [
+    {
+      amount: 5000,
+      period: 'P4W',
+      promo: { additionalFreePeriod: 'P0D' },
+      renewal: null,
+      cycles: null,
+    },
+    { amount: 9000, period: 'P1M', promo: null, renewal: null, cycles: null },
+  ],
+};
+
 const cycles: CheckoutSessionPublic = {
   ...single,
   options: [1, 3, 6].map((n) => ({
@@ -113,6 +128,13 @@ describe('CheckoutPage', () => {
     expect(html).not.toContain('1 місяць*');
     expect(html).toContain('+7 днів');
     expect(html).toMatch(/\*\s*1 цикл = 4 тижні/);
+  });
+
+  it('a P0D promo adds no days, so its option shows no bonus badge', async () => {
+    const html = await render(zeroPromo);
+    expect(html.match(/type="radio"/g)).toHaveLength(2);
+    expect(html).not.toContain('checkout__badge');
+    expect(html).not.toContain('P0D');
   });
 
   it('manual-renewal cycles are starred, with the cycle footnote', async () => {

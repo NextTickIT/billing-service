@@ -320,7 +320,12 @@ const legalLinks = [
                 @change="store.notice = afterOptionPick(store.notice)"
               />
               <span class="checkout__option-label">{{ optionLabel(o) }}</span>
-              <span v-if="o.promo" class="checkout__badge">
+              <span
+                v-if="
+                  o.promo && isRenderablePeriod(o.promo.additionalFreePeriod)
+                "
+                class="checkout__badge"
+              >
                 {{
                   t('checkout.bonus', {
                     period: formatPeriod(o.promo.additionalFreePeriod, locale),
