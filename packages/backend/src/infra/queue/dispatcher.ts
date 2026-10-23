@@ -1,5 +1,5 @@
 import type { SqlClient } from '@effect/sql';
-import { Cause, Clock, Duration, Effect, Exit } from 'effect';
+import { Cause, Clock, Duration, Effect, Exit, Random } from 'effect';
 
 import {
   claimBatch,
@@ -36,7 +36,15 @@ export interface DispatcherOptions {
   readonly batchSize: number;
   readonly visibilityTimeoutMillis: number;
   readonly retry: RetryConfig;
+  /** Per-`messageType` overrides of `retry` (e.g. a longer ladder for deliveries). */
+  readonly retryByType?: Readonly<Record<string, RetryConfig>>;
 }
+
+/** The retry policy for one message: its type's override, else the default. */
+export const retryConfigFor = (
+  options: Pick<DispatcherOptions, 'retry' | 'retryByType'>,
+  messageType: string,
+): RetryConfig => options.retryByType?.[messageType] ?? options.retry;
 
 const processOne = (
   deps: DispatcherDeps,
@@ -57,7 +65,8 @@ const processOne = (
     const outcome = decideOutcome(
       { failed, attemptCount: message.attemptCount, permanent },
       nowMillis,
-      options.retry,
+      retryConfigFor(options, message.messageType),
+      yield* Random.next,
     );
     yield* complete(deps.sql)({
       messageId: message.id,

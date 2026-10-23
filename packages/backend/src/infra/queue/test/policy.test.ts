@@ -4,9 +4,11 @@ import {
   backoffMillis,
   decideOutcome,
   defaultRetryConfig,
+  deliveryRetryConfig,
   describeError,
   isPermanentFailure,
   type RetryConfig,
+  scheduledRetryConfig,
 } from '@/infra/queue/policy.js';
 
 const config: RetryConfig = {
@@ -89,6 +91,128 @@ describe('decideOutcome', () => {
         .status,
     ).toBe('retry');
   });
+});
+
+const NOW = 1_000_000;
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+// The agreed delivery ladder, written out independently of the config.
+const LADDER = [
+  10_000,
+  MIN,
+  10 * MIN,
+  HOUR,
+  2 * HOUR,
+  4 * HOUR,
+  8 * HOUR,
+  16 * HOUR,
+];
+
+describe('deliveryRetryConfig', () => {
+  const now = NOW;
+  const ladder = LADDER;
+
+  test('each failed attempt waits its step of the ladder (no jitter draw)', () => {
+    ladder.forEach((wait, i) => {
+      const outcome = decideOutcome(
+        { failed: true, attemptCount: i + 1 },
+        now,
+        deliveryRetryConfig,
+      );
+      expect(outcome.status).toBe('retry');
+      expect(outcome.retryAt).toEqual(new Date(now + wait));
+    });
+  });
+
+  test('the 9th attempt is the last: its failure dead-letters', () => {
+    expect(deliveryRetryConfig.maxAttempts).toBe(9);
+    expect(
+      decideOutcome(
+        { failed: true, attemptCount: 9 },
+        now,
+        deliveryRetryConfig,
+      ),
+    ).toEqual({ status: 'fail', retryAt: null, finished: true });
+  });
+
+  test('the last retry runs ~31 h after the first failure', () => {
+    const total = ladder.reduce((a, b) => a + b, 0);
+    expect(total).toBe(31 * HOUR + 11 * MIN + 10_000);
+  });
+});
+
+describe('deliveryRetryConfig jitter', () => {
+  const now = NOW;
+
+  test('jitter only adds, up to 20% of the step', () => {
+    const at = (random: number) =>
+      decideOutcome(
+        { failed: true, attemptCount: 7 },
+        now,
+        deliveryRetryConfig,
+        random,
+      ).retryAt?.getTime();
+    expect(at(0)).toBe(now + 8 * HOUR);
+    expect(at(0.5)).toBe(now + 8 * HOUR + 48 * MIN); // +10%
+    expect(at(0.999_999)).toBeLessThan(now + 8 * HOUR * 1.2);
+  });
+
+  test('stays strictly below +20% on every step, even at the top draw', () => {
+    LADDER.forEach((wait, i) => {
+      for (const random of [0.999_999, 1 - Number.EPSILON]) {
+        const at = decideOutcome(
+          { failed: true, attemptCount: i + 1 },
+          now,
+          deliveryRetryConfig,
+          random,
+        ).retryAt?.getTime();
+        expect(at).toBeGreaterThanOrEqual(now + wait);
+        expect(at).toBeLessThan(now + wait * 1.2);
+      }
+    });
+  });
+
+  test('a permanent failure still dead-letters on its first attempt', () => {
+    expect(
+      decideOutcome(
+        { failed: true, attemptCount: 1, permanent: true },
+        now,
+        deliveryRetryConfig,
+      ).status,
+    ).toBe('fail');
+  });
+
+  test('the default ladder takes no jitter and still fails at 5', () => {
+    expect(
+      decideOutcome(
+        { failed: true, attemptCount: 1 },
+        now,
+        defaultRetryConfig,
+        0.9,
+      ).retryAt,
+    ).toEqual(new Date(now + 1_000));
+    expect(
+      decideOutcome({ failed: true, attemptCount: 5 }, now, defaultRetryConfig)
+        .status,
+    ).toBe('fail');
+  });
+});
+
+describe('scheduledRetryConfig', () => {
+  test('allows one retry per step and repeats the last step past the end', () => {
+    const c = scheduledRetryConfig([5, 50]);
+    expect(c.maxAttempts).toBe(3);
+    expect(backoffMillis(1, c)).toBe(5);
+    expect(backoffMillis(2, c)).toBe(50);
+    expect(backoffMillis(9, c)).toBe(50);
+  });
+
+  test.each([[[]], [[Number.NaN]], [[Infinity]], [[-1]]])(
+    'rejects %j',
+    (delays) => {
+      expect(() => scheduledRetryConfig(delays)).toThrow();
+    },
+  );
 });
 
 describe('a permanent failure', () => {

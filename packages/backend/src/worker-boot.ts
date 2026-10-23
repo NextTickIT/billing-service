@@ -10,7 +10,10 @@ import {
 import { Effect, Option } from 'effect';
 
 import type { AppConfig } from '@/config.js';
-import { defaultRetryConfig } from '@/infra/queue/policy.js';
+import {
+  defaultRetryConfig,
+  deliveryRetryConfig,
+} from '@/infra/queue/policy.js';
 import { Queue } from '@/infra/queue/service.js';
 import {
   TaskRegistry,
@@ -429,5 +432,6 @@ export const bootWorker = (config: AppConfig) =>
       batchSize: config.queue.batchSize,
       visibilityTimeoutMillis: config.queue.visibilityTimeoutMillis,
       retry: { ...defaultRetryConfig, maxAttempts: config.queue.maxAttempts },
+      retryByType: { [DELIVER_EVENT]: deliveryRetryConfig },
     });
   });

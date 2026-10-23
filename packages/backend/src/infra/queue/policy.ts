@@ -21,6 +21,18 @@ export interface RetryConfig {
   readonly baseMillis: number;
   /** Upper bound on any single backoff step. */
   readonly maxMillis: number;
+  /**
+   * An explicit schedule: the Nth entry is the delay after attempt N fails. When set
+   * it replaces the doubling; build it with {@link scheduledRetryConfig} so
+   * `maxAttempts` always matches its length.
+   */
+  readonly delaysMillis?: readonly number[];
+  /**
+   * Extra random wait, as a fraction of the step (0.2 = up to +20%). Messages that
+   * failed together during one outage then spread out instead of retrying as one
+   * burst against a receiver that is just coming back. Absent = no jitter.
+   */
+  readonly jitterRatio?: number;
 }
 
 export const defaultRetryConfig: RetryConfig = {
@@ -29,15 +41,75 @@ export const defaultRetryConfig: RetryConfig = {
   maxMillis: 60_000,
 };
 
+/** A config that retries once per entry of `delaysMillis`, then fails. */
+export const scheduledRetryConfig = (
+  delaysMillis: readonly number[],
+): RetryConfig => {
+  // A bad entry would write an Invalid Date or a past `retryAt`: refuse it at boot.
+  if (
+    delaysMillis.length === 0 ||
+    !delaysMillis.every((d) => Number.isFinite(d) && d >= 0)
+  ) {
+    throw new Error(
+      `retry schedule needs finite, non-negative delays: ${JSON.stringify(delaysMillis)}`,
+    );
+  }
+  return {
+    maxAttempts: delaysMillis.length + 1,
+    baseMillis: Math.min(...delaysMillis),
+    maxMillis: Math.max(...delaysMillis),
+    delaysMillis,
+  };
+};
+
+const SECOND = 1_000;
+const MINUTE = 60 * SECOND;
+const HOUR = 60 * MINUTE;
+
 /**
- * Capped exponential backoff for the Nth attempt (1-based): the delay applied
- * AFTER `attempt` has failed, before the next try. `attempt <= 0` is treated as
- * the first step; every step is clamped to `[baseMillis, maxMillis]`.
+ * Event deliveries (`deliver_event`) outlive a receiver outage: the last retry runs
+ * ~31 h after the first failure. With the default ~15 s ladder, a few hours of
+ * SendPulse answering 400 on 2026-10-18 dead-lettered four paid renewals for good.
+ * Every wait is a `retryAt` on the queue row, so a pending retry survives restarts.
+ */
+export const deliveryRetryConfig: RetryConfig = {
+  ...scheduledRetryConfig([
+    10 * SECOND,
+    MINUTE,
+    10 * MINUTE,
+    HOUR,
+    2 * HOUR,
+    4 * HOUR,
+    8 * HOUR,
+    16 * HOUR,
+  ]),
+  jitterRatio: 0.2,
+};
+
+/**
+ * Delay applied AFTER the Nth attempt (1-based) has failed, before the next try:
+ * the Nth entry of `delaysMillis` when the config has a schedule (the last entry
+ * past its end), else capped doubling clamped to `[baseMillis, maxMillis]`.
+ * `attempt <= 0` is treated as the first step.
  */
 export const backoffMillis = (attempt: number, config: RetryConfig): number => {
   const step = Math.max(attempt, 1) - 1;
+  const scheduled = config.delaysMillis;
+  if (scheduled !== undefined && scheduled.length > 0) {
+    return scheduled[Math.min(step, scheduled.length - 1)] ?? config.maxMillis;
+  }
   const raw = config.baseMillis * 2 ** step;
   return Math.min(raw, config.maxMillis);
+};
+
+/** The step plus its jitter, floored so the extra stays strictly below the ratio. */
+const withJitter = (
+  attempt: number,
+  config: RetryConfig,
+  random: number,
+): number => {
+  const step = backoffMillis(attempt, config);
+  return step + Math.floor(step * (config.jitterRatio ?? 0) * random);
 };
 
 /** What the store should write when an attempt finishes. */
@@ -64,6 +136,8 @@ export const decideOutcome = (
   },
   nowMillis: number,
   config: RetryConfig,
+  /** A draw in [0, 1) that picks this retry's jitter; 0 = none. */
+  random = 0,
 ): Outcome => {
   if (!params.failed) {
     return { status: 'success', retryAt: null, finished: true };
@@ -73,7 +147,9 @@ export const decideOutcome = (
   }
   return {
     status: 'retry',
-    retryAt: new Date(nowMillis + backoffMillis(params.attemptCount, config)),
+    retryAt: new Date(
+      nowMillis + withJitter(params.attemptCount, config, random),
+    ),
     finished: false,
   };
 };
