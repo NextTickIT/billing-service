@@ -37,6 +37,12 @@ rules across three packages it exhausts an 8 GB heap on a 16 GB machine and
 never reports. It now runs per package through turbo, which is what the hooks
 and CI must call as well. A gate that cannot run is not a gate.
 
+Two inherited gaps are stated rather than hidden: `npm run lint` is **red on
+`origin/main`** (10 errors in 6 backend files, all pre-existing: `max-params`,
+`max-lines-per-function`, `no-unsafe-enum-comparison`, …), so the hooks run
+ESLint only on staged files; and the flat config has no Vue parser, so `.vue`
+script blocks are not linted at all (ESLint reports them as ignored).
+
 The dependency rules are the executable form of the layering conventions in
 CLAUDE.md §3: `domain.ts` and `data-access.ts` never import `routes.ts`,
 modules never import the boot layer, `src` never imports `test`, no cycles.
@@ -79,8 +85,9 @@ database in `finally`; a final sweep asserts that no `test_*` database leaked.
   at a running stack nothing is stubbed and the run is a true end-to-end check.
   `a11y.spec.ts` runs axe; `visual.spec.ts` compares a screenshot baseline.
 
-  Two findings from the first run are kept as `test.fixme` instead of being
-  weakened. (1) A wrong password returns 401; `src/infra/apiFetch.ts` treats
+  Two findings from the first run are kept visible instead of being weakened:
+  the login flow as `test.fixme`, the axe result as a ratchet (rule id + node
+  count baseline that can only shrink). (1) A wrong password returns 401; `src/infra/apiFetch.ts` treats
   every 401 as an expired session and sets `window.location.href`, so the page
   reloads and `store.error` is wiped before the operator sees "Invalid
   credentials." The happy-dom page test stays green because happy-dom does not
@@ -107,7 +114,7 @@ candidate ADR, not a correction made on this branch.
 `packages/backend/stryker.config.json` mutates `payment/period.ts`,
 `payment/domain.ts` and `wayforpay/signature.ts` and runs the unit tier per
 mutant through the Vitest runner. `npm run test:mutation` writes
-`reports/mutation/index.html`; the run is incremental. Survivors are classified
+`packages/backend/reports/mutation/index.html`; the run is incremental. Survivors are classified
 as a real gap (write the killing test), equivalent (behaviour unchanged;
 explain why), or accepted (consciously unchecked; record it).
 
@@ -145,6 +152,19 @@ to the performance work, not to this smoke.
 reads; a human decides. The brief fixes the order of concerns (invariants,
 behaviour, test tiers, conventions, security, simpler approach) and the output
 format, which is what makes two runs comparable.
+
+The reviewer runs with no settings sources, no MCP servers and only the three
+read tools, so it is read-only by construction rather than by instruction.
+
+What happened on this branch: the same diff was reviewed by Claude (APPROVE,
+eight minor findings) and by Codex as a critic (REQUEST_CHANGES, five major
+findings, each with a reproduced failure scenario — the reviewer could write,
+pre-commit judged the working tree instead of the staged snapshot, the verdict
+parser was loose, the browser fixture let font requests escape). A second
+Codex pass found three of the fixes incomplete (inherited hooks, untracked
+dependencies, a dead dependency rule). All of it was closed in the two
+`fix(gates)` commits. Two reviewers, one diff, two verdicts: the AI review is
+the start of a conversation, and the brief is what makes its output usable.
 
 ## 8. Where each gate runs
 

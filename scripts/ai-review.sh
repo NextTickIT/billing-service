@@ -65,10 +65,15 @@ reviewer_failed() {
 
 case "$REVIEWER" in
   claude)
-    # --tools limits which built-in tools exist at all (--allowedTools alone only
-    # pre-approves, it does not remove inherited write permissions).
+    # Read-only by construction, not by instruction: only the three read tools
+    # exist (--tools), write tools are denied even if re-added, no settings
+    # sources are loaded (so no inherited hooks run) and no MCP server is
+    # attached (--strict-mcp-config with no --mcp-config).
     printf '%s' "$INPUT" | claude -p --output-format text \
-      --tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" > "$OUT" ||
+      --setting-sources '' --strict-mcp-config \
+      --tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" \
+      --disallowedTools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch" \
+      > "$OUT" ||
       reviewer_failed
     ;;
   codex)
@@ -86,7 +91,7 @@ echo "ai-review: $OUT"
 # anything else is a malformed review (exit 2), never an approval. The brief
 # itself is not in the output, so its format line cannot match here.
 LAST="$(grep -v '^[[:space:]]*$' "$OUT" | tail -n 1)"
-COUNT="$(grep -c '^VERDICT: ' "$OUT" || true)"
+COUNT="$(grep -c -E '^[[:space:]]*VERDICT:[[:space:]]' "$OUT" || true)"
 if [ "$COUNT" -ne 1 ]; then
   echo "ai-review: expected exactly one VERDICT line, found $COUNT; treat as inconclusive" >&2
   exit 2

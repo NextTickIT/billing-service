@@ -6,7 +6,7 @@
   "description": "Billing-service monorepo (skeleton)",
   "license": "MIT",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "packageManager": "npm@10.9.7",
   "workspaces": [

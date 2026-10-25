@@ -7,26 +7,32 @@ fail() {
   exit 1
 }
 
-# NUL-separated so a path with spaces or tabs stays one argument.
-staged=()
-while IFS= read -r -d '' path; do staged+=("$path"); done \
-  < <(git diff --cached --name-only --diff-filter=ACMR -z)
-if [ "${#staged[@]}" -eq 0 ]; then
+if git diff --cached --quiet; then
   echo 'pre-commit: nothing staged, skipping.'
   exit 0
 fi
 
-# The checks below read the working tree, so a file that is staged AND has
-# unstaged edits would be checked in a state that is not being committed.
-# Refusing is simpler and safer than stashing around the checks.
-partial=()
-while IFS= read -r -d '' path; do
-  for s in "${staged[@]}"; do [ "$s" = "$path" ] && partial+=("$path"); done
-done < <(git diff --name-only -z)
-if [ "${#partial[@]}" -gt 0 ]; then
-  printf '  %s\n' "${partial[@]}" >&2
-  fail 'these files are staged but also have unstaged edits; stage or stash them so the check sees what will be committed'
+# The checks below read the working tree, so the working tree must be exactly
+# what is being committed for every source or config input: no unstaged edits
+# to tracked files and no untracked files a staged file could depend on.
+# Refusing is simpler and honest; stashing around the checks is not.
+source_re='\.(ts|vue|js|cjs|mjs|json|css|yml|yaml)$'
+dirty=()
+while IFS= read -r -d '' entry; do
+  path="${entry:3}"
+  case "${entry:0:2}" in
+    '??' | ?M | ?D | ?A) [[ "$path" =~ $source_re ]] && dirty+=("${entry:0:2} $path") ;;
+  esac
+done < <(git status --porcelain --untracked-files=all -z)
+if [ "${#dirty[@]}" -gt 0 ]; then
+  printf '  %s\n' "${dirty[@]}" >&2
+  fail 'source files outside the index (unstaged edits or untracked); stage, stash or ignore them so the check sees exactly what will be committed'
 fi
+
+# NUL-separated so a path with spaces or tabs stays one argument.
+staged=()
+while IFS= read -r -d '' path; do staged+=("$path"); done \
+  < <(git diff --cached --name-only --diff-filter=ACMR -z)
 
 pretty=(); lintable=()
 for path in "${staged[@]}"; do

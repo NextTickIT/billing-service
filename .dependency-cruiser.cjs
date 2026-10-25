@@ -95,7 +95,9 @@ module.exports = {
   ],
   options: {
     doNotFollow: { path: 'node_modules' },
-    exclude: { path: ['(^|/)dist/', '(^|/)node_modules/'] },
+    // node_modules is not followed, but its edges are kept so a rule can name
+    // an external package (domain-not-into-transport needs the fastify edge).
+    exclude: { path: ['(^|/)dist/'] },
     tsPreCompilationDeps: true,
     // depcruise anchors tsconfig `paths` at the cwd (the repo root), so this
     // root-level tsconfig re-roots the backend's `@/*` alias for it.
