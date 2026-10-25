@@ -3,11 +3,12 @@
 #
 #   scripts/ai-review.sh [--base <ref>] [--reviewer claude|codex] [--working-tree]
 #
-# Reviews `git diff <base>...HEAD` (or the uncommitted working tree with
-# --working-tree) with the brief in scripts/ai-review-prompt.md, writes the
+# Reviews `git diff <base>...HEAD` (or everything not yet committed, staged or
+# not, with --working-tree) with the brief in scripts/ai-review-prompt.md, writes the
 # review to reports/ai-review/<sha>-<reviewer>.md and exits 1 on
-# `VERDICT: REQUEST_CHANGES`, so the same command works as a pre-push gate, a
-# CI step, or a one-off second opinion. The AI is a reviewer, not an approver:
+# `VERDICT: REQUEST_CHANGES` (2 when the reviewer fails or the verdict is
+# malformed), so the same command works as a pre-push gate, a CI step, or a
+# one-off second opinion. The AI is a reviewer, not an approver:
 # a human still merges, and a REQUEST_CHANGES is a conversation, not a verdict.
 set -eu
 
@@ -35,7 +36,7 @@ mkdir -p "$OUT_DIR"
 PATHSPEC=". :(exclude)package-lock.json :(exclude)**/__snapshots__/** :(exclude)**/*.png :(exclude)**/*.snap"
 if [ "$WORKING_TREE" -eq 1 ]; then
   # shellcheck disable=SC2086
-  DIFF="$(git diff --no-color -- $PATHSPEC)"
+  DIFF="$(git diff --no-color HEAD -- $PATHSPEC)"
   SCOPE="working tree vs HEAD ($SHA)"
 else
   # shellcheck disable=SC2086
@@ -57,14 +58,22 @@ fi
 
 INPUT="$(cat "$BRIEF"; printf '\n\nScope: %s\n\n<diff>\n%s\n</diff>\n' "$SCOPE" "$DIFF")"
 
+reviewer_failed() {
+  echo "ai-review: $REVIEWER exited with an error; see $OUT" >&2
+  exit 2
+}
+
 case "$REVIEWER" in
   claude)
-    # Read-only tools so the reviewer can look around but never edit.
+    # --tools limits which built-in tools exist at all (--allowedTools alone only
+    # pre-approves, it does not remove inherited write permissions).
     printf '%s' "$INPUT" | claude -p --output-format text \
-      --allowedTools "Read,Grep,Glob" > "$OUT"
+      --tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" > "$OUT" ||
+      reviewer_failed
     ;;
   codex)
-    printf '%s' "$INPUT" | codex exec --sandbox read-only - > "$OUT"
+    printf '%s' "$INPUT" | codex exec --sandbox read-only - > "$OUT" ||
+      reviewer_failed
     ;;
   *)
     echo "unknown reviewer: $REVIEWER (claude|codex)" >&2
@@ -73,11 +82,21 @@ case "$REVIEWER" in
 esac
 
 echo "ai-review: $OUT"
-if grep -q '^VERDICT: REQUEST_CHANGES' "$OUT"; then
-  echo "ai-review: REQUEST_CHANGES — read the findings above before pushing" >&2
-  exit 1
+# The verdict must be the last non-empty line and must occur exactly once;
+# anything else is a malformed review (exit 2), never an approval. The brief
+# itself is not in the output, so its format line cannot match here.
+LAST="$(grep -v '^[[:space:]]*$' "$OUT" | tail -n 1)"
+COUNT="$(grep -c '^VERDICT: ' "$OUT" || true)"
+if [ "$COUNT" -ne 1 ]; then
+  echo "ai-review: expected exactly one VERDICT line, found $COUNT; treat as inconclusive" >&2
+  exit 2
 fi
-grep -q '^VERDICT: APPROVE' "$OUT" || {
-  echo "ai-review: no VERDICT line in the output; treat as inconclusive" >&2
-  exit 1
-}
+case "$LAST" in
+  'VERDICT: APPROVE') exit 0 ;;
+  'VERDICT: REQUEST_CHANGES')
+    echo "ai-review: REQUEST_CHANGES — read the findings before pushing" >&2
+    exit 1 ;;
+  *)
+    echo "ai-review: the last line is not a valid verdict: $LAST" >&2
+    exit 2 ;;
+esac

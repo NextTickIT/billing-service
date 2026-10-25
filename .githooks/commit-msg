@@ -8,8 +8,10 @@ case "$subject" in
   'Merge '* | 'Revert '* | 'fixup! '* | 'squash! '* | 'amend! '*) exit 0 ;;
 esac
 
-types='feat|fix|chore|docs|test|refactor|harden|perf|build|ci|revert'
-pattern="^($types)(\([a-z0-9/_-]+\))?!?: .{1,100}\$"
+# The type list and the comma-separated multi-scope form (`fix(sinks,config): …`)
+# come from this repository's own history, not from a generic preset.
+types='feat|fix|chore|docs|test|refactor|harden|perf|build|ci|revert|style|diag'
+pattern="^($types)(\([a-z0-9/_-]+(,[a-z0-9/_-]+)*\))?!?: .{1,100}\$"
 
 if printf '%s\n' "$subject" | grep -Eq "$pattern"; then
   exit 0

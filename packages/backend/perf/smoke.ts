@@ -11,7 +11,7 @@ interface SmokeConfig {
 interface SmokeSummary {
   readonly requestsPerSecond: number;
   readonly p50: number;
-  readonly p95: number;
+  readonly p97_5: number;
   readonly p99: number;
   readonly errors: number;
   readonly non2xx: number;
@@ -41,19 +41,9 @@ const authHeaders = (token: string | undefined): Record<string, string> =>
     ? {}
     : { authorization: `Bearer ${token}` };
 
-// autocannon's histogram has no p95, so percentiles come from raw samples.
-const percentile = (sorted: readonly number[], p: number): number => {
-  if (sorted.length === 0) return Number.NaN;
-  const rank = Math.ceil((p / 100) * sorted.length) - 1;
-  return sorted[Math.min(Math.max(rank, 0), sorted.length - 1)] ?? Number.NaN;
-};
-
-const runLoad = (
-  config: SmokeConfig,
-): Promise<{ result: autocannon.Result; samples: number[] }> =>
+const runLoad = (config: SmokeConfig): Promise<autocannon.Result> =>
   new Promise((resolve, reject) => {
-    const samples: number[] = [];
-    const instance = autocannon(
+    autocannon(
       {
         url: config.url,
         duration: config.durationSeconds,
@@ -62,28 +52,22 @@ const runLoad = (
       },
       (err: unknown, result: autocannon.Result) => {
         if (err instanceof Error) reject(err);
-        else resolve({ result, samples });
+        else resolve(result);
       },
     );
-    instance.on('response', (_client, _status, _bytes, responseTime) => {
-      samples.push(responseTime);
-    });
   });
 
-const summarize = (
-  result: autocannon.Result,
-  samples: readonly number[],
-): SmokeSummary => {
-  const sorted = [...samples].sort((a, b) => a - b);
-  return {
-    requestsPerSecond: result.requests.average,
-    p50: percentile(sorted, 50),
-    p95: percentile(sorted, 95),
-    p99: percentile(sorted, 99),
-    errors: result.errors,
-    non2xx: result.non2xx,
-  };
-};
+// autocannon's own histogram: no per-response sample retention needed. A run
+// with no responses reports 0 ms, so the "no response" case is caught by the
+// non-2xx / error counters and by requests/s being 0, not by NaN.
+const summarize = (result: autocannon.Result): SmokeSummary => ({
+  requestsPerSecond: result.requests.average,
+  p50: result.latency.p50,
+  p97_5: result.latency.p97_5,
+  p99: result.latency.p99,
+  errors: result.errors,
+  non2xx: result.non2xx,
+});
 
 const printSummary = (config: SmokeConfig, summary: SmokeSummary): void => {
   const ms = (value: number): string => `${value.toFixed(2)} ms`;
@@ -95,7 +79,7 @@ const printSummary = (config: SmokeConfig, summary: SmokeSummary): void => {
     ],
     ['requests/s', summary.requestsPerSecond.toFixed(1)],
     ['latency p50', ms(summary.p50)],
-    ['latency p95', ms(summary.p95)],
+    ['latency p97.5', ms(summary.p97_5)],
     [
       'latency p99',
       `${ms(summary.p99)} (budget ${String(config.p99BudgetMs)} ms)`,
@@ -111,8 +95,8 @@ const printSummary = (config: SmokeConfig, summary: SmokeSummary): void => {
 
 const failures = (config: SmokeConfig, summary: SmokeSummary): string[] => {
   const found: string[] = [];
-  // NaN means no response arrived at all, which must not pass silently.
-  if (!(summary.p99 <= config.p99BudgetMs)) {
+  if (summary.requestsPerSecond === 0) found.push('no responses at all');
+  if (summary.p99 > config.p99BudgetMs) {
     found.push(
       `p99 ${summary.p99.toFixed(2)} ms exceeds ${String(config.p99BudgetMs)} ms`,
     );
@@ -126,8 +110,7 @@ const failures = (config: SmokeConfig, summary: SmokeSummary): string[] => {
 
 const main = async (): Promise<void> => {
   const config = readConfig();
-  const { result, samples } = await runLoad(config);
-  const summary = summarize(result, samples);
+  const summary = summarize(await runLoad(config));
   printSummary(config, summary);
   const found = failures(config, summary);
   if (found.length > 0) {

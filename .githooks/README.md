@@ -28,6 +28,7 @@ the machine.
 
 `git commit --no-verify` and `git push --no-verify` skip the hooks. That is
 sometimes legitimate, such as a work-in-progress commit on a private branch.
-CI runs the same checks again, so a bypass only delays the failure. A reviewer
+A CI pipeline (planned, not yet in this repository) will run the same checks
+again, so a bypass only delays the failure. A reviewer
 should treat a pushed commit that fails these gates as a review flag and ask
 why the hook was skipped.

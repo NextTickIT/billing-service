@@ -51,6 +51,14 @@ module.exports = {
       to: { path: `${MODULES}/[^/]+/routes\\.ts$` },
     },
     {
+      name: 'domain-not-into-transport',
+      severity: 'error',
+      comment:
+        'A domain or persistence function that takes a FastifyRequest has smuggled transport in without importing routes.ts (CLAUDE.md §3.2).',
+      from: { path: `${MODULES}/[^/]+/(domain|data-access)\\.ts$` },
+      to: { path: '^node_modules/(fastify|@fastify)/' },
+    },
+    {
       name: 'data-access-not-into-domain',
       severity: 'error',
       comment:

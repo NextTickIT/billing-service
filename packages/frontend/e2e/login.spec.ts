@@ -8,8 +8,13 @@ test.beforeEach(async ({ page }) => {
   await page.goto('/operator/login');
 });
 
+// In full mode the credentials must exist on the real stack; the stub accepts
+// anything except the password `wrong`.
+const LOGIN = process.env['E2E_OPERATOR_LOGIN'] ?? 'operator';
+const PASSWORD = process.env['E2E_OPERATOR_PASSWORD'] ?? 'secret';
+
 async function signIn(page: Page, password: string): Promise<void> {
-  await page.getByPlaceholder('Login').fill('operator');
+  await page.getByPlaceholder('Login').fill(LOGIN);
   await page.getByPlaceholder('Password').fill(password);
   await page.getByRole('button', { name: 'Sign in' }).click();
 }
@@ -29,6 +34,6 @@ test.fixme('a wrong password shows an error and stays on login', async ({
 });
 
 test('the right password opens the payments page', async ({ page }) => {
-  await signIn(page, 'secret');
+  await signIn(page, PASSWORD);
   await expect(page).toHaveURL(/\/operator\/payments$/);
 });

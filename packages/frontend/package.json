@@ -9,7 +9,7 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:ui": "playwright test",
-    "lint": "eslint src e2e"
+    "lint": "eslint src e2e functions"
   },
   "dependencies": {
     "@billing-service/shared": "*",

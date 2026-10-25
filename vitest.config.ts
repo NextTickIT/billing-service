@@ -12,7 +12,7 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text-summary', 'html'],
       reportsDirectory: 'coverage',
-      include: ['packages/*/src/**/*.ts'],
+      include: ['packages/*/src/**/*.ts', 'packages/*/src/**/*.vue'],
       exclude: [
         '**/test/**',
         '**/*.test.ts',

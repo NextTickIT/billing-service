@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Fast gate on what is about to be committed; the full suite runs in pre-push.
 set -u
 
@@ -7,28 +7,43 @@ fail() {
   exit 1
 }
 
-staged=$(git diff --cached --name-only --diff-filter=ACMR)
-if [ -z "$staged" ]; then
+# NUL-separated so a path with spaces or tabs stays one argument.
+staged=()
+while IFS= read -r -d '' path; do staged+=("$path"); done \
+  < <(git diff --cached --name-only --diff-filter=ACMR -z)
+if [ "${#staged[@]}" -eq 0 ]; then
   echo 'pre-commit: nothing staged, skipping.'
   exit 0
 fi
 
-# Only extensions prettier formats here; anything else would make it error out.
-pretty=$(printf '%s\n' "$staged" |
-  grep -E '\.(ts|js|cjs|mjs|vue|json|md|css|scss|html|ya?ml)$' || true)
-lintable=$(printf '%s\n' "$staged" | grep -E '\.(ts|vue)$' || true)
-
-if [ -n "$pretty" ]; then
-  echo 'pre-commit: prettier --check'
-  # Word splitting is intended: one argument per staged path.
-  # shellcheck disable=SC2086
-  npx prettier --check --ignore-unknown $pretty || fail 'formatting (run npm run format)'
+# The checks below read the working tree, so a file that is staged AND has
+# unstaged edits would be checked in a state that is not being committed.
+# Refusing is simpler and safer than stashing around the checks.
+partial=()
+while IFS= read -r -d '' path; do
+  for s in "${staged[@]}"; do [ "$s" = "$path" ] && partial+=("$path"); done
+done < <(git diff --name-only -z)
+if [ "${#partial[@]}" -gt 0 ]; then
+  printf '  %s\n' "${partial[@]}" >&2
+  fail 'these files are staged but also have unstaged edits; stage or stash them so the check sees what will be committed'
 fi
 
-if [ -n "$lintable" ]; then
+pretty=(); lintable=()
+for path in "${staged[@]}"; do
+  case "$path" in
+    *.ts|*.vue) lintable+=("$path"); pretty+=("$path") ;;
+    *.js|*.cjs|*.mjs|*.json|*.md|*.css|*.scss|*.html|*.yml|*.yaml) pretty+=("$path") ;;
+  esac
+done
+
+if [ "${#pretty[@]}" -gt 0 ]; then
+  echo 'pre-commit: prettier --check'
+  npx prettier --check --ignore-unknown "${pretty[@]}" || fail 'formatting (run npm run format)'
+fi
+
+if [ "${#lintable[@]}" -gt 0 ]; then
   echo 'pre-commit: eslint'
-  # shellcheck disable=SC2086
-  npx eslint $lintable || fail 'eslint'
+  npx eslint "${lintable[@]}" || fail 'eslint'
 fi
 
 echo 'pre-commit: unit smoke (shared + backend)'

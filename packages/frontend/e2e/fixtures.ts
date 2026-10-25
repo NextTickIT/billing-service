@@ -32,6 +32,11 @@ function reply(
   return { status: 404, json: { error: `not stubbed: ${method} ${pathname}` } };
 }
 
+const isLocal = (url: string): boolean => {
+  const { hostname } = new URL(url);
+  return hostname === '127.0.0.1' || hostname === 'localhost';
+};
+
 async function fulfil(route: Route): Promise<void> {
   const request = route.request();
   const { pathname } = new URL(request.url());
@@ -44,10 +49,17 @@ async function fulfil(route: Route): Promise<void> {
 }
 
 export const test = base.extend<{ api: undefined }>({
-  // `auto` so no spec can forget it: in stubbed mode a request never escapes.
+  // `auto` so no spec can forget it: in stubbed mode no request leaves the host.
   api: [
     async ({ page }, use) => {
-      if (isStubbed) await page.route('**/api/**', fulfil);
+      if (isStubbed) {
+        // Later routes win, so the catch-all goes first: anything that is not
+        // the Vite origin (web fonts, CDNs) is aborted instead of waited on.
+        await page.route('**/*', (route) =>
+          isLocal(route.request().url()) ? route.continue() : route.abort(),
+        );
+        await page.route('**/api/**', fulfil);
+      }
       await use(undefined);
     },
     { auto: true },

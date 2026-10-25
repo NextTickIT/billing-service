@@ -153,5 +153,5 @@ format, which is what makes two runs comparable.
 | `pre-commit` | prettier + eslint on staged files, unit tests of shared + backend     |
 | `commit-msg` | Conventional Commits                                                  |
 | `pre-push`   | typecheck, dependency rules, all unit tests                           |
-| CI (later)   | everything above + `test:e2e` + `test:ui` + `review:ai`               |
-| Nightly      | `test:mutation`, `perf:smoke` against staging                         |
+| CI (planned) | everything above + `test:e2e` + `test:ui` + `review:ai` — no pipeline exists in the repository yet |
+| Nightly (planned) | `test:mutation`, `perf:smoke` against staging — no scheduler exists yet |

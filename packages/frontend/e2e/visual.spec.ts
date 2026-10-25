@@ -1,15 +1,12 @@
 import { expect, test } from './fixtures.js';
 
-// Pin everything that changes pixels between runs: language, theme, and the web
-// fonts, which are blocked so the baseline never depends on Google's CDN.
+// Pin everything that changes pixels between runs: language and theme; the
+// fixture already blocks the web fonts, so the baseline never depends on a CDN.
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('lang', 'en');
     localStorage.setItem('theme', 'dark');
   });
-  await page.route(/fonts\.(googleapis|gstatic)\.com/, (route) =>
-    route.abort(),
-  );
 });
 
 test('the login page looks the same as the approved baseline', async ({

@@ -29,7 +29,7 @@ TypeScript monorepo for the billing-service payment gateway.
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 22+ (Stryker, dependency-cruiser and axe require it)
 - Docker (for the local database)
 
 ## One-time host setup
