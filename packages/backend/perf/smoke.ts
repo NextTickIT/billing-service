@@ -41,6 +41,10 @@ const authHeaders = (token: string | undefined): Record<string, string> =>
     ? {}
     : { authorization: `Bearer ${token}` };
 
+// autocannon may reject with a plain object; keep its shape readable.
+const describe = (value: unknown): string =>
+  typeof value === 'string' ? value : JSON.stringify(value);
+
 const runLoad = (config: SmokeConfig): Promise<autocannon.Result> =>
   new Promise((resolve, reject) => {
     autocannon(
@@ -51,8 +55,8 @@ const runLoad = (config: SmokeConfig): Promise<autocannon.Result> =>
         headers: authHeaders(config.token),
       },
       (err: unknown, result: autocannon.Result) => {
-        if (err instanceof Error) reject(err);
-        else resolve(result);
+        if (err === null || err === undefined) resolve(result);
+        else reject(err instanceof Error ? err : new Error(describe(err)));
       },
     );
   });

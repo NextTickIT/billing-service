@@ -13,20 +13,27 @@ if git diff --cached --quiet; then
 fi
 
 # The checks below read the working tree, so the working tree must be exactly
-# what is being committed for every source or config input: no unstaged edits
-# to tracked files and no untracked files a staged file could depend on.
-# Refusing is simpler and honest; stashing around the checks is not.
-source_re='\.(ts|vue|js|cjs|mjs|json|css|yml|yaml)$'
+# what is being committed: no unstaged edits to tracked files and no
+# non-ignored untracked files at all, whatever their extension — a staged test
+# can depend on any of them. Refusing is simple and honest; classifying inputs
+# by extension or stashing around the checks is not.
 dirty=()
-while IFS= read -r -d '' entry; do
-  path="${entry:3}"
+entries=()
+while IFS= read -r -d '' entry; do entries+=("$entry"); done \
+  < <(git status --porcelain --untracked-files=all -z)
+i=0
+while [ "$i" -lt "${#entries[@]}" ]; do
+  entry="${entries[$i]}"; i=$((i + 1))
+  # A rename/copy record is followed by one extra NUL-terminated field: the
+  # original path. Skip it so it is not read as a status line.
+  case "${entry:0:1}" in R|C) i=$((i + 1)) ;; esac
   case "${entry:0:2}" in
-    '??' | ?M | ?D | ?A) [[ "$path" =~ $source_re ]] && dirty+=("${entry:0:2} $path") ;;
+    '??' | ?M | ?D | ?A | ?R | ?C | ?T | ?U | UU | AA | DD) dirty+=("$entry") ;;
   esac
-done < <(git status --porcelain --untracked-files=all -z)
+done
 if [ "${#dirty[@]}" -gt 0 ]; then
   printf '  %s\n' "${dirty[@]}" >&2
-  fail 'source files outside the index (unstaged edits or untracked); stage, stash or ignore them so the check sees exactly what will be committed'
+  fail 'the working tree differs from the index; stage, stash or ignore these so the check sees exactly what will be committed'
 fi
 
 # NUL-separated so a path with spaces or tabs stays one argument.
@@ -52,6 +59,8 @@ if [ "${#lintable[@]}" -gt 0 ]; then
   npx eslint "${lintable[@]}" || fail 'eslint'
 fi
 
-echo 'pre-commit: unit smoke (shared + backend)'
-npm test -w @billing-service/shared || fail 'shared unit tests'
-npm test -w @billing-service/backend || fail 'backend unit tests'
+# Through turbo so `test` runs after `^build`: a direct `npm test -w` would use
+# whatever packages/shared/dist happens to be on disk.
+echo 'pre-commit: unit smoke (shared + backend, via turbo)'
+npx turbo run test --filter=@billing-service/shared --filter=@billing-service/backend ||
+  fail 'unit tests'

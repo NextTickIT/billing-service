@@ -146,15 +146,18 @@ to the performance work, not to this smoke.
 ## 7. AI-assisted review (**new**)
 
 `scripts/ai-review.sh` sends `git diff origin/main...HEAD` with the brief in
-`scripts/ai-review-prompt.md` to a read-only reviewer (`claude -p` or
-`codex exec`), writes `reports/ai-review/<sha>-<reviewer>.md` and exits 1 on
+`scripts/ai-review-prompt.md` to a read-only `claude -p`, writes `reports/ai-review/<sha>-<reviewer>.md` and exits 1 on
 `VERDICT: REQUEST_CHANGES`, so it can sit in `pre-push` or CI. The reviewer
 reads; a human decides. The brief fixes the order of concerns (invariants,
 behaviour, test tiers, conventions, security, simpler approach) and the output
 format, which is what makes two runs comparable.
 
 The reviewer runs with no settings sources, no MCP servers and only the three
-read tools, so it is read-only by construction rather than by instruction.
+read tools, so it is read-only by construction rather than by instruction. A
+`codex exec --sandbox read-only` backend was tried and removed: the sandbox does
+not stop configured MCP servers from starting, and a startup command can write.
+A Codex opinion is still available by hand (`omc ask codex --agent-prompt
+critic …`); it is not a gate.
 
 What happened on this branch: the same diff was reviewed by Claude (APPROVE,
 eight minor findings) and by Codex as a critic (REQUEST_CHANGES, five major
@@ -162,8 +165,10 @@ findings, each with a reproduced failure scenario — the reviewer could write,
 pre-commit judged the working tree instead of the staged snapshot, the verdict
 parser was loose, the browser fixture let font requests escape). A second
 Codex pass found three of the fixes incomplete (inherited hooks, untracked
-dependencies, a dead dependency rule). All of it was closed in the two
-`fix(gates)` commits. Two reviewers, one diff, two verdicts: the AI review is
+dependencies, a dead dependency rule); a third pass found the extension-based
+staging filter still porous and the Codex backend not isolated, which is why
+the hook now demands a clean tree outside the index and the script has one
+backend. Three `fix(gates)` commits, each verified by a reproducing probe. Two reviewers, one diff, two verdicts: the AI review is
 the start of a conversation, and the brief is what makes its output usable.
 
 ## 8. Where each gate runs

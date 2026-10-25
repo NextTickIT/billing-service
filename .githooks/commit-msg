@@ -2,7 +2,9 @@
 # Conventional Commits keep the history greppable and changelog-ready.
 set -u
 
-subject=$(head -n 1 "$1")
+# Git strips comment and blank lines after this hook runs, so judge the first
+# line that will survive, not the raw first line of a template.
+subject=$(grep -v '^#' "$1" | sed '/^[[:space:]]*$/d' | head -n 1)
 
 case "$subject" in
   'Merge '* | 'Revert '* | 'fixup! '* | 'squash! '* | 'amend! '*) exit 0 ;;

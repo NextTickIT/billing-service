@@ -1,10 +1,10 @@
 #!/usr/bin/env sh
 # AI-assisted code review as a repeatable, local step.
 #
-#   scripts/ai-review.sh [--base <ref>] [--reviewer claude|codex] [--working-tree]
+#   scripts/ai-review.sh [--base <ref>] [--working-tree]
 #
-# Reviews `git diff <base>...HEAD` (or everything not yet committed, staged or
-# not, with --working-tree) with the brief in scripts/ai-review-prompt.md, writes the
+# Reviews `git diff <base>...HEAD` (or, with --working-tree, every tracked
+# change not yet committed, staged or not; untracked files are not included) with the brief in scripts/ai-review-prompt.md, writes the
 # review to reports/ai-review/<sha>-<reviewer>.md and exits 1 on
 # `VERDICT: REQUEST_CHANGES` (2 when the reviewer fails or the verdict is
 # malformed), so the same command works as a pre-push gate, a CI step, or a
@@ -14,11 +14,12 @@ set -eu
 
 BASE="origin/main"
 REVIEWER="claude"
+# Only Claude: `codex exec --sandbox read-only` still starts configured MCP
+# servers, whose startup can write, so it does not meet the read-only guarantee.
 WORKING_TREE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE="$2"; shift 2 ;;
-    --reviewer) REVIEWER="$2"; shift 2 ;;
     --working-tree) WORKING_TREE=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -76,12 +77,8 @@ case "$REVIEWER" in
       > "$OUT" ||
       reviewer_failed
     ;;
-  codex)
-    printf '%s' "$INPUT" | codex exec --sandbox read-only - > "$OUT" ||
-      reviewer_failed
-    ;;
   *)
-    echo "unknown reviewer: $REVIEWER (claude|codex)" >&2
+    echo "unknown reviewer: $REVIEWER (only claude is isolated well enough; see docs/33 §7)" >&2
     exit 2
     ;;
 esac

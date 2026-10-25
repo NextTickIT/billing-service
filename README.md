@@ -29,7 +29,7 @@ TypeScript monorepo for the billing-service payment gateway.
 
 ## Requirements
 
-- Node.js 22.13+ (ESLint 10, Stryker, dependency-cruiser and axe require it; the frontend unit tests rely on Node 22 `localStorage` semantics)
+- Node.js 22.13 – 22.x (the tested runtime; ESLint 10, Stryker, dependency-cruiser and axe need ≥ 22.13, and the frontend unit tests fail on Node 26, where `localStorage` is not exposed)
 - Docker (for the local database)
 
 ## One-time host setup

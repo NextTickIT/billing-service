@@ -1,9 +1,8 @@
-import { formatPeriod } from '@billing-service/shared';
+import { formatPeriod } from '@/format/period.js';
 import { describe, expect, it } from 'vitest';
 
-// Tier 1, pure unit: no DOM, no Vue, just input -> output. `formatPeriod` lives in
-// the shared package; the frontend tests it because the checkout page is where a
-// payer reads the result.
+// Tier 1, pure unit: no DOM, no Vue, just input -> output, next to the code it
+// covers. The checkout page is where a payer reads the result.
 describe('formatPeriod', () => {
   it('renders a single unit in English', () => {
     expect(formatPeriod('P1M', 'en')).toBe('1 month');
