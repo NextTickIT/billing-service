@@ -53,7 +53,9 @@ withDefaults(defineProps<Props>(), {
 
 .toast-enter-active,
 .toast-leave-active {
-  transition: opacity 0.2s, transform 0.2s;
+  transition:
+    opacity 0.2s,
+    transform 0.2s;
 }
 
 .toast-enter-from,

@@ -30,8 +30,8 @@
   --bg-rgb: 11, 13, 15;
 
   /* typography */
-  --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
 
   /* layout */
   --max: 1160px;
@@ -42,7 +42,7 @@
   --txt: var(--text);
 }
 
-[data-theme="light"] {
+[data-theme='light'] {
   color-scheme: light;
   --bg: #ffffff;
   --bg-2: #f6f8fa;

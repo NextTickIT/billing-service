@@ -54,8 +54,7 @@ async function forwardToBackend(
   if (bearerToken !== null) {
     headers.set('authorization', `Bearer ${bearerToken}`);
   }
-  const body =
-    request.body !== null ? await request.arrayBuffer() : null;
+  const body = request.body !== null ? await request.arrayBuffer() : null;
   return fetch(backendUrl, {
     method: request.method,
     headers,

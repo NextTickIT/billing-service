@@ -59,8 +59,14 @@ function clear(): void {
 </template>
 
 <style scoped>
-.th-filter { position: relative; }
-.th-filter__row { display: flex; align-items: center; gap: 6px; }
+.th-filter {
+  position: relative;
+}
+.th-filter__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .filter-icon {
   display: inline-flex;
   align-items: center;
@@ -73,7 +79,9 @@ function clear(): void {
   border-radius: 2px;
 }
 .filter-icon:hover,
-.filter-icon--active { color: var(--green); }
+.filter-icon--active {
+  color: var(--green);
+}
 .th-filter__pop {
   position: absolute;
   z-index: 20;
@@ -98,7 +106,10 @@ function clear(): void {
   font-size: 12px;
   text-transform: none;
 }
-.th-filter__input:focus { outline: none; border-color: var(--green); }
+.th-filter__input:focus {
+  outline: none;
+  border-color: var(--green);
+}
 .filter-clear {
   border: 0;
   background: transparent;
@@ -108,5 +119,7 @@ function clear(): void {
   line-height: 1;
   padding: 0 4px;
 }
-.filter-clear:hover { color: var(--red); }
+.filter-clear:hover {
+  color: var(--red);
+}
 </style>

@@ -15,9 +15,19 @@ const emit = defineEmits<{ close: [] }>();
       <div class="modal" role="dialog" :aria-label="title">
         <div class="modal__header">
           <span class="modal__title">{{ title }}</span>
-          <button class="modal__close" type="button" aria-label="Close" @click="emit('close')">
+          <button
+            class="modal__close"
+            type="button"
+            aria-label="Close"
+            @click="emit('close')"
+          >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-              <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <path
+                d="M1 1l10 10M11 1L1 11"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+              />
             </svg>
           </button>
         </div>

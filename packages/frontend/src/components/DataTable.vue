@@ -8,8 +8,10 @@ import BaseSelect from './BaseSelect.vue';
 // column, client-side paging, and the count/rows-per-page footer. Pages supply
 // only their columns (#head) and cells (#row); everything else is shared here.
 const PAGE_SIZE_OPTIONS = [
-  { value: 10, label: '10' }, { value: 25, label: '25' },
-  { value: 50, label: '50' }, { value: 100, label: '100' },
+  { value: 10, label: '10' },
+  { value: 25, label: '25' },
+  { value: 50, label: '50' },
+  { value: 100, label: '100' },
 ];
 
 const props = defineProps<{
@@ -43,7 +45,9 @@ const paged = computed(() => {
 });
 
 // Filtering or resizing the page can leave the cursor past the last page.
-watch([filterText, pageSize], () => { page.value = 1; });
+watch([filterText, pageSize], () => {
+  page.value = 1;
+});
 
 function prevPage(): void {
   if (page.value > 1) page.value -= 1;
@@ -163,10 +167,18 @@ function onRow(item: T): void {
   cursor: pointer;
   font-size: 15px;
   line-height: 1;
-  transition: color 0.15s, border-color 0.15s;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
 }
-.pager-btn:hover:not(:disabled) { color: var(--green); border-color: var(--green); }
-.pager-btn:disabled { opacity: 0.4; cursor: default; }
+.pager-btn:hover:not(:disabled) {
+  color: var(--green);
+  border-color: var(--green);
+}
+.pager-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .pager-pos {
   color: var(--text);
   font-family: var(--mono);

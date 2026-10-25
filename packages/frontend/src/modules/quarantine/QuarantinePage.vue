@@ -19,7 +19,9 @@ const store = useQuarantineStore();
 const selected = ref<QuarantineView | null>(null);
 const paymentId = ref('');
 
-onMounted(() => { void store.load(); });
+onMounted(() => {
+  void store.load();
+});
 
 function matchRef(item: QuarantineView, q: string): boolean {
   return (
@@ -91,7 +93,10 @@ async function doBind(): Promise<void> {
     >
       <div class="bind-form">
         <label class="bind-label">{{ t('quarantine.bindLabel') }}</label>
-        <BaseInput v-model="paymentId" :placeholder="t('quarantine.bindLabel')" />
+        <BaseInput
+          v-model="paymentId"
+          :placeholder="t('quarantine.bindLabel')"
+        />
         <p v-if="store.error" class="bind-error">{{ store.error }}</p>
         <BaseButton
           :label="t('quarantine.bindButton')"
@@ -104,14 +109,39 @@ async function doBind(): Promise<void> {
 </template>
 
 <style scoped>
-.q-page { display: flex; flex-direction: column; gap: 0; }
+.q-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
 
-.state-center { text-align: center; padding: 32px 0; }
-.state-error { color: var(--red); padding: 8px 0; font-size: 13px; }
+.state-center {
+  text-align: center;
+  padding: 32px 0;
+}
+.state-error {
+  color: var(--red);
+  padding: 8px 0;
+  font-size: 13px;
+}
 
-.col-action { text-align: right; width: 1px; white-space: nowrap; }
+.col-action {
+  text-align: right;
+  width: 1px;
+  white-space: nowrap;
+}
 
-.bind-form { display: flex; flex-direction: column; gap: 10px; }
-.bind-label { color: var(--dim); font-size: 12px; }
-.bind-error { color: var(--red); font-size: 13px; }
+.bind-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.bind-label {
+  color: var(--dim);
+  font-size: 12px;
+}
+.bind-error {
+  color: var(--red);
+  font-size: 13px;
+}
 </style>
