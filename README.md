@@ -59,9 +59,16 @@ another project already uses `127.0.0.1:5432`.
 npm install            # link all workspaces
 npm run build          # turbo: shared -> backend (-> frontend), tsc + tsc-alias
 npm run typecheck      # strict type-check across packages
-npm run lint           # eslint (strict + complexity) + prettier --check
+npm run lint           # eslint per package via turbo (strict + complexity) + prettier --check
 npm test               # vitest across packages (builds first via turbo) — hermetic, no Postgres
 npm run test:e2e       # Dockerized auth E2E (spins up Postgres, per-test DB, tears down)
+npm run test:coverage  # unit tier with v8 branch coverage -> coverage/index.html
+npm run test:mutation  # Stryker over payment/period, payment/domain, wayforpay/signature
+npm run test:ui        # Playwright: login flow, axe, visual baseline (Vite auto-started)
+npm run lint:deps      # dependency-cruiser architecture rules (docs/33)
+npm run hooks:install  # git config core.hooksPath .githooks (pre-commit / commit-msg / pre-push)
+npm run perf:smoke     # autocannon smoke with a p99 budget (PERF_URL, PERF_P99_BUDGET_MS)
+npm run review:ai      # AI-assisted review of origin/main...HEAD -> reports/ai-review/
 npm run db:up          # start dev Postgres on billing-service.local:5432
 npm run db:test:up     # start isolated test Postgres (127.0.0.2:5433)
 
