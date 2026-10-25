@@ -98,8 +98,10 @@ const render = async (
     // The page reads its id from the route; it is the app root, not the route's view.
     routes: [{ path: '/checkout/:id', component: { render: () => null } }],
   });
-  app.use(router);
+  // Navigate before installing: under a DOM environment `app.use(router)` would
+  // otherwise start an initial navigation to the memory history's empty path.
   await router.push(`/checkout/${ID}`);
+  app.use(router);
   await router.isReady();
   return renderToString(app);
 };

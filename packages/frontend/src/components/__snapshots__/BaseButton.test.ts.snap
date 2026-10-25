@@ -1,0 +1,3 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`BaseButton > matches the default render snapshot 1`] = `"<button data-v-2d3a2488="" class="btn btn--primary" type="button"><span data-v-2d3a2488="">Pay</span></button>"`;
