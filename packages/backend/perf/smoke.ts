@@ -1,0 +1,144 @@
+import autocannon from 'autocannon';
+
+interface SmokeConfig {
+  readonly url: string;
+  readonly durationSeconds: number;
+  readonly connections: number;
+  readonly token: string | undefined;
+  readonly p99BudgetMs: number;
+}
+
+interface SmokeSummary {
+  readonly requestsPerSecond: number;
+  readonly p50: number;
+  readonly p95: number;
+  readonly p99: number;
+  readonly errors: number;
+  readonly non2xx: number;
+}
+
+const readNumber = (name: string, fallback: number): number => {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative number, got "${raw}"`);
+  }
+  return value;
+};
+
+const readConfig = (): SmokeConfig => ({
+  url: process.env['PERF_URL'] ?? 'http://127.0.0.1:3000/health',
+  durationSeconds: readNumber('PERF_DURATION_SECONDS', 10),
+  connections: readNumber('PERF_CONNECTIONS', 20),
+  token: process.env['PERF_TOKEN'],
+  // docs/03: the status API must answer in under 500 ms.
+  p99BudgetMs: readNumber('PERF_P99_BUDGET_MS', 500),
+});
+
+const authHeaders = (token: string | undefined): Record<string, string> =>
+  token === undefined || token === ''
+    ? {}
+    : { authorization: `Bearer ${token}` };
+
+// autocannon's histogram has no p95, so percentiles come from raw samples.
+const percentile = (sorted: readonly number[], p: number): number => {
+  if (sorted.length === 0) return Number.NaN;
+  const rank = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.min(Math.max(rank, 0), sorted.length - 1)] ?? Number.NaN;
+};
+
+const runLoad = (
+  config: SmokeConfig,
+): Promise<{ result: autocannon.Result; samples: number[] }> =>
+  new Promise((resolve, reject) => {
+    const samples: number[] = [];
+    const instance = autocannon(
+      {
+        url: config.url,
+        duration: config.durationSeconds,
+        connections: config.connections,
+        headers: authHeaders(config.token),
+      },
+      (err: unknown, result: autocannon.Result) => {
+        if (err instanceof Error) reject(err);
+        else resolve({ result, samples });
+      },
+    );
+    instance.on('response', (_client, _status, _bytes, responseTime) => {
+      samples.push(responseTime);
+    });
+  });
+
+const summarize = (
+  result: autocannon.Result,
+  samples: readonly number[],
+): SmokeSummary => {
+  const sorted = [...samples].sort((a, b) => a - b);
+  return {
+    requestsPerSecond: result.requests.average,
+    p50: percentile(sorted, 50),
+    p95: percentile(sorted, 95),
+    p99: percentile(sorted, 99),
+    errors: result.errors,
+    non2xx: result.non2xx,
+  };
+};
+
+const printSummary = (config: SmokeConfig, summary: SmokeSummary): void => {
+  const ms = (value: number): string => `${value.toFixed(2)} ms`;
+  const rows: [string, string][] = [
+    ['target', config.url],
+    [
+      'load',
+      `${String(config.connections)} conn × ${String(config.durationSeconds)} s`,
+    ],
+    ['requests/s', summary.requestsPerSecond.toFixed(1)],
+    ['latency p50', ms(summary.p50)],
+    ['latency p95', ms(summary.p95)],
+    [
+      'latency p99',
+      `${ms(summary.p99)} (budget ${String(config.p99BudgetMs)} ms)`,
+    ],
+    ['errors', String(summary.errors)],
+    ['non-2xx', String(summary.non2xx)],
+  ];
+  const width = Math.max(...rows.map(([label]) => label.length));
+  for (const [label, value] of rows) {
+    console.log(`${label.padEnd(width)}  ${value}`);
+  }
+};
+
+const failures = (config: SmokeConfig, summary: SmokeSummary): string[] => {
+  const found: string[] = [];
+  // NaN means no response arrived at all, which must not pass silently.
+  if (!(summary.p99 <= config.p99BudgetMs)) {
+    found.push(
+      `p99 ${summary.p99.toFixed(2)} ms exceeds ${String(config.p99BudgetMs)} ms`,
+    );
+  }
+  if (summary.non2xx > 0)
+    found.push(`${String(summary.non2xx)} non-2xx responses`);
+  if (summary.errors > 0)
+    found.push(`${String(summary.errors)} connection errors`);
+  return found;
+};
+
+const main = async (): Promise<void> => {
+  const config = readConfig();
+  const { result, samples } = await runLoad(config);
+  const summary = summarize(result, samples);
+  printSummary(config, summary);
+  const found = failures(config, summary);
+  if (found.length > 0) {
+    console.error(`\nFAIL: ${found.join('; ')}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log('\nPASS');
+};
+
+main().catch((err: unknown) => {
+  console.error(err instanceof Error ? err.message : err);
+  process.exitCode = 2;
+});
