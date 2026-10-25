@@ -6,5 +6,22 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     projects: ['packages/*/vitest.config.ts'],
+    // Reported, never enforced: a threshold would turn the teaching metric into a
+    // gate that rewards tests written for the number rather than the behaviour.
+    coverage: {
+      provider: 'v8',
+      reporter: ['text-summary', 'html'],
+      reportsDirectory: 'coverage',
+      include: ['packages/*/src/**/*.ts'],
+      exclude: [
+        '**/test/**',
+        '**/*.test.ts',
+        '**/*.e2e.ts',
+        '**/migrations/**',
+        '**/main.ts',
+        '**/worker.ts',
+        '**/db-migrate.ts',
+      ],
+    },
   },
 });
