@@ -1,0 +1,15 @@
+#!/bin/sh
+# The whole-repo gate: types, architecture rules, and every unit test.
+set -u
+
+run() {
+  echo "pre-push: npm run $1"
+  npm run "$1" || {
+    printf '\npre-push: npm run %s failed; push aborted.\n' "$1" >&2
+    exit 1
+  }
+}
+
+run typecheck
+run lint:deps
+run test

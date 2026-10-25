@@ -1,0 +1,28 @@
+#!/bin/sh
+# Conventional Commits keep the history greppable and changelog-ready.
+set -u
+
+subject=$(head -n 1 "$1")
+
+case "$subject" in
+  'Merge '* | 'Revert '* | 'fixup! '* | 'squash! '* | 'amend! '*) exit 0 ;;
+esac
+
+types='feat|fix|chore|docs|test|refactor|harden|perf|build|ci|revert'
+pattern="^($types)(\([a-z0-9/_-]+\))?!?: .{1,100}\$"
+
+if printf '%s\n' "$subject" | grep -Eq "$pattern"; then
+  exit 0
+fi
+
+cat >&2 <<MSG
+commit-msg: the first line is not a Conventional Commit:
+
+  $subject
+
+Expected:  <type>(<scope>)?!?: <summary up to 100 chars>
+Types:     ${types}
+Examples:  feat(checkout): add promo codes
+           fix(billing)!: stop double retry on day 7
+MSG
+exit 1

@@ -1,0 +1,36 @@
+#!/bin/sh
+# Fast gate on what is about to be committed; the full suite runs in pre-push.
+set -u
+
+fail() {
+  printf '\npre-commit: %s\nFix it, or bypass with --no-verify (reviewers will ask why).\n' "$1" >&2
+  exit 1
+}
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+if [ -z "$staged" ]; then
+  echo 'pre-commit: nothing staged, skipping.'
+  exit 0
+fi
+
+# Only extensions prettier formats here; anything else would make it error out.
+pretty=$(printf '%s\n' "$staged" |
+  grep -E '\.(ts|js|cjs|mjs|vue|json|md|css|scss|html|ya?ml)$' || true)
+lintable=$(printf '%s\n' "$staged" | grep -E '\.(ts|vue)$' || true)
+
+if [ -n "$pretty" ]; then
+  echo 'pre-commit: prettier --check'
+  # Word splitting is intended: one argument per staged path.
+  # shellcheck disable=SC2086
+  npx prettier --check --ignore-unknown $pretty || fail 'formatting (run npm run format)'
+fi
+
+if [ -n "$lintable" ]; then
+  echo 'pre-commit: eslint'
+  # shellcheck disable=SC2086
+  npx eslint $lintable || fail 'eslint'
+fi
+
+echo 'pre-commit: unit smoke (shared + backend)'
+npm test -w @billing-service/shared || fail 'shared unit tests'
+npm test -w @billing-service/backend || fail 'backend unit tests'
