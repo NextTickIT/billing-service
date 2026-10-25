@@ -89,6 +89,15 @@ database in `finally`; a final sweep asserts that no `test_*` database leaked.
   switch 3.14:1; 4.5:1 required), no `main` landmark, no `h1`, content outside
   landmarks; the `<label>`s are also not linked to their inputs.
 
+A first full run of this tier on the branch (26 HTTP scenarios green) stopped
+at the pipeline scenario "exactly the Active payments due in 3 days": the test
+builds its due date from the **UTC** calendar day (`setUTCDate(+3)` at 09:00
+UTC) while `findUpcomingForNotice` compares calendar days in
+`Europe/Kyiv`. Between 00:00 and 02:00/03:00 Kyiv the two calendars disagree
+by a day and the scenario fails deterministically; by daytime it passes. The
+fix belongs in the test (derive the day in the same zone as the query); it is
+left as-is here as the textbook clock-dependent test.
+
 Both backend tiers currently share the `*.e2e.ts` suffix; by the rule in §1 the
 pipeline scenarios are integration tests. Renaming them `*.integration.ts` is a
 candidate ADR, not a correction made on this branch.
