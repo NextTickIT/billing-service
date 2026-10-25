@@ -31,11 +31,15 @@ OUT_DIR="$ROOT/reports/ai-review"
 OUT="$OUT_DIR/$SHA-$REVIEWER.md"
 mkdir -p "$OUT_DIR"
 
+# Lockfiles, snapshots and images are reviewed by their tools, not by a reader.
+PATHSPEC=". :(exclude)package-lock.json :(exclude)**/__snapshots__/** :(exclude)**/*.png :(exclude)**/*.snap"
 if [ "$WORKING_TREE" -eq 1 ]; then
-  DIFF="$(git diff --no-color)"
+  # shellcheck disable=SC2086
+  DIFF="$(git diff --no-color -- $PATHSPEC)"
   SCOPE="working tree vs HEAD ($SHA)"
 else
-  DIFF="$(git diff --no-color "$BASE...HEAD")"
+  # shellcheck disable=SC2086
+  DIFF="$(git diff --no-color "$BASE...HEAD" -- $PATHSPEC)"
   SCOPE="$BASE...HEAD ($SHA)"
 fi
 if [ -z "$DIFF" ]; then
