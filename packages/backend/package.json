@@ -11,7 +11,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:e2e": "tsx test/e2e/run.ts",
-    "lint": "eslint src test",
+    "test:mutation": "stryker run",
+    "perf:smoke": "tsx perf/smoke.ts",
+    "lint": "eslint src test perf",
     "start": "node dist/main.js",
     "start:worker": "node dist/worker.js",
     "db:migrate": "tsx src/db-migrate.ts"

@@ -13,5 +13,5 @@
     },
     "allowArbitraryExtensions": true
   },
-  "include": ["src", "functions"]
+  "include": ["src", "functions", "e2e"]
 }

@@ -8,3 +8,7 @@ coverage
 worktree/
 .claude/
 .DS_Store
+.stryker-tmp/
+reports/
+test-results/
+playwright-report/
