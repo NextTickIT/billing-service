@@ -281,8 +281,9 @@ pay_<paymentId>_<…>`; charge idemKey `w4p:<orderReference>|CHARGE|<createdDate
   with Playwright (`packages/frontend/e2e`, `npm run test:ui`; `E2E_BASE_URL`
   switches from stubbed network to a real stack).
 - **Coverage is not verification**: `npm run test:coverage` reports branches;
-  `npm run test:mutation` (Stryker on the payment/signature modules) reports what
-  the tests actually notice — classify every survivor (gap / equivalent / accepted).
+  `npm run test:mutation` (Stryker on the payment/signature modules and on
+  shared `format/period.ts`) reports what the tests actually notice — classify
+  every survivor (gap / equivalent / accepted) and kill the gaps.
 - **Lint runs per package** (`turbo run lint`); `eslint .` over the monorepo
   exhausts the heap. `npm run lint:deps` enforces the §3 layering as dependency
   rules; `npm run hooks:install` enables the `.githooks` gates.

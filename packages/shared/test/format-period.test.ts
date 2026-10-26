@@ -1,4 +1,4 @@
-import { formatPeriod } from '@/format/period.js';
+import { formatPeriod, isRenderablePeriod } from '@/format/period.js';
 import { describe, expect, it } from 'vitest';
 
 // Tier 1, pure unit: no DOM, no Vue, just input -> output, next to the code it
@@ -29,5 +29,20 @@ describe('formatPeriod', () => {
   it('falls back to the raw string for an all-zero or unparseable period', () => {
     expect(formatPeriod('P0D', 'en')).toBe('P0D');
     expect(formatPeriod('garbage', 'uk')).toBe('garbage');
+  });
+});
+
+// Stryker reported every mutant in isRenderablePeriod as "no coverage": the
+// function had no test at all. Coverage alone would have said the same — the
+// mutation report just makes the consequence concrete (5 mutants, none caught).
+describe('isRenderablePeriod', () => {
+  it('is true for a duration the payer can read', () => {
+    expect(isRenderablePeriod('P1M')).toBe(true);
+    expect(isRenderablePeriod('P1M15D')).toBe(true);
+  });
+
+  it('is false when the raw string would be shown instead', () => {
+    expect(isRenderablePeriod('P0D')).toBe(false);
+    expect(isRenderablePeriod('garbage')).toBe(false);
   });
 });

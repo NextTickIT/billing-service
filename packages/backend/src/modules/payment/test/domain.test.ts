@@ -59,7 +59,9 @@ const makeFakeRepo = (existing: Payment | null) => {
           ...input,
           id: 'sub_new',
           cancelRequestedAt: null,
-          metadata: null,
+          // The real repo returns what it stored; a fake that always answered
+          // `null` here hid the `metadata ?? null` → `metadata && null` mutant.
+          metadata: input.metadata ?? null,
           createdAt: new Date(0),
           updatedAt: new Date(0),
         };
@@ -178,6 +180,40 @@ it.effect(
       expect(inserted.currentPeriodEnd.toISOString().slice(0, 10)).toBe(
         '2026-02-15',
       );
+    }),
+);
+
+// The two tests below exist because Stryker reported their mutants as survived:
+// `promoBonus.length > 0` → `true` / `>= 0`, and `metadata ?? null` → `metadata && null`.
+// 100% line coverage, zero tests exercising the empty-string and the present-metadata
+// inputs — the gap coverage cannot see.
+it.effect(
+  'an empty promo bonus string grants no free time (and is not passed to addPeriod)',
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo(null);
+
+      yield* createOrExtend(fake.repo)({ ...params, promoBonus: '' });
+
+      const inserted = fake.getInserted() as { currentPeriodEnd: Date };
+      expect(inserted.currentPeriodEnd.toISOString().slice(0, 10)).toBe(
+        '2026-02-15',
+      );
+    }),
+);
+
+it.effect(
+  'metadata supplied with the charge is stored on the new payment',
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo(null);
+      const metadata = { source: 'promo-landing', campaign: 'spring' };
+
+      const result = yield* createOrExtend(fake.repo)({ ...params, metadata });
+
+      const inserted = fake.getInserted() as { metadata: unknown };
+      expect(inserted.metadata).toEqual(metadata);
+      expect(result.metadata).toEqual(metadata);
     }),
 );
 

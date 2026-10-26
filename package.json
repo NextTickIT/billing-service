@@ -21,7 +21,7 @@
     "fix": "turbo run lint -- --fix && prettier --write .",
     "test": "turbo run test",
     "test:coverage": "turbo run build && vitest run --coverage",
-    "test:mutation": "npm run test:mutation -w @billing-service/backend",
+    "test:mutation": "npm run test:mutation -w @billing-service/backend && npm run test:mutation -w @billing-service/shared",
     "test:e2e": "npm run test:e2e -w @billing-service/backend",
     "test:ui": "npm run test:ui -w @billing-service/frontend",
     "test:watch": "vitest",

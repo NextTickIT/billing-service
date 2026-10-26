@@ -1,0 +1,14 @@
+{
+  "$schema": "../../node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "vitest",
+  "plugins": ["@stryker-mutator/vitest-runner"],
+  "vitest": { "configFile": "vitest.config.ts" },
+  "mutate": ["src/format/period.ts"],
+  "reporters": ["clear-text", "progress", "html"],
+  "htmlReporter": { "fileName": "reports/mutation/index.html" },
+  "tempDirName": ".stryker-tmp",
+  "incremental": true,
+  "incrementalFile": "reports/mutation/incremental.json",
+  "thresholds": { "high": 80, "low": 60, "break": null },
+  "coverageAnalysis": "perTest"
+}

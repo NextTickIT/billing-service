@@ -17,6 +17,7 @@
     "dev": "tsc -b tsconfig.build.json --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:mutation": "stryker run",
     "lint": "eslint src test"
   },
   "dependencies": {

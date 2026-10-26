@@ -135,6 +135,19 @@ coverage — classified:
 Three of eight survivors are real gaps under a 95% score and 100% line
 coverage of these files — the lecture's point in one table.
 
+Closing them took two tests and one honest fake: `promoBonus: ''` and a
+supplied `metadata` object in `payment/test/domain.test.ts`. The metadata
+test first failed for a different reason — the fake repository always
+returned `metadata: null`, which is exactly why the mutant had survived. The
+second run reports **97.19%** (173 killed, 5 survived: #4–#8 above, nothing
+left to fix).
+
+The shared package has its own config (`packages/shared/stryker.config.json`,
+`format/period.ts`): the first run gave 80% with five **no-coverage** mutants,
+all in `isRenderablePeriod`, which had no test. Coverage would have said the
+same; mutation testing adds information on covered code. One test later it is
+100%. `npm run test:mutation` at the root runs both packages.
+
 ## 6. Performance smoke (**new**)
 
 `packages/backend/perf/smoke.ts` runs autocannon against `PERF_URL` and fails

@@ -63,7 +63,7 @@ npm run lint           # eslint per package via turbo (strict + complexity) + pr
 npm test               # vitest across packages (builds first via turbo) — hermetic, no Postgres
 npm run test:e2e       # Dockerized auth E2E (spins up Postgres, per-test DB, tears down)
 npm run test:coverage  # unit tier with v8 branch coverage -> coverage/index.html
-npm run test:mutation  # Stryker over payment/period, payment/domain, wayforpay/signature
+npm run test:mutation  # Stryker: backend payment/period, payment/domain, wayforpay/signature + shared format/period
 npm run test:ui        # Playwright: login flow, axe, visual baseline (Vite auto-started)
 npm run lint:deps      # dependency-cruiser architecture rules (docs/33)
 npm run hooks:install  # git config core.hooksPath .githooks (pre-commit / commit-msg / pre-push)
