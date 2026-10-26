@@ -230,6 +230,24 @@ describe('renderReceipt for a crypto payment', () => {
   });
 });
 
+describe('renderReceipt text part for an event with no detail rows', () => {
+  it('keeps the exact layout a renewal_failed receipt always had', () => {
+    const r = renderReceipt(
+      event({ name: 'renewal_failed', payload: { reason: 'declined' } }),
+    );
+    expect(r?.text).toBe(
+      [
+        'NextTick — Не удалось продлить подписку',
+        '',
+        'Мы не смогли списать платёж за следующий период.',
+        '',
+        '',
+        'Служба заботы: https://t.me/next_tick_care_bot',
+      ].join('\n'),
+    );
+  });
+});
+
 describe('renderReceipt on a manual-pay prompt', () => {
   it('calls the next ladder date the charge date, not a charge attempt', () => {
     // A crypto subscriber pays by hand: the next ladder date is the charge date they

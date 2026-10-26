@@ -369,9 +369,8 @@ export const renderReceipt = (event: StoredEvent): RenderedEmail | null => {
     `${BRAND} — ${view.heading}`,
     '',
     ...view.paragraphs,
-    ...(rows.length === 0
-      ? []
-      : ['', ...rows.map((r) => `${r.label}: ${r.value}`)]),
+    '',
+    ...rows.map((r) => `${r.label}: ${r.value}`),
     ...(action === null ? [] : ['', `${action.label}: ${action.url}`]),
     '',
     `Служба заботы: ${SUPPORT_URL}`,
