@@ -92,6 +92,8 @@ const BRAND = 'NextTick';
 const SUPPORT_URL = 'https://t.me/next_tick_care_bot';
 const TERMS_URL = 'https://nexttick.it/terms';
 const PRIVACY_URL = 'https://nexttick.it/privacy';
+/** The guild bot, where the subscription itself lives («Подписка» in its menu). */
+const BOT_URL = 'https://t.me/next_tick_bot';
 
 /** HTML-escape. Every interpolated value passes through this — the URLs come from a
  * caller-supplied `successUrl`/`failureUrl`, so they are untrusted text here. */
@@ -200,6 +202,17 @@ const COPY: Readonly<Record<string, Copy>> = {
   },
 };
 
+/**
+ * A crypto payer's receipt is about access, not the money: no amount, no currency, no
+ * payment method, no dates. Crypto settles minutes to hours after the payer left the
+ * page, so all this email has to say is "you are in" — and point at the bot, where the
+ * subscription and its dates live.
+ */
+const CRYPTO_LEAD: Readonly<Record<string, string>> = {
+  initial_payment_succeeded: 'Доступ к NextTick открыт.',
+  recurring_payment_succeeded: 'Доступ к NextTick сохраняется.',
+};
+
 export const isReceiptable = (eventName: string): boolean =>
   Object.hasOwn(COPY, eventName);
 
@@ -257,6 +270,9 @@ const button = (url: string, label: string): string => `
               <a href="${esc(url)}" class="e-btn" style="display:inline-block;background:${T.green};border:1px solid ${T.green};border-radius:4px;color:${T.bg};font-family:${T.sans};font-size:13px;font-weight:800;line-height:20px;padding:8px 18px;text-decoration:none;">${esc(label)}</a>
             </td></tr>`;
 
+const paragraph = (body: string): string => `
+        <tr><td class="e-lead" style="padding:8px 16px 0;font-family:${T.sans};font-size:14px;line-height:1.55;color:${T.muted};">${esc(body)}</td></tr>`;
+
 const detailTable = (rows: readonly Row[]): string =>
   rows.length === 0
     ? ''
@@ -281,12 +297,45 @@ export interface RenderedEmail {
   readonly text: string;
 }
 
-export const renderReceipt = (event: StoredEvent): RenderedEmail | null => {
+/** What one email says: the copy, the detail rows and the optional button. */
+interface View {
+  readonly subject: string;
+  readonly heading: string;
+  readonly paragraphs: readonly string[];
+  readonly rows: readonly Row[];
+  readonly action: { readonly url: string; readonly label: string } | null;
+}
+
+const viewFor = (event: StoredEvent): View | null => {
+  const payload: Record<string, unknown> = event.payload;
+  const crypto =
+    payload['method'] === PaymentMethod.Crypto
+      ? CRYPTO_LEAD[event.name]
+      : undefined;
+  if (crypto !== undefined)
+    return {
+      subject: `Гильдия ${BRAND}`,
+      heading: 'Спасибо!',
+      paragraphs: [crypto, 'Все детали — в нашем боте.'],
+      rows: [],
+      action: { url: BOT_URL, label: 'Перейти в бот' },
+    };
   const copy = COPY[event.name];
   if (copy === undefined) return null;
-  const payload: Record<string, unknown> = event.payload;
-  const rows = rowsFor(event.name, payload);
-  const action = actionUrlFor(copy, payload);
+  const url = actionUrlFor(copy, payload);
+  return {
+    subject: copy.subject,
+    heading: copy.heading,
+    paragraphs: [copy.lead],
+    rows: rowsFor(event.name, payload),
+    action: url === null ? null : { url, label: copy.actionLabel },
+  };
+};
+
+export const renderReceipt = (event: StoredEvent): RenderedEmail | null => {
+  const view = viewFor(event);
+  if (view === null) return null;
+  const { rows, action } = view;
 
   const html = `<!doctype html>
 <html lang="ru"><head>
@@ -294,15 +343,14 @@ export const renderReceipt = (event: StoredEvent): RenderedEmail | null => {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="supported-color-schemes" content="dark">
-<title>${esc(copy.subject)}</title>${THEME_STYLE}
+<title>${esc(view.subject)}</title>${THEME_STYLE}
 </head>
 <body class="e-bg" style="margin:0;padding:0;background:${T.bg};color:${T.text};">
   <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="${T.bg}" class="e-bg" style="background:${T.bg};">
     <tr><td align="center" style="padding:32px 16px;">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="${T.surface}" class="e-panel" style="max-width:560px;background:${T.surface};border:1px solid ${T.line};border-radius:6px;">
         <tr><td bgcolor="${T.surface2}" class="e-head" style="background:${T.surface2};border-bottom:1px solid ${T.line};padding:10px 16px;font-family:${T.mono};font-size:11px;letter-spacing:0.04em;color:${T.muted};">${esc(BRAND.toUpperCase())}</td></tr>
-        <tr><td class="e-title" style="padding:20px 16px 0;font-family:${T.sans};font-size:18px;font-weight:700;color:${T.text};line-height:1.35;">${esc(copy.heading)}</td></tr>
-        <tr><td class="e-lead" style="padding:8px 16px 0;font-family:${T.sans};font-size:14px;line-height:1.55;color:${T.muted};">${esc(copy.lead)}</td></tr>${detailTable(rows)}${action === null ? '' : button(action, copy.actionLabel)}
+        <tr><td class="e-title" style="padding:20px 16px 0;font-family:${T.sans};font-size:18px;font-weight:700;color:${T.text};line-height:1.35;">${esc(view.heading)}</td></tr>${view.paragraphs.map(paragraph).join('')}${detailTable(rows)}${action === null ? '' : button(action.url, action.label)}
         <tr><td style="padding:20px 16px 18px;">
           <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
             <tr><td class="e-foot" style="border-top:1px solid ${T.line};padding:14px 0 0;font-family:${T.sans};font-size:12px;line-height:1.6;color:${T.dim};">
@@ -318,15 +366,16 @@ export const renderReceipt = (event: StoredEvent): RenderedEmail | null => {
 </body></html>`;
 
   const text = [
-    `${BRAND} — ${copy.heading}`,
+    `${BRAND} — ${view.heading}`,
     '',
-    copy.lead,
-    '',
-    ...rows.map((r) => `${r.label}: ${r.value}`),
-    ...(action === null ? [] : ['', `${copy.actionLabel}: ${action}`]),
+    ...view.paragraphs,
+    ...(rows.length === 0
+      ? []
+      : ['', ...rows.map((r) => `${r.label}: ${r.value}`)]),
+    ...(action === null ? [] : ['', `${action.label}: ${action.url}`]),
     '',
     `Служба заботы: ${SUPPORT_URL}`,
   ].join('\n');
 
-  return { subject: copy.subject, html, text };
+  return { subject: view.subject, html, text };
 };

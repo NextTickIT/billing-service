@@ -76,7 +76,7 @@ const event = (over: Partial<StoredEvent> = {}): StoredEvent => ({
   payload: {
     amount: 5000,
     currency: 1,
-    method: 1,
+    method: 0,
     period: 'P4W',
     nextPaymentDate: '2026-10-30T05:45:15.000Z',
   },
@@ -172,6 +172,61 @@ describe('renderReceipt', () => {
 
   it('has no copy for an event that is not a receipt', () => {
     expect(renderReceipt(event({ name: 'payment_created' }))).toBeNull();
+  });
+});
+
+const crypto = (name: StoredEvent['name'], payload: Record<string, unknown>) =>
+  renderReceipt(
+    event({
+      name,
+      payload: {
+        amount: 5000,
+        currency: 1,
+        method: 1,
+        period: 'P4W',
+        ...payload,
+      },
+    }),
+  );
+
+describe('renderReceipt for a crypto payment', () => {
+  it('thanks the payer and points at the bot', () => {
+    const r = crypto('initial_payment_succeeded', {});
+    expect(r?.subject).toBe('Гильдия NextTick');
+    expect(r?.html).toContain('Спасибо!');
+    expect(r?.html).toContain('Доступ к NextTick открыт.');
+    expect(r?.html).toContain('Все детали — в нашем боте.');
+    expect(r?.html).toContain('href="https://t.me/next_tick_bot"');
+    expect(r?.text).toContain('Перейти в бот: https://t.me/next_tick_bot');
+  });
+
+  it('carries no payment text: no money, method or dates', () => {
+    const r = crypto('initial_payment_succeeded', {
+      periodEnd: '2026-11-22T18:29:29.000Z',
+      nextPaymentDate: '2026-11-22T18:29:29.000Z',
+    });
+    const both = `${r?.html ?? ''}\n${r?.text ?? ''}`;
+    for (const paymentText of [
+      '50.00',
+      'USD',
+      'Криптовалюта',
+      'Сумма',
+      '22.11.2026',
+    ])
+      expect(both).not.toContain(paymentText);
+  });
+
+  it('says access continues on a renewal, and links the bot, not the caller URL', () => {
+    const r = crypto('recurring_payment_succeeded', {
+      successUrl: 'https://go.test/a',
+    });
+    expect(r?.subject).toBe('Гильдия NextTick');
+    expect(r?.html).toContain('Доступ к NextTick сохраняется.');
+    expect(r?.html).not.toContain('https://go.test');
+  });
+
+  it('keeps the payment details on a card receipt', () => {
+    expect(renderReceipt(event())?.html).toContain('Карта');
   });
 });
 
