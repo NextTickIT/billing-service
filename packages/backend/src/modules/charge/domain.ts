@@ -9,6 +9,7 @@ import {
   type InitialPaymentSucceededEvent,
   type OneTimePurchaseSucceededEvent,
   type PaymentCreatedEvent,
+  type PaymentRefundedEvent,
   type RecurringPaymentFailedEvent,
   type RecurringPaymentSucceededEvent,
   scalePeriod,
@@ -35,6 +36,8 @@ import {
 import {
   makeChargeRepo,
   type ChargeRepo,
+  type QuarantinedRefund,
+  type SettledOriginal,
 } from '@/modules/charge/data-access.js';
 import { Outbox } from '@/modules/outbox/domain.js';
 import { paymentReactivated } from '@/modules/payment/cancel.js';
@@ -354,6 +357,55 @@ export const cardChangeFailed = (
   payload: { reason: declineReason(event.payload) },
 });
 
+/** The provider's refund reason (raw payload; string or code), when it gave one. */
+const refundReason = (payload: Record<string, unknown>) => {
+  // An empty string is no reason at either level, so `reason: ''` falls to `reasonCode`.
+  for (const value of [payload['reason'], payload['reasonCode']]) {
+    if (typeof value === 'string' && value !== '') {
+      return { reason: value };
+    }
+    if (typeof value === 'number') {
+      return { reason: String(value) };
+    }
+  }
+  return {};
+};
+
+/** The refund event id: keyed on the order, not the charge, so the callback copy and the
+ * poller copy of one refund are one event (docs/34 D4). */
+export const refundEventId = (orderReference: string): string =>
+  `evt_refund:${orderReference}`;
+
+/** The original a refund can be reported against: one fixed to a gateway payment. */
+export type RefundableOriginal = SettledOriginal & {
+  readonly paymentId: string;
+};
+
+/**
+ * payment_refunded — the provider returned money for a settled order (docs/34). The user
+ * and the payment are the reversed charge's fixation; the payment itself is not changed.
+ * `amount` is the magnitude the provider reported on the refund row.
+ */
+export const paymentRefunded = (
+  event: Charge,
+  original: RefundableOriginal,
+): PaymentRefundedEvent => ({
+  id: refundEventId(event.externalRef),
+  name: 'payment_refunded',
+  occurredAt: event.occurredAt,
+  correlationId: event.idemKey,
+  externalUserId: original.externalUserId,
+  aggregateId: original.paymentId,
+  payload: {
+    amount: Math.abs(event.amount),
+    currency: event.currency,
+    source: event.source,
+    orderReference: event.externalRef,
+    originalEventId: eventId(original.idemKey, 'succeeded'),
+    ...refundReason(event.payload),
+  },
+});
+
 interface IngestDeps {
   readonly enqueue: (
     input: EnqueueInput,
@@ -536,6 +588,40 @@ const recordCardChange = (
   });
 
 /**
+ * A refund (docs/34). No matcher accepts one: it is reported against the order's settled,
+ * fixed success, read under the order lock. Its quarantine row, if an earlier run left
+ * one, is closed. A refund with no such original, or whose original was bound without a
+ * payment (D11), is quarantined as any unknown charge.
+ */
+const recordRefund = (
+  deps: HandleDeps,
+  event: Charge,
+  incomingId: string,
+  admit: (original: RefundableOriginal) => boolean = () => true,
+) =>
+  Effect.gen(function* () {
+    const found = yield* deps.repo.findSettledOriginal(event.externalRef);
+    const original = Option.getOrNull(found);
+    if (original?.paymentId == null) {
+      yield* quarantine(deps, event, incomingId);
+      return 'unresolved' as const;
+    }
+    const refundable = { ...original, paymentId: original.paymentId };
+    if (!admit(refundable)) {
+      return 'skipped' as const;
+    }
+    // Read under the order lock `findSettledOriginal` took, so a concurrent copy of the
+    // same refund cannot publish between this read and the publish below.
+    const stored = yield* deps.repo.eventStored(
+      refundEventId(event.externalRef),
+    );
+    yield* deps.publish(paymentRefunded(event, refundable));
+    yield* deps.repo.resolveQuarantineByRefund(incomingId);
+    yield* deps.repo.setMatchResult(incomingId, 'matched');
+    return stored ? ('duplicate' as const) : ('emitted' as const);
+  });
+
+/**
  * Settle one incoming charge, atomically: everything after the raw upsert runs in ONE
  * transaction (claim, subscription write, fixation, events, match result), with the
  * outbox publish and the queue enqueue as savepoints on the same client. Its first
@@ -552,6 +638,10 @@ const process = (deps: HandleDeps, event: Charge) =>
     yield* deps.repo.transaction(
       Effect.gen(function* () {
         if ((yield* deps.repo.lockMatchResult(incomingId)) === 'matched') {
+          return;
+        }
+        if (event.status === 'refunded') {
+          yield* recordRefund(deps, event, incomingId);
           return;
         }
         const match = yield* deps.matcher(event);
@@ -614,6 +704,18 @@ const rebind =
         return; // incoming charge vanished — nothing to reprocess
       }
       const event = found.value;
+      if (event.status === 'refunded') {
+        // A bind settles a payment: on a refund it would report money returned as money
+        // received. A bind queued before the refund was attributed lands here too.
+        return yield* Effect.logWarning(
+          'REBIND_REFUSED the charge is a refund; nothing written',
+        ).pipe(
+          Effect.annotateLogs({
+            incomingEventId: bind.incomingEventId,
+            externalRef: event.externalRef,
+          }),
+        );
+      }
       yield* deps.repo.insertPayment({
         incomingEventId: bind.incomingEventId,
         paymentId: bind.subscriptionId,
@@ -642,6 +744,92 @@ export const rebindFromPayload =
       ),
     );
 
+/** A buyer id billing serves: a bot user (24 hex) or a calibration-site user (UUID). */
+const BUYER_ID = [
+  /^[0-9a-f]{24}$/i,
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+];
+
+export const isBuyerId = (externalUserId: string): boolean =>
+  BUYER_ID.some((pattern) => pattern.test(externalUserId));
+
+export type RefundBackfillOutcome =
+  'unresolved' | 'skipped' | 'emitted' | 'duplicate' | 'failed';
+
+export type RefundBackfillReport = Record<
+  'selected' | RefundBackfillOutcome,
+  number
+>;
+
+/**
+ * One quarantined refund through the same settlement as the pipeline, in one transaction,
+ * reporting what it did. A charge another worker settled meanwhile is already matched: its
+ * event was published by that worker, so it counts as a duplicate. An original that belongs
+ * to no buyer id is left alone, after the D11 check, so a smoke test without a fixed
+ * payment still counts as unresolved.
+ */
+const reprocessRefund = (deps: HandleDeps, row: QuarantinedRefund) =>
+  deps.repo
+    .transaction(
+      Effect.gen(function* () {
+        if ((yield* deps.repo.lockMatchResult(row.id)) === 'matched') {
+          return 'duplicate' as const;
+        }
+        return yield* recordRefund(deps, row.charge, row.id, (original) =>
+          isBuyerId(original.externalUserId),
+        );
+      }),
+    )
+    .pipe(
+      Effect.catchAllCause((cause) =>
+        Effect.logError('REFUND_BACKFILL_FAILED').pipe(
+          Effect.annotateLogs({ chargeId: row.id, cause: String(cause) }),
+          Effect.as('failed' as const),
+        ),
+      ),
+      Effect.tap((outcome) =>
+        Effect.logInfo(`REFUND_BACKFILL ${outcome}`).pipe(
+          Effect.annotateLogs({
+            chargeId: row.id,
+            externalRef: row.charge.externalRef,
+          }),
+        ),
+      ),
+    );
+
+const tally = (
+  outcomes: readonly RefundBackfillOutcome[],
+): RefundBackfillReport => {
+  const report: RefundBackfillReport = {
+    selected: outcomes.length,
+    unresolved: 0,
+    skipped: 0,
+    emitted: 0,
+    duplicate: 0,
+    failed: 0,
+  };
+  for (const outcome of outcomes) {
+    report[outcome] += 1;
+  }
+  return report;
+};
+
+/**
+ * `charges:reprocess-refunded` (docs/34 D8): run every quarantined refund through the
+ * pipeline again, for refunds that arrived before the pipeline knew them. A refund whose
+ * original belongs to no buyer id (a smoke test) is left alone. A second run selects
+ * nothing the first one resolved, so it emits nothing.
+ */
+export const reprocessRefunded = (
+  deps: HandleDeps,
+): Effect.Effect<RefundBackfillReport, SqlError.SqlError> =>
+  deps.repo.listQuarantinedRefunds().pipe(
+    Effect.flatMap((rows) =>
+      Effect.forEach(rows, (row) => reprocessRefund(deps, row)),
+    ),
+    Effect.map(tally),
+  );
+
 export interface ChargePipelineService {
   readonly ingest: (event: Charge) => Effect.Effect<void, SqlError.SqlError>;
   readonly handleFromPayload: (
@@ -650,6 +838,10 @@ export interface ChargePipelineService {
   readonly rebindFromPayload: (
     payload: unknown,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly reprocessRefunded: () => Effect.Effect<
+    RefundBackfillReport,
+    SqlError.SqlError
+  >;
 }
 
 export class ChargePipeline extends Context.Tag('PaymentPipeline')<
@@ -684,6 +876,7 @@ export const makeChargePipelineLayer = (
         ingest: ingest({ enqueue: queue.enqueue }),
         handleFromPayload: handleChargeEvent(handleDeps),
         rebindFromPayload: rebindFromPayload(handleDeps),
+        reprocessRefunded: () => reprocessRefunded(handleDeps),
       };
     }),
   );

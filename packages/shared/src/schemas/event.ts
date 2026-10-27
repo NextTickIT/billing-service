@@ -32,6 +32,7 @@ export const EVENT_NAMES = [
   'external_user_id_changed',
   'card_change_succeeded',
   'card_change_failed',
+  'payment_refunded',
   'unknown_payment_quarantined',
 ] as const;
 
@@ -416,6 +417,32 @@ export type CardChangeFailedEvent = Schema.Schema.Type<
 >;
 
 /**
+ * The provider returned money for an order that had settled a payment (docs/34). One
+ * refund per order: the id is keyed on the order, so the callback copy and the poller
+ * copy of the same refund collapse in the outbox. `aggregateId` is the payment the
+ * reversed charge was fixed to and `externalUserId` the user that charge was fixed to.
+ * The payment itself is not changed. `amount` is what the provider reported on the
+ * refund, in minor units; `originalEventId` is the id of the reversed success event.
+ */
+export const PaymentRefundedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('payment_refunded'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({
+    amount: Schema.Int.pipe(Schema.nonNegative()),
+    currency: CurrencySchema,
+    source: Schema.String,
+    orderReference: Schema.String,
+    originalEventId: Schema.String,
+    reason: Schema.optional(Schema.String),
+  }),
+});
+
+export type PaymentRefundedEvent = Schema.Schema.Type<
+  typeof PaymentRefundedEvent
+>;
+
+/**
  * An incoming payment that matched no recurrent payment (FR-009).
  * `externalUserId` is null by definition — the user is unknown until an operator
  * binds it.
@@ -484,6 +511,7 @@ export const DomainEvent = Schema.Union(
   ExternalUserIdChangedEvent,
   CardChangeSucceededEvent,
   CardChangeFailedEvent,
+  PaymentRefundedEvent,
   UnknownPaymentQuarantinedEvent,
 );
 

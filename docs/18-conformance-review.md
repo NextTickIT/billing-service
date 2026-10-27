@@ -43,9 +43,10 @@ on the SendPulse connector and production WayForPay access respectively.
 
 ## Deliberately deferred (open questions in `04` / `00-tz` §11)
 
-- Refunds & `payment_refunded` (§11.1) — a refund arrives as its own journal row
-  (verified in metatech/analytics recon); the poller already ingests it, but the
-  subscription effect and the refund event are out of this scope.
+- Refunds (§11.1) — a refund arrives as its own journal row (verified in
+  metatech/analytics recon). `payment_refunded` is now emitted, one per order (docs/34).
+  Still deferred: the refund's effect on the subscription, and partial or repeated
+  refunds of one order.
 - Mid-cycle card change (§11.2); user-initiated cancel channel (§11.3, operator
   cancel is done); currency-fixed-at-creation (§11.4, assumed yes); multiple
   Payments per user (§11.5 — interview decision: one active Payment, extend in place);

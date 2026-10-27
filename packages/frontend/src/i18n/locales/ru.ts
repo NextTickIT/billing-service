@@ -180,6 +180,7 @@ export default {
       payment_deferred: 'Платёж отложен',
       card_change_succeeded: 'Карта успешно изменена',
       card_change_failed: 'Изменение карты не удалось',
+      payment_refunded: 'Платёж возвращён',
     },
   },
 };

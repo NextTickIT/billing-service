@@ -181,6 +181,7 @@ export default {
       payment_deferred: 'Платіж відкладено',
       card_change_succeeded: 'Картку успішно змінено',
       card_change_failed: 'Зміну картки не вдалось виконати',
+      payment_refunded: 'Платіж повернено',
     },
   },
 };

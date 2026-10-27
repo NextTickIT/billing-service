@@ -26,6 +26,7 @@ kind (`checkout` → initial, `recurring` → renewal); see 22.
 | `external_user_id_changed` | a service rename remapped a user's opaque id (docs/31) — emitted ONLY when the rename opts in (`refireEvents`); `external_user_id` is the NEW id | external_user_id (new), from, to, movedPayments, movedSessions |
 | `card_change_succeeded` | a SendPulse-initiated card change tokenized/collected the new card (docs/23) | external_user_id, method |
 | `card_change_failed` | a card-change attempt was declined/errored (docs/23) | external_user_id, reason |
+| `payment_refunded` | the provider refunded an order that settled a payment; one per order, the callback and poller copies collapse on the id `evt_refund:<orderReference>` (docs/34) | external_user_id (of the reversed charge), amount, currency, source, order_reference, original_event_id; reason optional |
 | `unknown_payment_quarantined` | incoming charge went to quarantine | quarantine record reference |
 
 **`periodStart` / `periodEnd`** on the success events give the payment's paid-through

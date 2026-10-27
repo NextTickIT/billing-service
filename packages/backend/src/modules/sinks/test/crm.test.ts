@@ -384,6 +384,27 @@ const KINDS: readonly (readonly [
     },
   ],
   [
+    'payment_refunded',
+    {
+      amount: 223750,
+      currency: 0,
+      source: 'wayforpay_callback',
+      orderReference: 'chk_1',
+      originalEventId: 'evt_w4pcb:chk_1|Approved:succeeded',
+      reason: 'Refunded by merchant',
+    },
+    {
+      aggregate_id: SUBSCRIPTION,
+      correlation_id: CORRELATION,
+      amount: 223750,
+      currency: 0,
+      source: 'wayforpay_callback',
+      order_reference: 'chk_1',
+      original_event_id: 'evt_w4pcb:chk_1|Approved:succeeded',
+      reason: 'Refunded by merchant',
+    },
+  ],
+  [
     'unknown_payment_quarantined',
     {
       quarantineId: 'q_1',
@@ -462,6 +483,48 @@ describe('crmBody', () => {
       external_user_id: unknown;
     };
     expect(body.external_user_id).toBe(null);
+  });
+});
+
+describe('crmBody — payment_refunded', () => {
+  // The CRM registry (guildmaster `crmEvents.ts`) files a refund under its subscription and
+  // finds the reversed purchase by `original_event_id`; this is the whole body it receives.
+  it('posts the refund with the reversed order and success event in the payload', () => {
+    const body = crmBody({
+      id: 'evt_refund:chk_1',
+      idempotencyKey: 'evt_refund:chk_1',
+      name: 'payment_refunded',
+      occurredAt: new Date('2026-09-06T12:00:00Z'),
+      correlationId: 'w4pcb:chk_1|Refunded',
+      externalUserId: '64b7f0c2a1d3e4f5a6b7c8d9',
+      aggregateId: 'pay_1',
+      payload: {
+        amount: 223750,
+        currency: 0,
+        source: 'wayforpay_callback',
+        orderReference: 'chk_1',
+        originalEventId: 'evt_w4pcb:chk_1|Approved:succeeded',
+      },
+    });
+
+    expect(body).toEqual({
+      id: 'evt_refund:chk_1',
+      idempotency_key: 'evt_refund:chk_1',
+      name: 'payment_refunded',
+      occurred_at: '2026-09-06T12:00:00.000Z',
+      correlation_id: 'w4pcb:chk_1|Refunded',
+      external_user_id: '64b7f0c2a1d3e4f5a6b7c8d9',
+      aggregate_id: 'pay_1',
+      payload: {
+        amount: 223750,
+        currency: 0,
+        source: 'wayforpay_callback',
+        order_reference: 'chk_1',
+        original_event_id: 'evt_w4pcb:chk_1|Approved:succeeded',
+        aggregate_id: 'pay_1',
+        correlation_id: 'w4pcb:chk_1|Refunded',
+      },
+    });
   });
 });
 
@@ -571,6 +634,9 @@ describe('makeCrmConnector — what the CRM stored', () => {
     ['one_time_purchase_succeeded', 'validated', DELIVERED],
     ['one_time_purchase_succeeded', 'unregistered', PERMANENT],
     ['one_time_purchase_succeeded', 'rejected', PERMANENT],
+    ['payment_refunded', 'validated', DELIVERED],
+    ['payment_refunded', 'unregistered', PERMANENT],
+    ['payment_refunded', 'rejected', PERMANENT],
     ['renewal_failed', 'validated', DELIVERED],
     ['renewal_failed', 'unregistered', DELIVERED],
     ['renewal_failed', 'rejected', PERMANENT],

@@ -54,7 +54,7 @@ Unresolved decisions grouped by area. Resolve before or during the relevant mile
 - A: Via a new checkout session; a successful payment creates or extends the gateway subscription (00 §5.1). Whether extra business rules apply is open.
 
 - Q: Refunds: do they pass through the gateway, is there a `payment_refunded` event, and how does a refund affect the subscription? (00 §11.1)
-- A: -
+- A: Partly answered (docs/34). A WayForPay refund arrives as its own charge row (callback or poller) and emits one `payment_refunded` per order. Still open: how a refund affects the subscription (access, `currentPeriodEnd`); today it changes nothing. Partial or repeated refunds of one order are not reported (one refund per order).
 
 - Q: Card change on an active subscription without a charge failure (user wants to update the card)? (00 §11.2)
 - A: -

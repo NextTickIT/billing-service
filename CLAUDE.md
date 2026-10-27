@@ -290,9 +290,10 @@ pay_<paymentId>_<…>`; charge idemKey `w4p:<orderReference>|CHARGE|<createdDate
 
 ## 13. Deferred / open (docs/04, docs/00 §11, docs/18)
 
-Refunds and `payment_refunded`; mid-cycle card change; a user-initiated cancel channel
-(operator cancel is done); currency fixed at creation (assumed yes); multiple
-Payments per user (decision: one active Payment, extend in place); checkout-link
+The effect of a refund on the subscription, and partial or repeated refunds of one order
+(`payment_refunded` itself ships, one per order: docs/34); mid-cycle card change; a
+user-initiated cancel channel (operator cancel is done); currency fixed at creation
+(assumed yes); multiple Payments per user (decision: one active Payment, extend in place); checkout-link
 security bounds; operator role boundaries. The real SendPulse sink (stub now).
 Live-only until production WayForPay access lands: recurring CHARGE, real `recToken`
 issuance, and the regularApi migration-tail metric.
