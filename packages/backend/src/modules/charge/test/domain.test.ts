@@ -1147,9 +1147,7 @@ it.effect(
       expect(flagged.events[0]?.payload).toStrictEqual(
         plain.events[0]?.payload,
       );
-      expect(flagged.events[0]?.aggregateId).toBe(
-        plain.events[0]?.aggregateId,
-      );
+      expect(flagged.events[0]?.aggregateId).toBe(plain.events[0]?.aggregateId);
       // AC 14: a decline writes nothing (noApplier dies if called).
       expect(flagged.payments.size).toBe(0);
     }),
