@@ -90,12 +90,15 @@ export type CheckoutRenewal = Schema.Schema.Type<typeof CheckoutRenewal>;
  * - `manual_renewal`: the scheduler's manual (crypto) renewal prompt.
  * - `card_change` / `card_change_arrears`: a card change that does not / does collect
  *   an owed period.
+ * - `migration`: a caller-created checkout sent with `reportAs: "renewal"`; its outcome
+ *   reports `recurring_*`. Set only from that request field.
  */
 export const CheckoutOrigin = Schema.Literal(
   'prolong',
   'manual_renewal',
   'card_change',
   'card_change_arrears',
+  'migration',
 );
 
 export type CheckoutOrigin = Schema.Schema.Type<typeof CheckoutOrigin>;
@@ -403,6 +406,9 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       // A client that defaults this to `{}` therefore wipes the stored intent — send
       // nothing, not an empty object, when you mean "unchanged".
       metadata: Schema.optional(Metadata),
+      // Reports the first payment as a renewal (`recurring_*`) instead of `initial_*`,
+      // for a payer who already subscribed elsewhere. Recurring checkouts only.
+      reportAs: Schema.optional(Schema.Literal('renewal')),
     }),
   ),
   Schema.filter((v) => brokenRule(v, v.recurring) ?? true),
@@ -418,6 +424,11 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       v.options === undefined ||
       v.options.some((o) => sameTerms(optionTerms(o), optionTerms(v))),
     { message: () => 'the flat terms must equal one of the options' },
+  ),
+  Schema.filter((v) =>
+    v.reportAs === undefined || v.recurring
+      ? true
+      : 'reportAs is only allowed on a recurring checkout',
   ),
 );
 
