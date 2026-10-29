@@ -9,6 +9,7 @@ import {
 import { Effect, Option } from 'effect';
 import { describe, expect, test } from 'vitest';
 
+import { cycleOptions } from '@/modules/checkout/domain.js';
 import { resolvePayableSessionId } from '@/modules/checkout/routes.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 
@@ -316,6 +317,50 @@ describe("T23: a lapsed link re-mints at the live sub's current terms", () => {
       });
     },
   );
+});
+
+describe('a lapsed pay-now (prolong) link keeps its cycle choices', () => {
+  const OPTIONS = cycleOptions([1, 3, 6]);
+
+  const lapsedPayNow = (over: Partial<CheckoutSession> = {}) =>
+    session({
+      origin: 'prolong',
+      renewalOf: 'pay_live',
+      options: OPTIONS,
+      promo: null,
+      method: 1,
+      idempotencyKey: 'paynow:pay_live:1',
+      ...over,
+    });
+
+  test('a live sub re-mints with the same options, origin and the live sub’s ids', () => {
+    const { repo, minted } = repoWith(lapsedPayNow());
+    const result = run(repo, subscription(PaymentStatus.Active), 1);
+
+    expect(result._tag).toBe('Right');
+    expect(minted).toHaveLength(1);
+    expect(minted[0]).toMatchObject({
+      origin: 'prolong',
+      renewalOf: 'pay_live',
+      method: 1,
+      options: [{ cycles: 1 }, { cycles: 3 }, { cycles: 6 }],
+      idempotencyKey: null,
+    });
+  });
+
+  test('a stale method re-mints locked to the sub’s method with the options kept', () => {
+    // The link was minted for method 0 and the sub has since moved to method 1.
+    const { repo, minted } = repoWith(lapsedPayNow({ method: 0 }));
+    const result = run(repo, subscription(PaymentStatus.Active), 1);
+
+    expect(result._tag).toBe('Right');
+    expect(minted[0]).toMatchObject({
+      origin: 'prolong',
+      renewalOf: 'pay_live',
+      method: 1,
+      options: [{ cycles: 1 }, { cycles: 3 }, { cycles: 6 }],
+    });
+  });
 });
 
 describe('T23: a lapsed manual-renewal link', () => {

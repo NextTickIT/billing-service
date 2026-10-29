@@ -12,6 +12,7 @@ import { expect } from 'vitest';
 import type { Charge } from '@/modules/charge/contracts.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
+  cycleOptions,
   makeCardChangeMatcher,
   manualRenewalSession,
   prolongSession,
@@ -65,6 +66,32 @@ it('prolongSession is a recurring checkout at the sub terms, method-locked by or
     expiresAt: EXPIRES,
   });
 });
+
+it.each([
+  [
+    '[1,3,6] stores one option per cycle count',
+    [1, 3, 6],
+    [{ cycles: 1 }, { cycles: 3 }, { cycles: 6 }],
+  ],
+  ['[1] stores no options', [1], null],
+] as const)(
+  'a pay-now prolong session with cycles %s',
+  (_label, cycles, expected) => {
+    const session = {
+      ...prolongSession(sub, 'chk_pn', sub.nextPaymentDate, 'paynow:sub_1:1'),
+      options: cycleOptions(cycles),
+    };
+    expect(session.options).toEqual(expected);
+    expect(session).toMatchObject({
+      origin: 'prolong',
+      renewalOf: 'sub_1',
+      method: PaymentMethod.Crypto,
+      promo: null,
+      renewal: null,
+      expiresAt: sub.nextPaymentDate,
+    });
+  },
+);
 
 it('manualRenewalSession is the same session labelled manual_renewal', () => {
   expect(manualRenewalSession(sub, 'chk_m', EXPIRES, 'manual:sub_1:1')).toEqual(

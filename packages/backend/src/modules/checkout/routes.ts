@@ -584,9 +584,13 @@ const remintedIntent = (
   successUrl: session.successUrl,
   failureUrl: session.failureUrl,
   email: session.email,
-  // A manual renewal keeps its cycle choices: they are multiples of whatever the live
-  // sub's terms are. A caller's priced options are the stale link's terms, so they go.
-  options: origin === 'manual_renewal' ? session.options : null,
+  // A manual renewal and a prolong (pay-now or on-demand) link keep their cycle choices:
+  // they are multiples of whatever the live sub's terms are. A caller's priced options
+  // are the stale link's terms, so they go.
+  options:
+    origin === 'manual_renewal' || origin === 'prolong'
+      ? session.options
+      : null,
 });
 
 /** The replacement for a lapsed, re-issuable recurring checkout (rules on

@@ -56,3 +56,16 @@ it('an end equal to paidAt as a distinct Date instance counts as reached', () =>
   expect(anchors.currentPeriodStart).toEqual(d('2026-02-01'));
   expect(anchors.currentPeriodEnd).toEqual(d('2026-03-01'));
 });
+
+it('three monthly cycles paid a day before the end stack to the end plus three months', () => {
+  const row = {
+    currentPeriodStart: d('2025-11-09'),
+    currentPeriodEnd: d('2025-12-09'),
+  };
+
+  expect(stackAnchors(row, 'P1M', d('2025-12-08'), 3)).toEqual({
+    currentPeriodStart: d('2025-11-09'),
+    currentPeriodEnd: d('2026-03-09'),
+    nextPaymentDate: d('2026-03-09'),
+  });
+});

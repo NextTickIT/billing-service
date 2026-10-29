@@ -110,6 +110,46 @@ describe('option resolution', () => {
   });
 });
 
+/** A pay-now link: a prolong session selling 1, 3 or 6 cycles of the sub's terms. */
+const prolong: CheckoutSession = {
+  ...base,
+  origin: 'prolong',
+  renewalOf: 'sub_1',
+  options: cycleOptions([1, 3, 6]),
+};
+
+describe('a prolong session with cycles', () => {
+  it('shows each cycle count with its total and the time it buys', () => {
+    expect(defaultOptionIndex(prolong)).toBe(0);
+    expect(
+      publicOptions(prolong).map((o) => [o.amount, o.period, o.cycles]),
+    ).toEqual([
+      [5000, 'P4W', 1],
+      [15000, 'P12W', 3],
+      [30000, 'P24W', 6],
+    ]);
+  });
+
+  it('a pick resolves to its cycle choice and an out-of-range pick to none', () => {
+    expect(choiceAt(prolong, 2)).toEqual(
+      Option.some({ kind: 'cycles', cycles: 6 }),
+    );
+    expect(choiceAt(prolong, 3)).toEqual(Option.none());
+    expect(
+      Option.map(chosenTerms(prolong, { kind: 'cycles', cycles: 3 }), (c) => [
+        c.total,
+        c.cycles,
+      ]),
+    ).toEqual(Option.some([15000, 3]));
+  });
+
+  it('with the knob at 1 the session offers its flat terms alone', () => {
+    const single = { ...prolong, options: cycleOptions([1]) };
+    expect(publicOptions(single)).toHaveLength(1);
+    expect(offeredCycles(single)).toEqual([1]);
+  });
+});
+
 describe('cycle choices', () => {
   it('a cycle choice charges n × base but keeps the base terms for the subscription', () => {
     expect(chosenTerms(manual, { kind: 'cycles', cycles: 3 })).toEqual(
