@@ -53,6 +53,14 @@ import { makeWorkerRuntime } from '@/runtime.js';
  */
 export type { EffectE2eContext, EffectScenario };
 
+/** A tick with no notice sweep; the guard grace is irrelevant to these scenarios. */
+const NO_NOTICE_CONFIG = {
+  intervalSeconds: 60,
+  batchSize: 10,
+  upcomingChargeNoticeDays: [],
+  payNowClaimGraceSeconds: 3600,
+};
+
 const charge = (idemKey: string): Charge => ({
   source: 'test',
   idemKey,
@@ -431,10 +439,11 @@ const driveScheduler = Effect.gen(function* () {
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
+      mintPayNow: () => Effect.die('unused'),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+    NO_NOTICE_CONFIG,
   );
   yield* drain;
 });
@@ -601,10 +610,11 @@ const driveLapse = Effect.gen(function* () {
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
+      mintPayNow: () => Effect.die('unused'),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+    NO_NOTICE_CONFIG,
   );
   yield* drain;
 });
@@ -1023,10 +1033,11 @@ const driveCancelPastDue = Effect.gen(function* () {
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
+      mintPayNow: () => Effect.die('unused'),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+    NO_NOTICE_CONFIG,
   );
   yield* drain;
 });
@@ -1160,10 +1171,11 @@ const driveCancelUpstream = Effect.gen(function* () {
           ),
         ),
       claimAdvance: ledgerClaimAdvance(sql),
+      mintPayNow: () => Effect.die('unused'),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+    NO_NOTICE_CONFIG,
   );
   yield* drain;
 });

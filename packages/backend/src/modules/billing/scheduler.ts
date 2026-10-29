@@ -25,6 +25,7 @@ import {
   withSettlement,
   chargeRetryFailed,
   type ManualCheckout,
+  type PayNowLink,
   paymentManualRequired,
   upcomingCharge,
   renewalFailed,
@@ -63,6 +64,13 @@ export interface SchedulerDeps {
     sub: Payment,
     now: Date,
   ) => Effect.Effect<ManualCheckout, SqlError.SqlError | ForeignManualCheckout>;
+  /** Mint (or find) the pay-now link for a sub's upcoming charge: a prolong session at the
+   * sub's terms. Idempotent per (sub, due date), so the 3-day and 1-day notices carry the
+   * same link. `NO_PAY_NOW` for a rail that cannot take a payment now; an error skips this
+   * notice until the next tick. */
+  readonly mintPayNow: (
+    sub: Payment,
+  ) => Effect.Effect<PayNowLink, SqlError.SqlError>;
   /** Run the post-charge write as ONE transaction under the persistent per-attempt claim
    * `scheduler.advance:{orderReference}` (the idempotency ledger): the first run commits
    * the claim with its result, a later run for the same attempt replays it untouched. */
@@ -99,7 +107,12 @@ export interface SchedulerConfig {
   readonly batchSize: number;
   /** Days before a charge to announce it; empty disables the notice sweep. */
   readonly upcomingChargeNoticeDays: readonly number[];
+  /** Seconds a due charge waits for a prolong session the payer just claimed; 0 = off. */
+  readonly payNowClaimGraceSeconds: number;
 }
+
+/** One day in milliseconds. */
+export const DAY_MS = 86_400_000;
 
 /** Deterministic per attempt: the timestamp changes only when the schedule moves. */
 const orderReferenceFor = (sub: Payment): string =>
@@ -133,6 +146,7 @@ interface TickContext {
   readonly deps: SchedulerDeps;
   readonly state: SchedulerState;
   readonly now: Date;
+  readonly payNowClaimGraceSeconds: number;
 }
 
 /**
@@ -399,11 +413,36 @@ const chargeOne = (ctx: TickContext, snapshot: Payment) =>
     yield* chargeCard(ctx, sub);
   });
 
+/** One sub's notice: mint its pay-now link, then publish. Any failure is logged and
+ * swallowed, so a bad row costs only its own notice (the next tick retries it). */
+const noticeOne = (
+  deps: SchedulerDeps,
+  sub: Payment,
+  days: number,
+  now: Date,
+) =>
+  deps.mintPayNow(sub).pipe(
+    Effect.flatMap((link) =>
+      deps.publish(upcomingCharge(sub, days, now, link)),
+    ),
+    Effect.catchAllCause((cause) =>
+      Effect.logError('scheduler: notice failed').pipe(
+        Effect.annotateLogs({
+          paymentId: sub.id,
+          noticeDays: days,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    ),
+  );
+
 /**
  * Send advance notices for charges coming up on each configured offset.
  *
- * Runs on the same tick as the charge sweep but is strictly read-then-publish: it never
- * charges and never moves a date, so a failure here can only cost a notice, never money.
+ * Runs on the same tick as the charge sweep. It never charges and never moves a date, so
+ * a failure here can only cost a notice, never money. It does write one thing: each notice
+ * mints (or finds) the sub's pay-now link, which inserts a checkout session. That insert is
+ * idempotent per (sub, due date), so re-runs and the second offset reuse the same session.
  * Exactly-once comes from the event id, which pins (payment, due date, offset) — the
  * outbox's `ON CONFLICT (id) DO NOTHING` absorbs every re-run, so a 5-minute tick does
  * not mean a notice every 5 minutes.
@@ -420,18 +459,7 @@ const noticeSweep = (deps: SchedulerDeps, config: SchedulerConfig, now: Date) =>
         // Isolate each notice: one bad row must not cost the rest their warning.
         yield* Effect.forEach(
           upcoming,
-          (sub) =>
-            deps.publish(upcomingCharge(sub, days, now)).pipe(
-              Effect.catchAllCause((cause) =>
-                Effect.logError('scheduler: notice failed').pipe(
-                  Effect.annotateLogs({
-                    paymentId: sub.id,
-                    noticeDays: days,
-                    cause: Cause.pretty(cause),
-                  }),
-                ),
-              ),
-            ),
+          (sub) => noticeOne(deps, sub, days, now),
           { discard: true },
         );
       }),
@@ -450,7 +478,15 @@ export const scheduleTick = (
     yield* Effect.forEach(
       due,
       (sub) =>
-        chargeOne({ deps, state, now }, sub).pipe(
+        chargeOne(
+          {
+            deps,
+            state,
+            now,
+            payNowClaimGraceSeconds: config.payNowClaimGraceSeconds,
+          },
+          sub,
+        ).pipe(
           Effect.catchAllCause((cause) =>
             Effect.logError('scheduler: charge failed').pipe(
               Effect.annotateLogs({

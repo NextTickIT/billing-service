@@ -87,9 +87,15 @@ const driveTick = (config: AppConfig, holder: Holder) =>
         upstreamCancelled: () => Effect.succeed(false),
         cancelUpstream: die,
         claimAdvance: ledgerClaimAdvance(sql),
+        mintPayNow: () => Effect.die('unused'),
         createManualCheckout: manualCheckoutMinter(sql, config),
       },
-      { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+      {
+        intervalSeconds: 60,
+        batchSize: 10,
+        upcomingChargeNoticeDays: [],
+        payNowClaimGraceSeconds: 3600,
+      },
     );
   });
 

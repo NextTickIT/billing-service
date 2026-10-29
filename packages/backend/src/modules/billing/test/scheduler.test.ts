@@ -31,6 +31,7 @@ const config = {
   intervalSeconds: 60,
   batchSize: 10,
   upcomingChargeNoticeDays: [],
+  payNowClaimGraceSeconds: 3600,
 };
 
 /** "Now" for every tick: after every fixture's due date, so `findDue`'s rows are due. */
@@ -267,11 +268,10 @@ const makeDeps = (sub: Payment, options: DepsOptions = {}) => {
       }),
     upstreamCancelled: () => Effect.succeed(options.upstreamCancelled ?? false),
     cancelUpstream: (payment) =>
-      Effect.sync(() => {
-        calls.cancelledUpstream.push(payment);
-      }),
+      Effect.sync(() => void calls.cancelledUpstream.push(payment)),
     createManualCheckout: manualCheckoutStub(calls),
     claimAdvance: fakeLedger(rows, calls),
+    mintPayNow: () => Effect.die('unused'),
   };
   return { deps, calls, lapseCalls, rows };
 };

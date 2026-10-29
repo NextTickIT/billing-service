@@ -4,16 +4,23 @@ import {
   type Payment,
   PaymentStatus,
 } from '@billing-service/shared';
+import { SqlError } from '@effect/sql';
 import { Effect } from 'effect';
 import { expect } from 'vitest';
 
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
+import { NO_PAY_NOW, type PayNowLink } from '@/modules/billing/events.js';
 import {
   scheduleTick,
   type SchedulerDeps,
 } from '@/modules/billing/scheduler.js';
 
 const die = () => Effect.die('unused on the notice path');
+
+const LINK: PayNowLink = {
+  checkoutUrl: 'https://bill.example/checkout/chk_1',
+  cycleOptions: [1, 3, 6],
+};
 
 const sub = (over: Partial<Payment> = {}): Payment => ({
   id: 'sub-1',
@@ -41,6 +48,7 @@ const sub = (over: Partial<Payment> = {}): Payment => ({
 const deps = (
   upcoming: Record<number, readonly Payment[]>,
   published: DomainEvent[],
+  mintPayNow: SchedulerDeps['mintPayNow'] = () => Effect.succeed(LINK),
 ): SchedulerDeps =>
   ({
     subs: {
@@ -58,12 +66,14 @@ const deps = (
     upstreamCancelled: () => Effect.succeed(false),
     cancelUpstream: die,
     createManualCheckout: die,
+    mintPayNow,
   }) as unknown as SchedulerDeps;
 
 const cfg = (days: readonly number[]) => ({
   intervalSeconds: 60,
   batchSize: 10,
   upcomingChargeNoticeDays: days,
+  payNowClaimGraceSeconds: 3600,
 });
 
 it.effect('announces a charge once per configured offset', () =>
@@ -96,6 +106,8 @@ it.effect('carries the charge date, amount and period the customer needs', () =>
       period: 'P1M',
       chargeDate: '2026-10-02T09:00:00.000Z',
       noticeDays: 3,
+      checkoutUrl: LINK.checkoutUrl,
+      cycleOptions: [1, 3, 6],
     });
     // The event stays canonical — rendering is the sink's job, so no *_formatted here.
     expect(Object.keys(notice?.payload ?? {})).not.toContain(
@@ -189,5 +201,119 @@ it.effect('one bad notice does not cost the others theirs', () =>
     yield* scheduleTick(flaky, cfg([3]));
 
     expect(published.map((e) => e.aggregateId)).toEqual(['good']);
+  }),
+);
+
+const mintFailure = () =>
+  new SqlError.SqlError({ cause: new Error('boom'), message: 'mint failed' });
+
+it.effect('passes the minted link through, both fields', () =>
+  Effect.gen(function* () {
+    const published: DomainEvent[] = [];
+    yield* scheduleTick(deps({ 3: [sub()] }, published), cfg([3]));
+
+    const notice = published.find((e) => e.name === 'upcoming_charge');
+    expect(notice?.payload.checkoutUrl).toBe(LINK.checkoutUrl);
+    expect(notice?.payload.cycleOptions).toEqual([1, 3, 6]);
+  }),
+);
+
+it.effect('no pay-now link: a null url and no cycle options', () =>
+  Effect.gen(function* () {
+    const published: DomainEvent[] = [];
+    yield* scheduleTick(
+      deps({ 3: [sub()] }, published, () => Effect.succeed(NO_PAY_NOW)),
+      cfg([3]),
+    );
+
+    const notice = published.find((e) => e.name === 'upcoming_charge');
+    expect(notice?.payload.checkoutUrl).toBeNull();
+    expect(notice?.payload.cycleOptions).toEqual([]);
+  }),
+);
+
+it.effect(
+  'a failed mint skips that notice only, and the next tick sends it',
+  () =>
+    Effect.gen(function* () {
+      const published: DomainEvent[] = [];
+      let healthy = false;
+      const mint: SchedulerDeps['mintPayNow'] = (s) =>
+        s.id === 'sub-1' && !healthy
+          ? Effect.fail(mintFailure())
+          : Effect.succeed(LINK);
+      const upcoming = { 3: [sub({ id: 'sub-1' }), sub({ id: 'sub-2' })] };
+
+      yield* scheduleTick(deps(upcoming, published, mint), cfg([3]));
+      expect(published.map((e) => e.aggregateId)).toEqual(['sub-2']);
+
+      healthy = true;
+      yield* scheduleTick(deps(upcoming, published, mint), cfg([3]));
+      const second = published.filter((e) => e.aggregateId === 'sub-1');
+      expect(second).toHaveLength(1);
+      const notice = second[0];
+      expect(
+        notice?.name === 'upcoming_charge' ? notice.payload.checkoutUrl : null,
+      ).toBe(LINK.checkoutUrl);
+    }),
+);
+
+it.effect('the event id is the same with and without a link', () =>
+  Effect.gen(function* () {
+    const withLink: DomainEvent[] = [];
+    const without: DomainEvent[] = [];
+    yield* scheduleTick(deps({ 3: [sub()] }, withLink), cfg([3]));
+    yield* scheduleTick(
+      deps({ 3: [sub()] }, without, () => Effect.succeed(NO_PAY_NOW)),
+      cfg([3]),
+    );
+
+    expect(withLink[0]?.id).toBe(without[0]?.id);
+  }),
+);
+
+it.effect('the 3-day and 1-day notices mint for the same (id, due date)', () =>
+  Effect.gen(function* () {
+    const published: DomainEvent[] = [];
+    const keys: string[] = [];
+    const minted = new Map<string, PayNowLink>();
+    // Key-memoizing, as the real minter is: one session per (sub, due date).
+    const mint: SchedulerDeps['mintPayNow'] = (s) =>
+      Effect.sync(() => {
+        const key = `${s.id}:${s.nextPaymentDate.getTime().toString()}`;
+        keys.push(key);
+        const existing = minted.get(key);
+        if (existing !== undefined) return existing;
+        const link: PayNowLink = {
+          checkoutUrl: `https://bill.example/checkout/chk_${minted.size.toString()}`,
+          cycleOptions: [1],
+        };
+        minted.set(key, link);
+        return link;
+      });
+    const s = sub();
+    yield* scheduleTick(deps({ 3: [s], 1: [s] }, published, mint), cfg([3, 1]));
+
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+    const urls = published.map((e) =>
+      e.name === 'upcoming_charge' ? e.payload.checkoutUrl : undefined,
+    );
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toBe(urls[1]);
+    expect(urls[0]).not.toBeNull();
+  }),
+);
+
+it.effect('a due date of Mar 9 is announced as Mar 9', () =>
+  Effect.gen(function* () {
+    const published: DomainEvent[] = [];
+    const moved = sub({
+      nextPaymentDate: new Date('2026-03-09T09:00:00.000Z'),
+    });
+    yield* scheduleTick(deps({ 3: [moved] }, published), cfg([3]));
+
+    const notice = published.find((e) => e.name === 'upcoming_charge');
+    expect(notice?.payload.chargeDate).toBe('2026-03-09T09:00:00.000Z');
   }),
 );

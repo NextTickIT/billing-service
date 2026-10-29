@@ -92,6 +92,7 @@ const TICK = {
   intervalSeconds: 60,
   batchSize: 10,
   upcomingChargeNoticeDays: [],
+  payNowClaimGraceSeconds: 3600,
 };
 const USD = 1;
 const CREATED = String(CheckoutSessionStatus.Created);
@@ -176,6 +177,7 @@ const schedulerDeps = (overrides: Partial<SchedulerDeps> = {}) =>
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.die('no upstream cancel expected'),
       claimAdvance: ledgerClaimAdvance(sql),
+      mintPayNow: () => Effect.die('unused'),
       createManualCheckout: () => Effect.die('no manual checkout expected'),
       ...overrides,
     };

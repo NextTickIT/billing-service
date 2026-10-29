@@ -58,10 +58,16 @@ const seedDueAndCharge = Effect.gen(function* () {
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
+      mintPayNow: () => Effect.die('unused'),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+    {
+      intervalSeconds: 60,
+      batchSize: 10,
+      upcomingChargeNoticeDays: [],
+      payNowClaimGraceSeconds: 3600,
+    },
   );
 });
 

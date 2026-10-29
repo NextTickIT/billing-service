@@ -29,7 +29,7 @@ import {
   ChargePipeline,
   type ChargePipelineService,
 } from '@/modules/charge/domain.js';
-import { sinkCancelled } from '@/modules/billing/events.js';
+import { NO_PAY_NOW, sinkCancelled } from '@/modules/billing/events.js';
 import {
   ForeignManualCheckout,
   ledgerClaimAdvance,
@@ -353,11 +353,14 @@ const startScheduler = (
           // Token-less (crypto) renewal prompt (docs/28): mint/reuse our internal checkout.
           createManualCheckout: manualCheckoutMinter(sql, config),
           claimAdvance: ledgerClaimAdvance(sql),
+          // US-004 replaces this with payNowMinter
+          mintPayNow: () => Effect.succeed(NO_PAY_NOW),
         },
         {
           intervalSeconds: config.scheduler.intervalSeconds,
           batchSize: config.scheduler.batchSize,
           upcomingChargeNoticeDays: config.scheduler.upcomingChargeNoticeDays,
+          payNowClaimGraceSeconds: config.scheduler.payNowClaimGraceSeconds,
         },
       ),
     );
