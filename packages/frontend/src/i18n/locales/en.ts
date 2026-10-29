@@ -180,6 +180,7 @@ export default {
       payment_deferred: 'Payment deferred',
       card_change_succeeded: 'Card change succeeded',
       card_change_failed: 'Card change failed',
+      payment_refunded: 'Payment refunded',
     },
   },
 };

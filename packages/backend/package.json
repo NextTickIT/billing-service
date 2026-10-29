@@ -14,7 +14,8 @@
     "lint": "eslint src test",
     "start": "node dist/main.js",
     "start:worker": "node dist/worker.js",
-    "db:migrate": "tsx src/db-migrate.ts"
+    "db:migrate": "tsx src/db-migrate.ts",
+    "charges:reprocess-refunded": "tsx src/worker.ts charges:reprocess-refunded"
   },
   "dependencies": {
     "@billing-service/shared": "*",

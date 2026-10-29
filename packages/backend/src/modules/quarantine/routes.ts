@@ -19,7 +19,10 @@ import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { authenticate, requireRole } from '@/modules/auth/domain.js';
 import { PAYMENT_REBIND } from '@/modules/charge/contracts.js';
-import { makeChargeRepo } from '@/modules/charge/data-access.js';
+import {
+  type ChargeRepo,
+  makeChargeRepo,
+} from '@/modules/charge/data-access.js';
 
 type BindBody = Schema.Schema.Type<typeof QuarantineBindRequest>;
 
@@ -43,6 +46,25 @@ const operatorActor = (request: FastifyRequest) => {
 const readId = (request: FastifyRequest): string =>
   (request.params as { readonly id: string }).id;
 
+/**
+ * A bind settles a payment, and a refund is money returned: binding one would report it as
+ * money received. The worker refuses a bind already queued; this refuses a new one before
+ * it is queued, so the operator sees why instead of a 202 that does nothing (docs/34).
+ */
+const refuseRefund = (repo: ChargeRepo, incomingEventId: string) =>
+  repo.getIncomingChargeById(incomingEventId).pipe(
+    Effect.flatMap((charge) =>
+      Option.isSome(charge) && charge.value.status === 'refunded'
+        ? Effect.fail(
+            new UnprocessableEntity({
+              reason:
+                'the charge is a refund and cannot be bound as a payment; once its original payment is settled, run charges:reprocess-refunded (docs/34)',
+            }),
+          )
+        : Effect.void,
+    ),
+  );
+
 const bind = (body: BindBody, request: FastifyRequest) =>
   Effect.gen(function* () {
     assertBffSecret(request);
@@ -61,6 +83,7 @@ const bind = (body: BindBody, request: FastifyRequest) =>
         new UnprocessableEntity({ reason: 'quarantine already resolved' }),
       );
     }
+    yield* refuseRefund(repo, found.value.incomingEventId);
     yield* repo.insertAudit({
       actor: Role[actor.role],
       action: 'bind_quarantine',

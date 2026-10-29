@@ -10,6 +10,7 @@ import {
 } from './http-harness.js';
 import { optionsScenarios } from './options.e2e.js';
 import { prolongScenarios } from './prolong.e2e.js';
+import { refundBindScenarios } from './refund-bind.e2e.js';
 import type { Scenario } from './http-harness.js';
 
 /**
@@ -421,4 +422,5 @@ export const edgeScenarios: readonly Scenario[] = [
   },
   ...prolongScenarios,
   ...optionsScenarios,
+  ...refundBindScenarios,
 ];

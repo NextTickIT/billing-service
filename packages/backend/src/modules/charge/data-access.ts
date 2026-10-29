@@ -41,6 +41,23 @@ export interface ChargeFixation {
   readonly occurredAt: Date;
 }
 
+/**
+ * The success a refund reverses: the settled charge of the order and the fixation that
+ * recorded it. `idemKey` is the success charge's key, from which its event id derives.
+ */
+export interface SettledOriginal {
+  readonly idemKey: string;
+  readonly externalUserId: string;
+  /** null when an operator bound the success without a gateway payment. */
+  readonly paymentId: string | null;
+}
+
+/** A refund charge still in quarantine, as the refund backfill selects it. */
+export interface QuarantinedRefund {
+  readonly id: string;
+  readonly charge: Charge;
+}
+
 export interface AuditEntry {
   readonly actor: string;
   readonly action: string;
@@ -89,6 +106,16 @@ export interface ChargeRepo {
     externalRef: string,
     id: string,
   ) => Effect.Effect<boolean, SqlError.SqlError>;
+  /**
+   * Under the same per-order lock as `orderSettledByAnotherCopy`, the order's settled
+   * success that carries a fixation. A duplicate success copy is marked matched with no
+   * fixation, so the join is what picks the charge that was actually recorded. Should an
+   * order ever carry two fixations, one fixed to a payment wins over one bound without,
+   * then the earliest.
+   */
+  readonly findSettledOriginal: (
+    externalRef: string,
+  ) => Effect.Effect<Option.Option<SettledOriginal>, SqlError.SqlError>;
   readonly insertPayment: (
     input: NewPayment,
   ) => Effect.Effect<void, SqlError.SqlError>;
@@ -113,6 +140,22 @@ export interface ChargeRepo {
     incomingEventId: string,
     boundPaymentId: string | null,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /**
+   * Close a refund charge's quarantine row, if it has one, because the refund was
+   * attributed to its original. No payment is bound: that is `resolveQuarantine`.
+   */
+  readonly resolveQuarantineByRefund: (
+    incomingEventId: string,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  /** Whether the outbox holds an event with this id (read inside a settlement). */
+  readonly eventStored: (
+    id: string,
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
+  /** Every refund charge still quarantined, oldest first (the refund backfill). */
+  readonly listQuarantinedRefunds: () => Effect.Effect<
+    readonly QuarantinedRefund[],
+    SqlError.SqlError
+  >;
   readonly insertAudit: (
     entry: AuditEntry,
   ) => Effect.Effect<void, SqlError.SqlError>;
@@ -152,7 +195,7 @@ const lockMatchResult = (sql: SqlClient.SqlClient) => (id: string) =>
 
 const orderSettledByAnotherCopy =
   (sql: SqlClient.SqlClient) => (externalRef: string, id: string) =>
-    sql`SELECT pg_advisory_xact_lock(hashtext(${`charge-order:${externalRef}`}))`.pipe(
+    orderLock(sql, externalRef).pipe(
       Effect.andThen(
         sql<{ readonly settled: boolean }>`
           SELECT EXISTS (
@@ -163,6 +206,26 @@ const orderSettledByAnotherCopy =
         `,
       ),
       Effect.map((rows) => rows[0]?.settled === true),
+    );
+
+const orderLock = (sql: SqlClient.SqlClient, externalRef: string) =>
+  sql`SELECT pg_advisory_xact_lock(hashtext(${`charge-order:${externalRef}`}))`;
+
+const findSettledOriginal =
+  (sql: SqlClient.SqlClient) => (externalRef: string) =>
+    orderLock(sql, externalRef).pipe(
+      Effect.andThen(
+        sql<SettledOriginal>`
+          SELECT c."idemKey", f."externalUserId", f."paymentId"
+          FROM charges c
+          JOIN charge_fixations f ON f."incomingEventId" = c.id
+          WHERE c."externalRef" = ${externalRef}
+            AND c.status = 'succeeded' AND c."matchResult" = 'matched'
+          ORDER BY (f."paymentId" IS NULL), f."occurredAt", f.id
+          LIMIT 1
+        `,
+      ),
+      Effect.map((rows) => Option.fromNullable(rows[0])),
     );
 
 const insertPayment = (sql: SqlClient.SqlClient) => (input: NewPayment) =>
@@ -199,6 +262,11 @@ interface ChargeRow {
   readonly payload: Record<string, unknown>;
 }
 
+const chargeOf = (row: ChargeRow): Charge => ({
+  ...row,
+  status: row.status as ChargeStatus,
+});
+
 const getIncomingChargeById = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<ChargeRow>`
     SELECT source, "idemKey", "externalRef", "externalUserId", amount, currency,
@@ -206,12 +274,7 @@ const getIncomingChargeById = (sql: SqlClient.SqlClient) => (id: string) =>
     FROM charges WHERE id = ${id}
   `.pipe(
     Effect.map((rows) => Option.fromNullable(rows[0])),
-    Effect.map(
-      Option.map((r): Charge => ({
-        ...r,
-        status: r.status as ChargeStatus,
-      })),
-    ),
+    Effect.map(Option.map(chargeOf)),
   );
 
 const listOpenQuarantine = (sql: SqlClient.SqlClient) => () =>
@@ -241,6 +304,32 @@ const resolveQuarantine =
       WHERE "incomingEventId" = ${incomingEventId}
     `.pipe(Effect.asVoid);
 
+const resolveQuarantineByRefund =
+  (sql: SqlClient.SqlClient) => (incomingEventId: string) =>
+    sql`
+      UPDATE quarantine_records
+      SET status = 'resolved', "resolvedAt" = now()
+      WHERE "incomingEventId" = ${incomingEventId} AND status = 'open'
+    `.pipe(Effect.asVoid);
+
+const eventStored = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql<{ readonly found: boolean }>`
+    SELECT EXISTS (SELECT 1 FROM domain_events WHERE id = ${id}) AS found
+  `.pipe(Effect.map((rows) => rows[0]?.found === true));
+
+const listQuarantinedRefunds = (sql: SqlClient.SqlClient) => () =>
+  sql<ChargeRow & { readonly id: string }>`
+    SELECT id, source, "idemKey", "externalRef", "externalUserId", amount, currency,
+           status, "occurredAt", payload
+    FROM charges
+    WHERE status = 'refunded' AND "matchResult" = 'quarantined'
+    ORDER BY "occurredAt", id
+  `.pipe(
+    Effect.map((rows) =>
+      rows.map(({ id, ...row }) => ({ id, charge: chargeOf(row) })),
+    ),
+  );
+
 const insertAudit = (sql: SqlClient.SqlClient) => (entry: AuditEntry) =>
   sql`
     INSERT INTO audit_log (actor, action, "targetType", "targetId", detail)
@@ -263,12 +352,16 @@ export const makeChargeRepo = (sql: SqlClient.SqlClient): ChargeRepo => ({
   setMatchResult: setMatchResult(sql),
   lockMatchResult: lockMatchResult(sql),
   orderSettledByAnotherCopy: orderSettledByAnotherCopy(sql),
+  findSettledOriginal: findSettledOriginal(sql),
   insertPayment: insertPayment(sql),
   upsertQuarantine: upsertQuarantine(sql),
   getIncomingChargeById: getIncomingChargeById(sql),
   listOpenQuarantine: listOpenQuarantine(sql),
   getQuarantine: getQuarantine(sql),
   resolveQuarantine: resolveQuarantine(sql),
+  resolveQuarantineByRefund: resolveQuarantineByRefund(sql),
+  eventStored: eventStored(sql),
+  listQuarantinedRefunds: listQuarantinedRefunds(sql),
   insertAudit: insertAudit(sql),
   findChargesByPayment: findChargesByPayment(sql),
 });

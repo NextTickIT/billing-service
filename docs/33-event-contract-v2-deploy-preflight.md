@@ -329,6 +329,44 @@ record the off and on times, and have B5 re-post every event whose
 `domain_events."createdAt"` falls in that window as well (§2 step 2, including the wait for
 the sink cache).
 
+(e) **Adding `payment_refunded` (docs/34) to a sink that is already enabled.** The CRM
+must answer `validated` for it before the billing release that emits it is deployed: the
+kind is a money kind for this sink, so any other answer dead-letters every refund. With the
+CRM owner's sign-off, as in (c), post one refund with a fresh `id` and the agreed test
+`external_user_id`, expect `"schema_status":"validated"`, then delete it through the CRM
+admin. The CRM writes no `payments` row for a refund (plan D12), so this test row moves no
+money. `original_event_id` and `order_reference` are required by the CRM registry;
+`reason` is optional.
+
+```sh
+NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+cat > preflight-payment_refunded.json <<JSON
+{
+  "id": "evt_preflight_refund_1",
+  "idempotency_key": "evt_preflight_refund_1",
+  "name": "payment_refunded",
+  "occurred_at": "${NOW}",
+  "external_user_id": "<the agreed test external_user_id>",
+  "correlation_id": "preflight-refund-1",
+  "aggregate_id": "preflight-payment-1",
+  "payload": {
+    "amount": 150000,
+    "currency": 0,
+    "source": "wayforpay_callback",
+    "order_reference": "preflight-order-1",
+    "original_event_id": "evt_preflight_recurring_1",
+    "aggregate_id": "preflight-payment-1",
+    "correlation_id": "preflight-refund-1"
+  }
+}
+JSON
+curl -sS -X POST "$CRM_URL" \
+  -H "Authorization: Bearer $CRM_TOKEN" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: preflight-refund-1' \
+  --data @preflight-payment_refunded.json
+# → {"status":"ok","event_id":"…","schema_status":"validated"}
+```
+
 What B5 must send is in §9.
 
 ## 8. Accepted risk: a late remap retry can undo a revert

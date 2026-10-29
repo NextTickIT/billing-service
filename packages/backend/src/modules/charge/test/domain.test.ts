@@ -3,7 +3,7 @@ import {
   CheckoutSessionStatus,
   type DomainEvent,
 } from '@billing-service/shared';
-import { Effect, Logger, Option } from 'effect';
+import { Effect, Logger, LogLevel, Option } from 'effect';
 import { expect } from 'vitest';
 
 import type { EnqueueInput } from '@/infra/queue/store.js';
@@ -17,7 +17,12 @@ import {
   type ChargeApplier,
   type ChargeMatcher,
 } from '@/modules/charge/contracts.js';
-import type { ChargeRepo, MatchOutcome } from '@/modules/charge/data-access.js';
+import type {
+  ChargeRepo,
+  MatchOutcome,
+  NewPayment,
+  SettledOriginal,
+} from '@/modules/charge/data-access.js';
 import {
   boundChargeKind,
   cardChangeFailed,
@@ -26,9 +31,13 @@ import {
   handleChargeEvent,
   ingest,
   initialPaymentFailed,
+  isBuyerId,
+  paymentRefunded,
   quarantined,
+  type RefundableOriginal,
   rebindFromPayload,
   recurringPaymentSucceeded,
+  reprocessRefunded,
 } from '@/modules/charge/domain.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import { makeCheckoutApplier } from '@/modules/checkout/domain.js';
@@ -87,13 +96,137 @@ const settledElsewhere = (
       matchResults.get(otherId) === 'matched',
   );
 
+type QuarantineStatus = 'open' | 'resolved';
+
+/** The rows the fake keeps, shared by its operations. */
+interface FakeRows {
+  readonly eventsById: Map<string, Charge>;
+  readonly matchResults: Map<string, MatchOutcome>;
+  /** `charge_fixations`, keyed on the charge as the table is: the first one wins. */
+  readonly payments: Map<string, NewPayment>;
+  /** Each fixation's row id, in insertion order, for the query's last tie-breaker. */
+  readonly fixationIds: Map<string, number>;
+  readonly quarantines: Map<string, string>;
+  readonly quarantineStatus: Map<string, QuarantineStatus>;
+  /** Charges whose quarantine an operator bind resolved. */
+  readonly resolved: Set<string>;
+  /** Event ids the outbox holds; the refund tests' publish writes it. */
+  readonly stored: Set<string>;
+}
+
+/** The fake's answer to `findSettledOriginal`, ordered as the query is: the order's
+ * matched success with a fixation, one fixed to a payment first, then by fixation
+ * occurredAt, then fixation id. */
+const originalOf = (
+  rows: FakeRows,
+  externalRef: string,
+): Option.Option<SettledOriginal> => {
+  const [first] = [...rows.eventsById]
+    .flatMap(([id, row]) => {
+      const fixation = rows.payments.get(id);
+      return row.externalRef === externalRef &&
+        row.status === 'succeeded' &&
+        rows.matchResults.get(id) === 'matched' &&
+        fixation !== undefined
+        ? [
+            {
+              idemKey: row.idemKey,
+              fixation,
+              fixationId: rows.fixationIds.get(id) ?? 0,
+            },
+          ]
+        : [];
+    })
+    .sort(
+      (a, b) =>
+        Number(a.fixation.paymentId === null) -
+          Number(b.fixation.paymentId === null) ||
+        a.fixation.occurredAt.getTime() - b.fixation.occurredAt.getTime() ||
+        a.fixationId - b.fixationId,
+    );
+  return first === undefined
+    ? Option.none()
+    : Option.some({
+        idemKey: first.idemKey,
+        externalUserId: first.fixation.externalUserId,
+        paymentId: first.fixation.paymentId,
+      });
+};
+
+/** The first value stored under a key wins, as an `ON CONFLICT DO NOTHING` insert. */
+const setOnce = <V>(map: Map<string, V>, key: string, make: () => V): V => {
+  const existing = map.get(key);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const value = make();
+  map.set(key, value);
+  return value;
+};
+
+/** The fake's quarantine and refund operations. A quarantine row is `open` until a bind
+ * or a refund resolves it; a refund resolves only an open one, as the query does. */
+const fakeQuarantineOps = (
+  rows: FakeRows,
+): Pick<
+  ChargeRepo,
+  | 'upsertQuarantine'
+  | 'resolveQuarantine'
+  | 'findSettledOriginal'
+  | 'resolveQuarantineByRefund'
+  | 'eventStored'
+  | 'listQuarantinedRefunds'
+> => ({
+  upsertQuarantine: (id) =>
+    Effect.sync(() => {
+      setOnce(rows.quarantineStatus, id, () => 'open' as const);
+      return setOnce(rows.quarantines, id, () => `q_${id}`);
+    }),
+  resolveQuarantine: (id) =>
+    Effect.sync(() => {
+      rows.resolved.add(id);
+      rows.quarantineStatus.set(id, 'resolved');
+    }),
+  findSettledOriginal: (externalRef) =>
+    Effect.sync(() => originalOf(rows, externalRef)),
+  resolveQuarantineByRefund: (id) =>
+    Effect.sync(() => {
+      if (rows.quarantineStatus.get(id) === 'open') {
+        rows.quarantineStatus.set(id, 'resolved');
+      }
+    }),
+  eventStored: (id) => Effect.sync(() => rows.stored.has(id)),
+  listQuarantinedRefunds: () =>
+    Effect.sync(() =>
+      [...rows.eventsById]
+        .filter(
+          ([id, charge]) =>
+            charge.status === 'refunded' &&
+            rows.matchResults.get(id) === 'quarantined',
+        )
+        // As the query orders them: by "occurredAt", then id.
+        .sort(
+          ([aId, a], [bId, b]) =>
+            a.occurredAt.getTime() - b.occurredAt.getTime() ||
+            aId.localeCompare(bId),
+        )
+        .map(([id, charge]) => ({ id, charge })),
+    ),
+});
+
 const makeFakeRepo = () => {
   const incoming = new Map<string, string>();
-  const eventsById = new Map<string, Charge>();
-  const payments = new Set<string>();
-  const quarantines = new Map<string, string>();
-  const matchResults = new Map<string, MatchOutcome>();
-  const resolved = new Set<string>();
+  const rows: FakeRows = {
+    eventsById: new Map(),
+    matchResults: new Map(),
+    payments: new Map(),
+    fixationIds: new Map(),
+    quarantines: new Map(),
+    quarantineStatus: new Map(),
+    resolved: new Set(),
+    stored: new Set(),
+  };
+  const { eventsById, matchResults, payments } = rows;
   let seq = 0;
 
   const repo: ChargeRepo = {
@@ -121,29 +254,20 @@ const makeFakeRepo = () => {
       }),
     insertPayment: (input) =>
       Effect.sync(() => {
-        payments.add(input.incomingEventId);
-      }),
-    upsertQuarantine: (incomingEventId) =>
-      Effect.sync(() => {
-        let q = quarantines.get(incomingEventId);
-        if (q === undefined) {
-          q = `q_${incomingEventId}`;
-          quarantines.set(incomingEventId, q);
-        }
-        return q;
+        setOnce(payments, input.incomingEventId, () => {
+          rows.fixationIds.set(input.incomingEventId, rows.fixationIds.size);
+          return input;
+        });
       }),
     getIncomingChargeById: (id) =>
       Effect.sync(() => Option.fromNullable(eventsById.get(id))),
     listOpenQuarantine: () => Effect.succeed([]),
     getQuarantine: () => Effect.succeed(Option.none()),
-    resolveQuarantine: (incomingEventId) =>
-      Effect.sync(() => {
-        resolved.add(incomingEventId);
-      }),
+    ...fakeQuarantineOps(rows),
     insertAudit: () => Effect.void,
     findChargesByPayment: () => Effect.succeed([]),
   };
-  return { repo, payments, quarantines, matchResults, resolved };
+  return { repo, ...rows };
 };
 
 const matcherOf =
@@ -1227,4 +1351,477 @@ it.effect(
         'evt_w4pcb:ref-1|Approved:succeeded',
       ]);
     }),
+);
+
+/** A WayForPay REFUND for order `ref-1`, as the callback normalizes it: no user. */
+const refundCharge = (idemKey: string, over: Partial<Charge> = {}): Charge => ({
+  source: 'wayforpay_callback',
+  idemKey,
+  externalRef: 'ref-1',
+  externalUserId: null,
+  amount: 30000,
+  currency: 0,
+  status: 'refunded',
+  occurredAt: new Date('2026-09-06T12:00:00Z'),
+  payload: { reason: 'Refunded by merchant' },
+  ...over,
+});
+
+const encoded = (charge: Charge) => ({
+  ...charge,
+  occurredAt: charge.occurredAt.toISOString(),
+});
+
+const BUYER = '64b7f0c2a1d3e4f5a6b7c8d9';
+const SMOKE = 'smoke-1784463928';
+
+interface Original {
+  readonly ref?: string;
+  readonly idemKey?: string;
+  readonly externalUserId: string;
+  readonly paymentId: string | null;
+  readonly fixedAt?: Date;
+  /** false: the success copy is matched without a fixation (a duplicate copy). */
+  readonly fixed?: boolean;
+}
+
+/** Settle a success of an order in the fake, as the pipeline leaves it: matched, with a
+ * fixation unless `fixed` is false. */
+const settleOriginal = (
+  fake: ReturnType<typeof makeFakeRepo>,
+  original: Original,
+) =>
+  Effect.gen(function* () {
+    const ref = original.ref ?? 'ref-1';
+    const charge = {
+      ...decodedCharge(original.idemKey ?? `w4pcb:${ref}|Approved`),
+      externalRef: ref,
+    };
+    const id = yield* fake.repo.upsertIncomingCharge(charge);
+    if (original.fixed !== false) {
+      yield* fake.repo.insertPayment({
+        incomingEventId: id,
+        externalUserId: original.externalUserId,
+        paymentId: original.paymentId,
+        amount: charge.amount,
+        currency: charge.currency,
+        source: charge.source,
+        occurredAt: original.fixedAt ?? charge.occurredAt,
+      });
+    }
+    yield* fake.repo.setMatchResult(id, 'matched');
+  });
+
+const buyerPaid: Original = { externalUserId: BUYER, paymentId: 'pay_1' };
+
+/** Pipeline deps over the fake. The publish records each event and stores its id, as the
+ * outbox does; it fails for an order named in `failFor`. */
+const refundDeps = (
+  fake: ReturnType<typeof makeFakeRepo>,
+  failFor?: string,
+) => {
+  const events: DomainEvent[] = [];
+  const publish = (event: DomainEvent) =>
+    event.name === 'payment_refunded' &&
+    event.payload.orderReference === failFor
+      ? Effect.die('injected publish failure')
+      : Effect.sync(() => {
+          events.push(event);
+          fake.stored.add(event.id);
+        });
+  return {
+    pub: { events },
+    deps: {
+      repo: fake.repo,
+      matcher: matcherOf({ matched: false }),
+      applier: noApplier,
+      publish,
+    },
+  };
+};
+
+const refundsOf = (events: readonly DomainEvent[]) =>
+  events.filter((e) => e.name === 'payment_refunded');
+
+const expectedRefundId = 'evt_refund:ref-1';
+const expectedOriginalEventId = 'evt_w4pcb:ref-1|Approved:succeeded';
+
+it.effect(
+  'a quarantined refund of a fixed success emits payment_refunded under the fixation and closes the quarantine',
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo();
+      const { pub, deps } = refundDeps(fake);
+      const refund = refundCharge('w4pcb:ref-1|Refunded');
+      yield* handleChargeEvent(deps)(encoded(refund));
+      yield* settleOriginal(fake, buyerPaid);
+      const refundId = yield* fake.repo.upsertIncomingCharge(refund);
+
+      yield* handleChargeEvent(deps)(encoded(refund));
+
+      const refunds = refundsOf(pub.events);
+      expect(refunds).toHaveLength(1);
+      expect(refunds[0]).toMatchObject({
+        id: expectedRefundId,
+        externalUserId: BUYER,
+        aggregateId: 'pay_1',
+        correlationId: 'w4pcb:ref-1|Refunded',
+        payload: {
+          amount: 30000,
+          currency: 0,
+          source: 'wayforpay_callback',
+          orderReference: 'ref-1',
+          originalEventId: expectedOriginalEventId,
+          reason: 'Refunded by merchant',
+        },
+      });
+      expect(fake.quarantineStatus.get(refundId)).toBe('resolved');
+      expect(fake.resolved.has(refundId)).toBe(false);
+      expect(fake.matchResults.get(refundId)).toBe('matched');
+    }),
+);
+
+it.effect.each([
+  ['the order has no settled success', null],
+  [
+    'the success has no fixation',
+    { ...buyerPaid, fixed: false } satisfies Original,
+  ],
+  [
+    'the success was bound without a payment',
+    { externalUserId: BUYER, paymentId: null } satisfies Original,
+  ],
+] as const)('a refund is quarantined when %s', ([, original]) =>
+  Effect.gen(function* () {
+    const fake = makeFakeRepo();
+    const { pub, deps } = refundDeps(fake);
+    if (original !== null) {
+      yield* settleOriginal(fake, original);
+    }
+    const refund = refundCharge('w4pcb:ref-1|Refunded');
+
+    yield* handleChargeEvent(deps)(encoded(refund));
+
+    const refundId = yield* fake.repo.upsertIncomingCharge(refund);
+    expect(pub.events.map((e) => e.name)).toEqual([
+      'unknown_payment_quarantined',
+    ]);
+    expect(fake.matchResults.get(refundId)).toBe('quarantined');
+    expect(fake.quarantineStatus.get(refundId)).toBe('open');
+  }),
+);
+
+it.effect.each([
+  [
+    'a fixation with a payment wins over an earlier one bound without',
+    [
+      {
+        idemKey: 'w4pcb:ref-1|Approved',
+        externalUserId: BUYER,
+        paymentId: null,
+        fixedAt: new Date('2026-09-01T00:00:00Z'),
+      },
+      {
+        idemKey: 'w4p:ref-1|PURCHASE|1',
+        externalUserId: BUYER,
+        paymentId: 'pay_later',
+        fixedAt: new Date('2026-09-02T00:00:00Z'),
+      },
+    ],
+    'pay_later',
+  ],
+  [
+    'among fixations with a payment the earliest wins',
+    [
+      {
+        idemKey: 'w4p:ref-1|PURCHASE|1',
+        externalUserId: BUYER,
+        paymentId: 'pay_later',
+        fixedAt: new Date('2026-09-02T00:00:00Z'),
+      },
+      {
+        idemKey: 'w4pcb:ref-1|Approved',
+        externalUserId: BUYER,
+        paymentId: 'pay_first',
+        fixedAt: new Date('2026-09-01T00:00:00Z'),
+      },
+    ],
+    'pay_first',
+  ],
+] as const)('the refunded original: %s', ([, originals, expected]) =>
+  Effect.gen(function* () {
+    const fake = makeFakeRepo();
+    const { pub, deps } = refundDeps(fake);
+    yield* Effect.forEach(originals, (o) => settleOriginal(fake, o));
+
+    yield* handleChargeEvent(deps)(
+      encoded(refundCharge('w4pcb:ref-1|Refunded')),
+    );
+
+    expect(refundsOf(pub.events).map((e) => e.aggregateId)).toEqual([expected]);
+  }),
+);
+
+it.effect('the same refund processed again emits nothing more', () =>
+  Effect.gen(function* () {
+    const fake = makeFakeRepo();
+    const { pub, deps } = refundDeps(fake);
+    yield* settleOriginal(fake, buyerPaid);
+    const refund = encoded(refundCharge('w4pcb:ref-1|Refunded'));
+    yield* handleChargeEvent(deps)(refund);
+
+    yield* handleChargeEvent(deps)(refund);
+
+    expect(pub.events.map((e) => e.id)).toEqual([expectedRefundId]);
+  }),
+);
+
+it.effect(
+  "the poller's copy of a refund carries the callback copy's event id",
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo();
+      const { pub, deps } = refundDeps(fake);
+      yield* settleOriginal(fake, buyerPaid);
+      yield* handleChargeEvent(deps)(
+        encoded(refundCharge('w4pcb:ref-1|Refunded')),
+      );
+
+      yield* handleChargeEvent(deps)(
+        encoded(
+          refundCharge('w4p:ref-1|REFUND|1788000000', {
+            source: 'wayforpay_poller',
+          }),
+        ),
+      );
+
+      expect(pub.events.map((e) => [e.name, e.id])).toEqual([
+        ['payment_refunded', expectedRefundId],
+        ['payment_refunded', expectedRefundId],
+      ]);
+    }),
+);
+
+it.effect(
+  'an operator bind of a refund is refused: no fixation, no success event',
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo();
+      const { pub, deps } = refundDeps(fake);
+      const refund = refundCharge('w4pcb:ref-1|Refunded');
+      yield* handleChargeEvent(deps)(encoded(refund));
+      const refundId = yield* fake.repo.upsertIncomingCharge(refund);
+
+      yield* rebindFromPayload(deps)({
+        incomingEventId: refundId,
+        quarantineId: `q_${refundId}`,
+        externalUserId: BUYER,
+        subscriptionId: 'pay_1',
+        period: 'P1M',
+        method: 0,
+      });
+
+      expect(fake.payments.has(refundId)).toBe(false);
+      expect(fake.quarantineStatus.get(refundId)).toBe('open');
+      expect(fake.matchResults.get(refundId)).toBe('quarantined');
+      expect(pub.events.map((e) => e.name)).toEqual([
+        'unknown_payment_quarantined',
+      ]);
+    }),
+);
+
+const fixedOriginal: RefundableOriginal = {
+  idemKey: 'w4pcb:ref-1|Approved',
+  externalUserId: BUYER,
+  paymentId: 'pay_1',
+};
+
+it('paymentRefunded carries the reversed order and success event', () => {
+  const event = paymentRefunded(
+    refundCharge('w4p:ref-1|REFUND|1788000000', {
+      source: 'wayforpay_poller',
+      amount: 12345,
+      currency: 1,
+      payload: { reasonCode: 1100 },
+    }),
+    fixedOriginal,
+  );
+
+  expect(event).toEqual({
+    id: expectedRefundId,
+    name: 'payment_refunded',
+    occurredAt: new Date('2026-09-06T12:00:00Z'),
+    correlationId: 'w4p:ref-1|REFUND|1788000000',
+    externalUserId: BUYER,
+    aggregateId: 'pay_1',
+    payload: {
+      amount: 12345,
+      currency: 1,
+      source: 'wayforpay_poller',
+      orderReference: 'ref-1',
+      originalEventId: expectedOriginalEventId,
+      reason: '1100',
+    },
+  });
+});
+
+it.each([
+  ['a reason string', { reason: 'Refund', reasonCode: 1100 }, 'Refund'],
+  ['an empty reason with a code', { reason: '', reasonCode: 1100 }, '1100'],
+  ['an empty reason with an empty code', { reason: '', reasonCode: '' }, null],
+  ['no reason at all', {}, null],
+] as const)('paymentRefunded reason from %s', (_, payload, expected) => {
+  const event = paymentRefunded(
+    refundCharge('k', { payload: { ...payload } }),
+    fixedOriginal,
+  );
+
+  expect(event.payload.reason ?? null).toBe(expected);
+});
+
+it.each([
+  ['a zero refund passes through', 0, 0],
+  ['a negative provider amount is sent as its magnitude', -30000, 30000],
+] as const)('paymentRefunded amount: %s', (_, amount, expected) => {
+  const event = paymentRefunded(refundCharge('k', { amount }), fixedOriginal);
+
+  expect(event.payload.amount).toBe(expected);
+});
+
+it.each([
+  ['a bot user id', '64b7f0c2a1d3e4f5a6b7c8d9', true],
+  ['a calibration-site UUID', 'e05bbe93-1c2d-4e5f-8a9b-0c1d2e3f4a5b', true],
+  ['a smoke-test id', SMOKE, false],
+  ['a bot id one character short', '64b7f0c2a1d3e4f5a6b7c8d', false],
+  ['a prefixed id', 'sp:42', false],
+] as const)('isBuyerId: %s → %s', (_, id, expected) => {
+  expect(isBuyerId(id)).toBe(expected);
+});
+
+/** Quarantine one refund per order, as the pipeline did before it knew refunds. */
+const quarantineRefunds = (
+  fake: ReturnType<typeof makeFakeRepo>,
+  charges: readonly Charge[],
+) =>
+  Effect.forEach(
+    charges,
+    (charge) => handleChargeEvent(refundDeps(fake).deps)(encoded(charge)),
+    { discard: true },
+  );
+
+const emptyReport = {
+  selected: 0,
+  unresolved: 0,
+  skipped: 0,
+  emitted: 0,
+  duplicate: 0,
+  failed: 0,
+};
+
+it.effect(
+  'the refund backfill classifies each quarantined refund by what its settlement did',
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo();
+      yield* quarantineRefunds(fake, [
+        refundCharge('w4pcb:ref-1|Refunded'),
+        refundCharge('w4p:ref-1|REFUND|1788000000', {
+          source: 'wayforpay_poller',
+        }),
+        refundCharge('w4pcb:ref-2|Refunded', { externalRef: 'ref-2' }),
+        refundCharge('w4pcb:smoke|Refunded', { externalRef: 'smoke' }),
+        refundCharge('w4pcb:smoke-u|Refunded', { externalRef: 'smoke-u' }),
+      ]);
+      yield* settleOriginal(fake, buyerPaid);
+      yield* settleOriginal(fake, {
+        ref: 'smoke',
+        externalUserId: SMOKE,
+        paymentId: 'pay_smoke',
+      });
+      // D11 before the buyer check: an unpaid original is unresolved, whoever owns it.
+      yield* settleOriginal(fake, {
+        ref: 'smoke-u',
+        externalUserId: SMOKE,
+        paymentId: null,
+      });
+      const { pub, deps } = refundDeps(fake);
+
+      const report = yield* reprocessRefunded(deps);
+
+      expect(report).toEqual({
+        selected: 5,
+        emitted: 1,
+        duplicate: 1,
+        skipped: 1,
+        unresolved: 2,
+        failed: 0,
+      });
+      expect(refundsOf(pub.events).map((e) => e.id)).toEqual([
+        expectedRefundId,
+        expectedRefundId,
+      ]);
+    }),
+);
+
+it.effect('a skipped refund is left quarantined and untouched', () =>
+  Effect.gen(function* () {
+    const fake = makeFakeRepo();
+    const refund = refundCharge('w4pcb:smoke|Refunded', {
+      externalRef: 'smoke',
+    });
+    yield* quarantineRefunds(fake, [refund]);
+    yield* settleOriginal(fake, {
+      ref: 'smoke',
+      externalUserId: SMOKE,
+      paymentId: 'pay_smoke',
+    });
+    const refundId = yield* fake.repo.upsertIncomingCharge(refund);
+    const { pub, deps } = refundDeps(fake);
+
+    yield* reprocessRefunded(deps);
+
+    expect(pub.events).toEqual([]);
+    expect(fake.matchResults.get(refundId)).toBe('quarantined');
+    expect(fake.quarantineStatus.get(refundId)).toBe('open');
+  }),
+);
+
+it.effect('the refund backfill goes on after a failed row', () =>
+  Effect.gen(function* () {
+    const fake = makeFakeRepo();
+    yield* quarantineRefunds(fake, [
+      refundCharge('w4pcb:bad|Refunded', { externalRef: 'bad' }),
+      refundCharge('w4pcb:ref-1|Refunded'),
+    ]);
+    yield* settleOriginal(fake, { ...buyerPaid, ref: 'bad' });
+    yield* settleOriginal(fake, buyerPaid);
+    const { pub, deps } = refundDeps(fake, 'bad');
+
+    const report = yield* reprocessRefunded(deps).pipe(
+      Logger.withMinimumLogLevel(LogLevel.None),
+    );
+
+    expect(report).toEqual({
+      ...emptyReport,
+      selected: 2,
+      emitted: 1,
+      failed: 1,
+    });
+    expect(refundsOf(pub.events).map((e) => e.id)).toEqual([expectedRefundId]);
+  }),
+);
+
+it.effect('a second backfill run selects only what stayed quarantined', () =>
+  Effect.gen(function* () {
+    const fake = makeFakeRepo();
+    yield* quarantineRefunds(fake, [refundCharge('w4pcb:ref-1|Refunded')]);
+    yield* settleOriginal(fake, buyerPaid);
+    yield* reprocessRefunded(refundDeps(fake).deps);
+    const second = refundDeps(fake);
+
+    const report = yield* reprocessRefunded(second.deps);
+
+    expect(report).toEqual(emptyReport);
+    expect(second.pub.events).toEqual([]);
+  }),
 );

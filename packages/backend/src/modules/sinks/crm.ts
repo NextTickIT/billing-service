@@ -97,12 +97,14 @@ type SchemaStatus = Schema.Schema.Type<typeof CrmAccepted>['schema_status'];
 /**
  * The kinds that move money. The CRM pays and attributes only on a `validated` row: one
  * stored `unregistered` or `rejected` is acknowledged and then never acted on. So for these
- * nothing but `validated` counts as delivered.
+ * nothing but `validated` counts as delivered. A refund moves money back, and the reports
+ * exclude a purchase only on a `validated` refund (docs/34).
  */
 const MONEY_KINDS: ReadonlySet<StoredEvent['name']> = new Set([
   'initial_payment_succeeded',
   'recurring_payment_succeeded',
   'one_time_purchase_succeeded',
+  'payment_refunded',
 ]);
 
 /** Is a stored `schema_status` a delivery, for this kind? */
