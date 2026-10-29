@@ -30,10 +30,13 @@ Optional: `method` (defaults to Card), `recurring` (defaults to `true`), and
 is **required for a recurring checkout** but **optional for a one-time purchase**
 (`recurring: false`) — a one-time never renews, so it has no cadence.
 
-`reportAs` (optional): the only allowed value is `"renewal"`, and it requires
-`recurring: true` (otherwise 400); any other value is 400. It changes only the outcome
-event names of that link to `recurring_payment_succeeded` / `recurring_payment_failed`;
-`payment_created` still fires for a new row.
+`reportAs` (optional): `"initial"` or `"renewal"`; any other value is 400. `"renewal"`
+requires `recurring: true` (otherwise 400) and changes only the outcome event names of
+that link to `recurring_payment_succeeded` / `recurring_payment_failed`;
+`payment_created` still fires for a new row. `"initial"` means "report as a first sale":
+it is the explicit form of the default (same as omitting the field), is allowed on any
+checkout, and exists because SendPulse cannot omit a JSON property conditionally, so its
+flows send the field every time.
 
 Response: session ID, payment link URL, expiry.
 
