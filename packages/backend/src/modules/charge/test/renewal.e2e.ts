@@ -178,6 +178,7 @@ const schedulerDeps = (overrides: Partial<SchedulerDeps> = {}) =>
       cancelUpstream: () => Effect.die('no upstream cancel expected'),
       claimAdvance: ledgerClaimAdvance(sql),
       mintPayNow: () => Effect.die('unused'),
+      recentProlongClaim: () => Effect.succeed(Option.none()),
       createManualCheckout: () => Effect.die('no manual checkout expected'),
       ...overrides,
     };
@@ -1741,10 +1742,12 @@ const driveBackstops = Effect.gen(function* () {
   const crypto = yield* checkout.claimForPayment(
     'chk_bs_lock',
     PaymentMethod.Crypto,
+    new Date(),
   );
   const card = yield* checkout.claimForPayment(
     'chk_bs_lock',
     PaymentMethod.Card,
+    new Date(),
   );
   const q8 = yield* lateLiveSub(sql);
   return { locked, crypto, card, q8 };

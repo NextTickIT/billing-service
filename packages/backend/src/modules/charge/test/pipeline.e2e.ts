@@ -440,6 +440,7 @@ const driveScheduler = Effect.gen(function* () {
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
       mintPayNow: () => Effect.die('unused'),
+      recentProlongClaim: () => Effect.succeed(Option.none()),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
@@ -611,6 +612,7 @@ const driveLapse = Effect.gen(function* () {
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
       mintPayNow: () => Effect.die('unused'),
+      recentProlongClaim: () => Effect.succeed(Option.none()),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
@@ -1034,6 +1036,7 @@ const driveCancelPastDue = Effect.gen(function* () {
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
       mintPayNow: () => Effect.die('unused'),
+      recentProlongClaim: () => Effect.succeed(Option.none()),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
@@ -1172,6 +1175,7 @@ const driveCancelUpstream = Effect.gen(function* () {
         ),
       claimAdvance: ledgerClaimAdvance(sql),
       mintPayNow: () => Effect.die('unused'),
+      recentProlongClaim: () => Effect.succeed(Option.none()),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },

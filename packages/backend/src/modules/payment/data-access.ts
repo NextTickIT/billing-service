@@ -82,6 +82,10 @@ export interface PaymentRepo {
    * `noticeDays` is cast explicitly: a bound parameter reaches Postgres untyped, and
    * `date + unknown` is ambiguous (42725), so without the cast this whole sweep fails
    * at runtime while every unit test against a fake repo still passes.
+   *
+   * `"nextPaymentDate" <= "currentPeriodEnd"` skips a sub the near-due guard deferred
+   * (`deferCharge`): it gets no second notice and no second pay-now link for the deferred
+   * date. On-time subs always satisfy it (the two dates are equal).
    */
   readonly findUpcomingForNotice: (
     noticeDays: number,
@@ -200,6 +204,18 @@ export interface PaymentRepo {
     id: string,
     days: number,
   ) => Effect.Effect<Option.Option<Date>, SqlError.SqlError>;
+  /**
+   * The near-due pay-now guard's deferral (B9): move only `nextPaymentDate` of an Active,
+   * ladder-free payment to `nextPaymentDate`. This is the one writer that sets an Active,
+   * ladder-free `nextPaymentDate` not derived from `currentPeriodEnd`. It cannot drift: the
+   * next success stacks from the anchor (`currentPeriodEnd`), not from this date. Unlike the
+   * operator `defer` (`payment_deferred`), it leaves `currentPeriodEnd` alone, and the
+   * resulting `nextPaymentDate > currentPeriodEnd` is what keeps the guard one-shot.
+   */
+  readonly deferCharge: (
+    id: string,
+    nextPaymentDate: Date,
+  ) => Effect.Effect<void, SqlError.SqlError>;
   /** Rewrite only the stored token — a card change must not shift any date. */
   readonly updateToken: (
     id: string,
@@ -247,6 +263,7 @@ const findUpcomingForNotice =
         AND "cancelRequestedAt" IS NULL
         AND "firstFailureAt" IS NULL
         AND "retryAttempt" = 0
+        AND "nextPaymentDate" <= "currentPeriodEnd"
         AND ("nextPaymentDate" AT TIME ZONE 'Europe/Kyiv')::date
             = ((now() AT TIME ZONE 'Europe/Kyiv')::date + ${noticeDays}::int)
       ORDER BY "nextPaymentDate"
@@ -512,6 +529,15 @@ const defer = (sql: SqlClient.SqlClient) => (id: string, days: number) =>
     ),
   );
 
+// Only the next date moves: the anchor, the ladder fields, amount and period stay put.
+const deferCharge =
+  (sql: SqlClient.SqlClient) => (id: string, nextPaymentDate: Date) =>
+    sql`
+      UPDATE payments
+      SET "nextPaymentDate" = ${nextPaymentDate}, "updatedAt" = now()
+      WHERE id = ${id} AND status = ${PaymentStatus.Active} AND "retryAttempt" = 0
+    `.pipe(Effect.asVoid);
+
 const updateToken =
   (sql: SqlClient.SqlClient) => (id: string, recToken: string) =>
     sql`
@@ -575,6 +601,7 @@ export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   markCancelledLapsed: markCancelledLapsed(sql),
   cancelUpstream: cancelUpstream(sql),
   defer: defer(sql),
+  deferCharge: deferCharge(sql),
   updateToken: updateToken(sql),
   setMethod: setMethod(sql),
   clearToken: clearToken(sql),

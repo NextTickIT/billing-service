@@ -435,7 +435,11 @@ export const claimPayableSession = (
     const live = liveOf(yield* findActiveRecurring(found.value.externalUserId));
     yield* assertMethodAllowed(found.value, method);
     yield* eligiblePick(found.value, option, live);
-    const claimed = yield* repo.claimForPayment(id, method);
+    const claimed = yield* repo.claimForPayment(
+      id,
+      method,
+      new Date(nowMillis),
+    );
     if (!claimed) {
       // The SQL backstop refuses a locked method too; tell that apart from a lost race.
       const current = yield* repo.findById(id);

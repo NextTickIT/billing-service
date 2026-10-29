@@ -52,6 +52,7 @@ import {
 import { makeRateLimiter } from '@/infra/rate-limiter.js';
 import {
   type CheckoutRepo,
+  findRecentProlongClaim,
   makeCheckoutRepo,
 } from '@/modules/checkout/data-access.js';
 import {
@@ -417,6 +418,8 @@ const startScheduler = (
           createManualCheckout: manualCheckoutMinter(sql, config),
           claimAdvance: ledgerClaimAdvance(sql),
           mintPayNow: payNowMinter(makeCheckoutRepo(sql), config),
+          recentProlongClaim: (sub, since) =>
+            findRecentProlongClaim(sql)(sub.id, since),
         },
         {
           intervalSeconds: config.scheduler.intervalSeconds,

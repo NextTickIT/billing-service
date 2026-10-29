@@ -5,7 +5,7 @@ import {
   PaymentStatus,
 } from '@billing-service/shared';
 import { SqlError } from '@effect/sql';
-import { Effect } from 'effect';
+import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
@@ -53,8 +53,15 @@ const deps = (
   ({
     subs: {
       findDue: () => Effect.succeed([]),
+      // Mirrors the SQL's `"nextPaymentDate" <= "currentPeriodEnd"`: a sub the near-due
+      // guard deferred is never noticed again for the deferred date.
       findUpcomingForNotice: (days: number) =>
-        Effect.succeed(upcoming[days] ?? []),
+        Effect.succeed(
+          (upcoming[days] ?? []).filter(
+            (row) =>
+              row.nextPaymentDate.getTime() <= row.currentPeriodEnd.getTime(),
+          ),
+        ),
     } as unknown as PaymentRepo,
     client: { charge: die },
     ingest: die,
@@ -67,6 +74,7 @@ const deps = (
     cancelUpstream: die,
     createManualCheckout: die,
     mintPayNow,
+    recentProlongClaim: () => Effect.succeed(Option.none()),
   }) as unknown as SchedulerDeps;
 
 const cfg = (days: readonly number[]) => ({
@@ -315,5 +323,30 @@ it.effect('a due date of Mar 9 is announced as Mar 9', () =>
 
     const notice = published.find((e) => e.name === 'upcoming_charge');
     expect(notice?.payload.chargeDate).toBe('2026-03-09T09:00:00.000Z');
+  }),
+);
+
+it.effect('a sub the near-due guard deferred gets no second notice', () =>
+  Effect.gen(function* () {
+    const published: DomainEvent[] = [];
+    const minted: Payment[] = [];
+    // Deferred: nextPaymentDate pushed a day past the unchanged anchor.
+    const deferred = sub({
+      id: 'sub-deferred',
+      nextPaymentDate: new Date('2026-10-03T09:05:00.000Z'),
+    });
+    const onTime = sub({ id: 'sub-on-time' });
+    const recordMint: SchedulerDeps['mintPayNow'] = (payment) =>
+      Effect.sync(() => {
+        minted.push(payment);
+        return LINK;
+      });
+    yield* scheduleTick(
+      deps({ 1: [deferred, onTime] }, published, recordMint),
+      cfg([1]),
+    );
+
+    expect(published.map((e) => e.aggregateId)).toEqual(['sub-on-time']);
+    expect(minted.map((payment) => payment.id)).toEqual(['sub-on-time']);
   }),
 );

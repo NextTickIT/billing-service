@@ -1,5 +1,5 @@
 import { SqlClient } from '@effect/sql';
-import { Effect } from 'effect';
+import { Effect, Option } from 'effect';
 
 import {
   ledgerClaimAdvance,
@@ -59,6 +59,7 @@ const seedDueAndCharge = Effect.gen(function* () {
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
       mintPayNow: () => Effect.die('unused'),
+      recentProlongClaim: () => Effect.succeed(Option.none()),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
