@@ -860,6 +860,8 @@ it.effect('no pending cancel → no payment_reactivated', () =>
 it.effect.each([
   ['prolong', 'initial_payment_succeeded'],
   ['manual_renewal', 'recurring_payment_succeeded'],
+  // A caller link flagged reportAs: "renewal" names no sub it renews.
+  ['migration', 'recurring_payment_succeeded'],
 ] as const)(
   'a %s session paid after its sub died → payment_created + %s on the fresh row',
   ([origin, succeeded]) =>
@@ -867,7 +869,7 @@ it.effect.each([
       const h = harness(
         recurringCheckout({
           origin,
-          renewalOf: 'sub_dead',
+          renewalOf: origin === 'migration' ? null : 'sub_dead',
           renewal: { amount: 5000, period: 'P4W' },
         }),
         applierOf({
@@ -894,6 +896,76 @@ it.effect.each([
         // The match carried no declaration, so the event says so explicitly.
         metadata: null,
       });
+    }),
+);
+
+const RAILS = [
+  [0, 'wayforpay_callback'],
+  [1, 'whitepay_callback'],
+] as const;
+
+it.effect.each(RAILS)(
+  'a migration link (method %s, %s) differs from an unflagged one only in the success name',
+  ([method, source]) =>
+    Effect.gen(function* () {
+      const settle = (origin: 'migration' | null) =>
+        Effect.gen(function* () {
+          const h = harness(
+            recurringCheckout({ origin, renewalOf: null, method }),
+            applierOf({
+              subscriptionId: 'sub_fresh',
+              created: true,
+              nextPaymentDate: NEXT,
+              periodStart: new Date('2026-02-01T00:00:00Z'),
+              periodEnd: NEXT,
+            }),
+          );
+          yield* h.run({ ...encodedPayload('kmig'), source });
+          return h.events;
+        });
+
+      const plain = yield* settle(null);
+      const flagged = yield* settle('migration');
+
+      expect(plain.map((e) => e.name)).toEqual([
+        'payment_created',
+        'initial_payment_succeeded',
+      ]);
+      expect(flagged.map((e) => e.name)).toEqual([
+        'payment_created',
+        'recurring_payment_succeeded',
+      ]);
+      // AC 15: everything but the name is a first checkout's.
+      expect(flagged[0]).toStrictEqual(plain[0]);
+      expect(flagged[1]?.payload).toStrictEqual(plain[1]?.payload);
+      expect(flagged[1]?.payload).toMatchObject({ method, source });
+    }),
+);
+
+it.effect(
+  'a migration link paid while the sub is live stacks and reports recurring, no payment_created',
+  () =>
+    Effect.gen(function* () {
+      const h = harness(
+        recurringCheckout({
+          origin: 'migration',
+          renewalOf: null,
+          prolongOf: 'sub_live',
+        }),
+        applierOf({
+          subscriptionId: 'sub_live',
+          created: false,
+          prolonged: true,
+          nextPaymentDate: NEXT,
+        }),
+      );
+
+      yield* h.run(encodedPayload('kml'));
+
+      expect(h.events.map((e) => e.name)).toEqual([
+        'recurring_payment_succeeded',
+      ]);
+      expect(h.events[0]?.aggregateId).toBe('sub_live');
     }),
 );
 
@@ -1046,6 +1118,70 @@ it.effect(
 
       expect(h.events.map((e) => e.name)).toEqual(['initial_payment_failed']);
       expect(h.events[0]?.aggregateId).toBe('ref-1');
+    }),
+);
+
+it.effect(
+  'a declined migration link → recurring_payment_failed, otherwise the unflagged decline',
+  () =>
+    Effect.gen(function* () {
+      const decline = (origin: 'migration' | null) =>
+        Effect.gen(function* () {
+          const h = harness(
+            recurringCheckout({ origin, renewalOf: null, prolongOf: null }),
+            noApplier,
+          );
+          yield* h.run(declined('kmd'));
+          return h;
+        });
+
+      const plain = yield* decline(null);
+      const flagged = yield* decline('migration');
+
+      expect(plain.events.map((e) => e.name)).toEqual([
+        'initial_payment_failed',
+      ]);
+      expect(flagged.events.map((e) => e.name)).toEqual([
+        'recurring_payment_failed',
+      ]);
+      expect(flagged.events[0]?.payload).toStrictEqual(
+        plain.events[0]?.payload,
+      );
+      expect(flagged.events[0]?.aggregateId).toBe(
+        plain.events[0]?.aggregateId,
+      );
+      // AC 14: a decline writes nothing (noApplier dies if called).
+      expect(flagged.payments.size).toBe(0);
+    }),
+);
+
+it.effect.each(RAILS)(
+  'a declined _c3 pay-now callback (method %s, %s) on a live sub → recurring_payment_failed, session still open',
+  ([method, source]) =>
+    Effect.gen(function* () {
+      const { writes, sessionStatus, payments, checkout } = recordingRepos();
+      const h = harness(
+        recurringCheckout({
+          origin: 'prolong',
+          renewalOf: 'sub_live',
+          prolongOf: 'sub_live',
+          method,
+        }),
+        makeCheckoutApplier(payments, checkout),
+      );
+
+      yield* h.run({
+        ...declined('kc3'),
+        source,
+        externalRef: 'chk_paynow_c3',
+      });
+
+      expect(h.events.map((e) => e.name)).toEqual(['recurring_payment_failed']);
+      expect(h.events[0]?.aggregateId).toBe('sub_live');
+      // The applier is never reached: no session or subscription write.
+      expect(writes).toEqual([]);
+      expect(sessionStatus.chk).not.toBe(CheckoutSessionStatus.Completed);
+      expect(h.payments.size).toBe(0);
     }),
 );
 
@@ -1478,6 +1614,49 @@ it.effect(
       expect(fake.quarantineStatus.get(refundId)).toBe('resolved');
       expect(fake.resolved.has(refundId)).toBe(false);
       expect(fake.matchResults.get(refundId)).toBe('matched');
+    }),
+);
+
+it.effect(
+  'a refund of a settled migration order points at its recurring_payment_succeeded',
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo();
+      const { pub, deps } = refundDeps(fake);
+      const success: Charge = {
+        ...decodedCharge('w4pcb:ref-1|Approved'),
+        source: 'wayforpay_callback',
+        externalUserId: BUYER,
+      };
+      yield* handleChargeEvent({
+        ...deps,
+        matcher: matcherOf(
+          recurringCheckout({
+            origin: 'migration',
+            renewalOf: null,
+            externalUserId: BUYER,
+          }),
+        ),
+        applier: applierOf({
+          subscriptionId: 'pay_1',
+          created: true,
+          nextPaymentDate: NEXT,
+        }),
+      })(encoded(success));
+
+      yield* handleChargeEvent(deps)(
+        encoded(refundCharge('w4pcb:ref-1|Refunded')),
+      );
+
+      const succeeded = pub.events.find(
+        (e) => e.name === 'recurring_payment_succeeded',
+      );
+      const refunds = refundsOf(pub.events);
+      expect(succeeded).toBeDefined();
+      expect(refunds).toHaveLength(1);
+      expect(refunds[0]?.payload).toMatchObject({
+        originalEventId: succeeded?.id,
+      });
     }),
 );
 

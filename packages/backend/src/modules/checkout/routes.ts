@@ -225,8 +225,10 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
         // What the payer may pick instead of the flat terms (the schema checked that the
         // flat terms are among them).
         options: input.options ?? null,
-        // Caller-created: no internal origin, renews no particular subscription.
-        origin: null,
+        // Caller-created: renews no particular subscription. `reportAs: "renewal"` (a
+        // legacy payer migrating in) is the only caller-settable label; it renames the
+        // outcome events and nothing else.
+        origin: input.reportAs === 'renewal' ? 'migration' : null,
         renewalOf: null,
         // Absent means "none declared"; a sent `{}` is a value and replaces on extend.
         metadata: input.metadata ?? null,
@@ -607,7 +609,15 @@ const replacementIntent = (
       new AlreadySubscribed({ externalUserId: session.externalUserId }),
     );
   }
-  return Either.right(remintedIntent(session, sub, null, expiresAt));
+  const reminted = remintedIntent(session, sub, null, expiresAt);
+  // A migration link keeps its reporting intent: if the sub dies before this settles, the
+  // fresh row must still report recurring_*. Repricing, the open method picker and
+  // renewalOf = null stay those of a plain re-mint.
+  return Either.right(
+    session.origin === 'migration'
+      ? { ...reminted, origin: 'migration' }
+      : reminted,
+  );
 };
 
 /**

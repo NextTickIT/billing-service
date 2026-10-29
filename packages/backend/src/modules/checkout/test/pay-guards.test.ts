@@ -526,6 +526,19 @@ describe('Q8 runs on the picked option, at preflight and at claim', () => {
     expect(writes).toEqual({ released: [], reissued: [], claimed: [] });
   });
 
+  test('a migration link does not let a live subscriber pick the intro option', () => {
+    const { repo, writes } = repoWith([
+      session({
+        origin: 'migration',
+        renewalOf: null,
+        options: [standard, introTerms],
+      }),
+    ]);
+    expect(leftTag(resolvePick(repo, sub(), 1))).toBe('AlreadySubscribed');
+    expect(leftTag(claimPick(repo, sub(), 1))).toBe('AlreadySubscribed');
+    expect(writes).toEqual({ released: [], reissued: [], claimed: [] });
+  });
+
   test('an option the session does not offer → 422, nothing written', () => {
     const { repo, writes } = repoWith([
       session({ origin: null, renewalOf: null, options: [standard] }),

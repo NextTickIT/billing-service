@@ -364,3 +364,61 @@ describe('T23: a lapsed link with no live sub is cloned on its own terms', () =>
     });
   });
 });
+
+describe('a lapsed migration link', () => {
+  // A caller link flagged reportAs: "renewal", with a promo a re-mint at the sub's
+  // terms must drop. (Priced options would make the re-mint refuse the pick with
+  // OptionUnavailable, as for any caller link.)
+  const flagged = (over: Partial<CheckoutSession> = {}) =>
+    session({ origin: 'migration', ...over });
+
+  test('with a PastDue contact the replacement keeps the flag, at the sub’s terms, method unlocked', () => {
+    const { repo, minted } = repoWith(flagged());
+    // Paid with method 0 while the sub is on method 1: not refused, so unlocked.
+    const result = run(repo, subscription(PaymentStatus.PastDue), 0);
+
+    expect(result._tag).toBe('Right');
+    expect(minted).toHaveLength(1);
+    expect(minted[0]).toMatchObject({
+      origin: 'migration',
+      renewalOf: null,
+      options: null,
+      amount: 7000,
+      period: 'P4W',
+      method: 1,
+      promo: null,
+    });
+  });
+
+  test('an unflagged link in the same setup re-mints with origin null', () => {
+    const { repo, minted } = repoWith(flagged({ origin: null }));
+    const result = run(repo, subscription(PaymentStatus.PastDue), 0);
+
+    expect(result._tag).toBe('Right');
+    expect(minted[0]).toMatchObject({ origin: null, renewalOf: null });
+  });
+
+  test('with an Active contact it is refused, nothing minted', () => {
+    const { repo, minted } = repoWith(flagged());
+    const result = run(repo, subscription(PaymentStatus.Active));
+
+    expect(result._tag === 'Left' && result.left._tag).toBe(
+      'AlreadySubscribed',
+    );
+    expect(minted).toHaveLength(0);
+  });
+
+  test('with no live sub it is cloned with its flag', () => {
+    const { repo, minted } = repoWith(flagged());
+    const result = run(repo, noSubscription);
+
+    expect(result._tag).toBe('Right');
+    expect(minted[0]).toMatchObject({
+      origin: 'migration',
+      renewalOf: null,
+      amount: 5000,
+      period: 'P1M',
+      promo: { additionalFreePeriod: 'P7D' },
+    });
+  });
+});
