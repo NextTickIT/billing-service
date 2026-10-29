@@ -41,6 +41,8 @@ export default {
     methodCrypto: 'Крипто',
     pay: 'Оплатить',
     expired: 'Ссылка на оплату истекла.',
+    pastDue:
+      'Срок действия этой ссылки истёк {date}. Если оплата ещё нужна, мы отправим новое сообщение.',
     completed: 'Оплата выполнена.',
     processing: 'Обрабатываем ваш платёж…',
     confirmed: 'Платёж подтверждён.',
@@ -172,6 +174,7 @@ export default {
       initial_payment_failed: 'Первый платёж не удался',
       recurring_payment_failed: 'Повторный платёж не удался',
       charge_retry_failed: 'Повтор списания не удался',
+      charge_deferred: 'Списание отложено (оплата по ссылке в процессе)',
       renewal_failed: 'Обновление не удалось',
       payment_manual_required: 'Требуется ручная оплата',
       payment_created: 'Платёж создан',
