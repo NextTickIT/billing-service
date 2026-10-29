@@ -30,7 +30,19 @@ Optional: `method` (defaults to Card), `recurring` (defaults to `true`), and
 is **required for a recurring checkout** but **optional for a one-time purchase**
 (`recurring: false`) — a one-time never renews, so it has no cadence.
 
+`reportAs` (optional): the only allowed value is `"renewal"`, and it requires
+`recurring: true` (otherwise 400); any other value is 400. It changes only the outcome
+event names of that link to `recurring_payment_succeeded` / `recurring_payment_failed`;
+`payment_created` still fires for a new row.
+
 Response: session ID, payment link URL, expiry.
+
+### `POST /api/payment/prolong`
+
+Auth: service token. Mints a hosted pay link that extends the contact's live (Active or
+PastDue) subscription. The link offers the cycle options configured by
+`MANUAL_RENEWAL_CYCLE_OPTIONS` (1 / 3 / 6 months in production), paid as n × amount
+under ref `chk_<id>_c<n>`. The method stays locked to the subscription's, as before.
 
 ## Payment (gateway billing record)
 

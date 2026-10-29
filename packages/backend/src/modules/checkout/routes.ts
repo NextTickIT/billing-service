@@ -52,6 +52,7 @@ import {
 } from '@/modules/checkout/data-access.js';
 import {
   checkoutPath,
+  cycleOptions,
   defaultOptionIndex,
   type MethodChangePlan,
   type PickedOption,
@@ -1103,12 +1104,18 @@ const prolong = (input: ProlongRequest, request: FastifyRequest) =>
     );
     return yield* insertOrReplay(
       makeCheckoutRepo(sql),
-      prolongSession(
-        sub,
-        `chk_${randomUUID()}`,
-        expiresAt,
-        idempotencyKeyOf(request),
-      ),
+      {
+        ...prolongSession(
+          sub,
+          `chk_${randomUUID()}`,
+          expiresAt,
+          idempotencyKeyOf(request),
+        ),
+        // Cycles come from MANUAL_RENEWAL_CYCLE_OPTIONS (OPERATOR decision 2026-10-29), same knob as the manual prompt and the pay-now link.
+        options: cycleOptions(
+          request.server.appConfig.scheduler.manualRenewalCycleOptions,
+        ),
+      },
       request.server.appConfig.checkoutBaseUrl,
     );
   });
