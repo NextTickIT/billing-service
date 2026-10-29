@@ -41,16 +41,28 @@ describe('CreateCheckoutSession.reportAs', () => {
     if (Either.isRight(r)) expect(r.right.reportAs).toBe('renewal');
   });
 
-  test.each(['initial', '', true, null])('%j is rejected', (reportAs) => {
-    expect(Either.isLeft(decode({ ...base, recurring: true, reportAs }))).toBe(
-      true,
-    );
-  });
+  test.each(['first', 'RENEWAL', '', true, null])(
+    '%j is rejected',
+    (reportAs) => {
+      expect(
+        Either.isLeft(decode({ ...base, recurring: true, reportAs })),
+      ).toBe(true);
+    },
+  );
 
-  test('a non-recurring checkout with the flag is rejected with the filter message', () => {
+  test.each([true, false])(
+    '"initial" decodes on a checkout with recurring: %j',
+    (recurring) => {
+      const r = decode({ ...base, recurring, reportAs: 'initial' });
+      expect(Either.isRight(r)).toBe(true);
+      if (Either.isRight(r)) expect(r.right.reportAs).toBe('initial');
+    },
+  );
+
+  test('a non-recurring checkout with "renewal" is rejected with the filter message', () => {
     expect(
       message({ ...base, recurring: false, reportAs: 'renewal' }),
-    ).toContain('reportAs is only allowed on a recurring checkout');
+    ).toContain('reportAs: "renewal" is only allowed on a recurring checkout');
   });
 
   test('an absent flag decodes to the same value as before', () => {

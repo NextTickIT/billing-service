@@ -187,6 +187,13 @@ const insertOrReplay = (
     return created(existing.value.id, existing.value.expiresAt, baseUrl);
   });
 
+/** The origin a caller-created checkout stores. `reportAs: "renewal"` (a legacy payer
+ * migrating in) is the only caller-settable label; it renames the outcome events and
+ * nothing else. `"initial"` and an absent field both mean no label. */
+export const callerOrigin = (
+  reportAs: CreateCheckoutSession['reportAs'],
+): CheckoutOrigin | null => (reportAs === 'renewal' ? 'migration' : null);
+
 const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
   Effect.gen(function* () {
     yield* serviceActor(request);
@@ -226,10 +233,8 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
         // What the payer may pick instead of the flat terms (the schema checked that the
         // flat terms are among them).
         options: input.options ?? null,
-        // Caller-created: renews no particular subscription. `reportAs: "renewal"` (a
-        // legacy payer migrating in) is the only caller-settable label; it renames the
-        // outcome events and nothing else.
-        origin: input.reportAs === 'renewal' ? 'migration' : null,
+        // Caller-created: renews no particular subscription.
+        origin: callerOrigin(input.reportAs),
         renewalOf: null,
         // Absent means "none declared"; a sent `{}` is a value and replaces on extend.
         metadata: input.metadata ?? null,
