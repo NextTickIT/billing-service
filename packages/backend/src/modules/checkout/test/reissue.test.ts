@@ -348,9 +348,28 @@ describe('a lapsed pay-now (prolong) link keeps its cycle choices', () => {
     });
   });
 
+  test('a lapsed Pending pay-now session is refused as not re-issuable, nothing minted', () => {
+    const { repo, minted } = repoWith(
+      lapsedPayNow({
+        status: CheckoutSessionStatus.Pending,
+        idempotencyKey: `paynow:pay_live:${(NOW - HOUR).toString()}`,
+      }),
+    );
+    const result = run(repo, subscription(PaymentStatus.Active), 1);
+
+    expect(result._tag === 'Left' && result.left).toMatchObject({
+      _tag: 'Conflict',
+      field: 'checkout session (not re-issuable)',
+    });
+    expect(minted).toHaveLength(0);
+  });
+
   test('a stale method re-mints locked to the sub’s method with the options kept', () => {
-    // The link was minted for method 0 and the sub has since moved to method 1.
-    const { repo, minted } = repoWith(lapsedPayNow({ method: 0 }));
+    // Minted for method 0, the sub has since moved to method 1. The link is still live,
+    // so only stale-method detection (not expiry) can trigger the replacement.
+    const { repo, minted } = repoWith(
+      lapsedPayNow({ method: 0, expiresAt: new Date(NOW + HOUR) }),
+    );
     const result = run(repo, subscription(PaymentStatus.Active), 1);
 
     expect(result._tag).toBe('Right');
