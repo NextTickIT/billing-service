@@ -1,5 +1,5 @@
 import { SqlClient } from '@effect/sql';
-import { Effect, Fiber } from 'effect';
+import { Effect, Fiber, Option } from 'effect';
 
 import {
   ledgerClaimAdvance,
@@ -75,10 +75,17 @@ const scheduleAndApprove = Effect.gen(function* () {
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
+      mintPayNow: () => Effect.die('unused'),
+      recentProlongClaim: () => Effect.succeed(Option.none()),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+    {
+      intervalSeconds: 60,
+      batchSize: 10,
+      upcomingChargeNoticeDays: [],
+      payNowClaimGraceSeconds: 3600,
+    },
   );
 });
 

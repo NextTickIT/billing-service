@@ -171,6 +171,7 @@ const recordingRepo = () => {
     markCancelledLapsed: die,
     cancelUpstream: die,
     defer: die,
+    deferCharge: die,
     updateToken: (_id, token) =>
       Effect.sync(() => {
         calls.updatedToken = token;

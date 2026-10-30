@@ -90,12 +90,15 @@ export type CheckoutRenewal = Schema.Schema.Type<typeof CheckoutRenewal>;
  * - `manual_renewal`: the scheduler's manual (crypto) renewal prompt.
  * - `card_change` / `card_change_arrears`: a card change that does not / does collect
  *   an owed period.
+ * - `migration`: a caller-created checkout sent with `reportAs: "renewal"`; its outcome
+ *   reports `recurring_*`. Set only from that request field (`"initial"` leaves it null).
  */
 export const CheckoutOrigin = Schema.Literal(
   'prolong',
   'manual_renewal',
   'card_change',
   'card_change_arrears',
+  'migration',
 );
 
 export type CheckoutOrigin = Schema.Schema.Type<typeof CheckoutOrigin>;
@@ -403,6 +406,11 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       // A client that defaults this to `{}` therefore wipes the stored intent — send
       // nothing, not an empty object, when you mean "unchanged".
       metadata: Schema.optional(Metadata),
+      // How the first payment is reported. `initial` (the default, same as absent): as a
+      // first sale (`initial_*`). `renewal`: as a renewal (`recurring_*`, origin
+      // 'migration'), for a payer who already subscribed elsewhere; recurring checkouts
+      // only. `initial` exists because SendPulse cannot leave a body property out.
+      reportAs: Schema.optional(Schema.Literal('initial', 'renewal')),
     }),
   ),
   Schema.filter((v) => brokenRule(v, v.recurring) ?? true),
@@ -418,6 +426,11 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       v.options === undefined ||
       v.options.some((o) => sameTerms(optionTerms(o), optionTerms(v))),
     { message: () => 'the flat terms must equal one of the options' },
+  ),
+  Schema.filter((v) =>
+    v.reportAs !== 'renewal' || v.recurring
+      ? true
+      : 'reportAs: "renewal" is only allowed on a recurring checkout',
   ),
 );
 

@@ -19,6 +19,7 @@ import {
 import { renewalScenarios } from '@/modules/charge/test/renewal.e2e.js';
 import { lapseScenarios } from '@/modules/payment/test/lapse.e2e.js';
 import { manualMinterScenarios } from '@/modules/billing/test/manual-minter.e2e.js';
+import { payNowMinterScenarios } from '@/modules/billing/test/pay-now-minter.e2e.js';
 import { crmSinkScenarios } from '@/modules/sinks/test/crm.e2e.js';
 import { settlementScenarios } from '@/modules/billing/test/settlement.e2e.js';
 import { chargeKindScenarios } from '@/modules/charge/test/charge-kind.e2e.js';
@@ -52,6 +53,14 @@ import { makeWorkerRuntime } from '@/runtime.js';
  * `renewal.e2e.ts`.
  */
 export type { EffectE2eContext, EffectScenario };
+
+/** A tick with no notice sweep; the guard grace is irrelevant to these scenarios. */
+const NO_NOTICE_CONFIG = {
+  intervalSeconds: 60,
+  batchSize: 10,
+  upcomingChargeNoticeDays: [],
+  payNowClaimGraceSeconds: 3600,
+};
 
 const charge = (idemKey: string): Charge => ({
   source: 'test',
@@ -431,10 +440,12 @@ const driveScheduler = Effect.gen(function* () {
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
+      mintPayNow: () => Effect.die('unused'),
+      recentProlongClaim: () => Effect.succeed(Option.none()),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+    NO_NOTICE_CONFIG,
   );
   yield* drain;
 });
@@ -601,10 +612,12 @@ const driveLapse = Effect.gen(function* () {
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
+      mintPayNow: () => Effect.die('unused'),
+      recentProlongClaim: () => Effect.succeed(Option.none()),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+    NO_NOTICE_CONFIG,
   );
   yield* drain;
 });
@@ -1023,10 +1036,12 @@ const driveCancelPastDue = Effect.gen(function* () {
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
+      mintPayNow: () => Effect.die('unused'),
+      recentProlongClaim: () => Effect.succeed(Option.none()),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+    NO_NOTICE_CONFIG,
   );
   yield* drain;
 });
@@ -1160,10 +1175,12 @@ const driveCancelUpstream = Effect.gen(function* () {
           ),
         ),
       claimAdvance: ledgerClaimAdvance(sql),
+      mintPayNow: () => Effect.die('unused'),
+      recentProlongClaim: () => Effect.succeed(Option.none()),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+    NO_NOTICE_CONFIG,
   );
   yield* drain;
 });
@@ -1476,6 +1493,7 @@ export const effectScenarios: readonly EffectScenario[] = [
   ...renewalScenarios,
   ...lapseScenarios,
   ...manualMinterScenarios,
+  ...payNowMinterScenarios,
   ...crmSinkScenarios,
   ...settlementScenarios,
   ...chargeKindScenarios,

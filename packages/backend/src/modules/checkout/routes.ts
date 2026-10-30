@@ -52,6 +52,7 @@ import {
 } from '@/modules/checkout/data-access.js';
 import {
   checkoutPath,
+  cycleOptions,
   defaultOptionIndex,
   type MethodChangePlan,
   type PickedOption,
@@ -186,6 +187,13 @@ const insertOrReplay = (
     return created(existing.value.id, existing.value.expiresAt, baseUrl);
   });
 
+/** The origin a caller-created checkout stores. `reportAs: "renewal"` (a legacy payer
+ * migrating in) is the only caller-settable label; it renames the outcome events and
+ * nothing else. `"initial"` and an absent field both mean no label. */
+export const callerOrigin = (
+  reportAs: CreateCheckoutSession['reportAs'],
+): CheckoutOrigin | null => (reportAs === 'renewal' ? 'migration' : null);
+
 const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
   Effect.gen(function* () {
     yield* serviceActor(request);
@@ -225,8 +233,8 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
         // What the payer may pick instead of the flat terms (the schema checked that the
         // flat terms are among them).
         options: input.options ?? null,
-        // Caller-created: no internal origin, renews no particular subscription.
-        origin: null,
+        // Caller-created: renews no particular subscription.
+        origin: callerOrigin(input.reportAs),
         renewalOf: null,
         // Absent means "none declared"; a sent `{}` is a value and replaces on extend.
         metadata: input.metadata ?? null,
@@ -432,7 +440,11 @@ export const claimPayableSession = (
     const live = liveOf(yield* findActiveRecurring(found.value.externalUserId));
     yield* assertMethodAllowed(found.value, method);
     yield* eligiblePick(found.value, option, live);
-    const claimed = yield* repo.claimForPayment(id, method);
+    const claimed = yield* repo.claimForPayment(
+      id,
+      method,
+      new Date(nowMillis),
+    );
     if (!claimed) {
       // The SQL backstop refuses a locked method too; tell that apart from a lost race.
       const current = yield* repo.findById(id);
@@ -581,9 +593,13 @@ const remintedIntent = (
   successUrl: session.successUrl,
   failureUrl: session.failureUrl,
   email: session.email,
-  // A manual renewal keeps its cycle choices: they are multiples of whatever the live
-  // sub's terms are. A caller's priced options are the stale link's terms, so they go.
-  options: origin === 'manual_renewal' ? session.options : null,
+  // A manual renewal and a prolong (pay-now or on-demand) link keep their cycle choices:
+  // they are multiples of whatever the live sub's terms are. A caller's priced options
+  // are the stale link's terms, so they go.
+  options:
+    origin === 'manual_renewal' || origin === 'prolong'
+      ? session.options
+      : null,
 });
 
 /** The replacement for a lapsed, re-issuable recurring checkout (rules on
@@ -607,7 +623,15 @@ const replacementIntent = (
       new AlreadySubscribed({ externalUserId: session.externalUserId }),
     );
   }
-  return Either.right(remintedIntent(session, sub, null, expiresAt));
+  const reminted = remintedIntent(session, sub, null, expiresAt);
+  // A migration link keeps its reporting intent: if the sub dies before this settles, the
+  // fresh row must still report recurring_*. Repricing, the open method picker and
+  // renewalOf = null stay those of a plain re-mint.
+  return Either.right(
+    session.origin === 'migration'
+      ? { ...reminted, origin: 'migration' }
+      : reminted,
+  );
 };
 
 /**
@@ -1093,12 +1117,18 @@ const prolong = (input: ProlongRequest, request: FastifyRequest) =>
     );
     return yield* insertOrReplay(
       makeCheckoutRepo(sql),
-      prolongSession(
-        sub,
-        `chk_${randomUUID()}`,
-        expiresAt,
-        idempotencyKeyOf(request),
-      ),
+      {
+        ...prolongSession(
+          sub,
+          `chk_${randomUUID()}`,
+          expiresAt,
+          idempotencyKeyOf(request),
+        ),
+        // Cycles come from MANUAL_RENEWAL_CYCLE_OPTIONS (OPERATOR decision 2026-10-29), same knob as the manual prompt and the pay-now link.
+        options: cycleOptions(
+          request.server.appConfig.scheduler.manualRenewalCycleOptions,
+        ),
+      },
       request.server.appConfig.checkoutBaseUrl,
     );
   });

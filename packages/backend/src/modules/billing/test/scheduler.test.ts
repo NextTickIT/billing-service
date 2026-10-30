@@ -6,7 +6,7 @@ import {
   PaymentStatus,
 } from '@billing-service/shared';
 import { Effect, Fiber, Logger, Option, TestClock } from 'effect';
-import { expect } from 'vitest';
+import { describe, expect } from 'vitest';
 
 import type { Charge } from '@/modules/charge/contracts.js';
 import type {
@@ -14,11 +14,14 @@ import type {
   RetryState,
   PaymentRepo,
 } from '@/modules/payment/data-access.js';
+import { isLive } from '@/modules/payment/domain.js';
 import type { W4pChargeResponse } from '@/modules/wayforpay/contracts.js';
 import {
   ForeignManualCheckout,
   makeSchedulerState,
+  DAY_MS,
   scheduleTick,
+  type SchedulerConfig,
   type SchedulerDeps,
   type SchedulerState,
 } from '@/modules/billing/scheduler.js';
@@ -27,10 +30,11 @@ interface LapseCalls {
   lapsed: Payment[];
 }
 
-const config = {
+const config: SchedulerConfig = {
   intervalSeconds: 60,
   batchSize: 10,
   upcomingChargeNoticeDays: [],
+  payNowClaimGraceSeconds: 3600,
 };
 
 /** "Now" for every tick: after every fixture's due date, so `findDue`'s rows are due. */
@@ -86,7 +90,21 @@ interface RepoCalls {
   advances: { id: string; anchor: AdvanceAnchor }[];
   retry: { id: string; state: RetryState } | null;
   renewalFailed: boolean;
+  deferred: { id: string; nextPaymentDate: Date }[];
 }
+
+/** `deferCharge` mirroring the SQL: only an Active, ladder-free row moves, and only its
+ * next date. */
+const deferChargeFake =
+  (rows: Map<string, Payment>, calls: RepoCalls): PaymentRepo['deferCharge'] =>
+  (id, nextPaymentDate) =>
+    Effect.sync(() => {
+      calls.deferred.push({ id, nextPaymentDate });
+      const row = rows.get(id);
+      if (row?.status === PaymentStatus.Active && row.retryAttempt === 0) {
+        rows.set(id, { ...row, nextPaymentDate });
+      }
+    });
 
 /**
  * The PaymentRepo mock over a mutable row table: `findDue` hands back the snapshot rows,
@@ -138,6 +156,7 @@ const makeSubsMock = (
   markCancelledLapsed: die,
   cancelUpstream: die,
   defer: die,
+  deferCharge: deferChargeFake(rows, calls),
   updateToken: die,
   setMethod: die,
   clearToken: die,
@@ -209,29 +228,64 @@ interface DepsOptions {
   /** Runs inside the charge HTTP call, before it answers: the phase-2 window in which a
    * prolongation can commit while the scheduler holds no lock. */
   readonly duringCharge?: (rows: Map<string, Payment>) => void;
+  /** Runs inside the `upstreamCancelled` call (a SendPulse round trip with no lock held):
+   * the window in which a pay-now settlement can commit before the locked decision. */
+  readonly duringUpstreamCheck?: (rows: Map<string, Payment>) => void;
+  /** The near-due guard's claim lookup; recorded into `calls.claimLookups`. */
+  readonly recentProlongClaim?: SchedulerDeps['recentProlongClaim'];
   /** How many ingest calls fail with a SqlError before one succeeds. */
   readonly ingestFailures?: number;
   /** Extra due rows beside `sub`. */
   readonly others?: readonly Payment[];
 }
 
+const upstreamFake =
+  (
+    rows: Map<string, Payment>,
+    options: DepsOptions,
+  ): SchedulerDeps['upstreamCancelled'] =>
+  () =>
+    Effect.sync(() => {
+      options.duringUpstreamCheck?.(rows);
+      return options.upstreamCancelled ?? false;
+    });
+
+/** The recording `recentProlongClaim`: logs each lookup, answers from the option (None
+ * by default). */
+const recordingClaim =
+  (
+    lookups: { id: string; since: Date }[],
+    options: DepsOptions,
+  ): SchedulerDeps['recentProlongClaim'] =>
+  (payment, since) =>
+    Effect.suspend(() => {
+      lookups.push({ id: payment.id, since });
+      return options.recentProlongClaim === undefined
+        ? Effect.succeed(Option.none())
+        : options.recentProlongClaim(payment, since);
+    });
+
+const makeCalls = () => ({
+  advanced: null as { id: string; anchor: AdvanceAnchor } | null,
+  advances: [] as { id: string; anchor: AdvanceAnchor }[],
+  retry: null as { id: string; state: RetryState } | null,
+  renewalFailed: false,
+  deferred: [] as { id: string; nextPaymentDate: Date }[],
+  claimLookups: [] as { id: string; since: Date }[],
+  ingested: [] as Charge[],
+  ingestAttempts: 0,
+  published: [] as DomainEvent[],
+  manualCheckout: [] as { sub: Payment; now: Date }[],
+  charged: [] as { orderReference: string; amount: number }[],
+  cancelledUpstream: [] as Payment[],
+  claims: new Map<string, boolean>(),
+});
+
 const makeDeps = (sub: Payment, options: DepsOptions = {}) => {
   const lapseCalls: LapseCalls = { lapsed: [] };
   const due = [sub, ...(options.others ?? [])];
   const rows = new Map(due.map((row) => [row.id, row]));
-  const calls = {
-    advanced: null as { id: string; anchor: AdvanceAnchor } | null,
-    advances: [] as { id: string; anchor: AdvanceAnchor }[],
-    retry: null as { id: string; state: RetryState } | null,
-    renewalFailed: false,
-    ingested: [] as Charge[],
-    ingestAttempts: 0,
-    published: [] as DomainEvent[],
-    manualCheckout: [] as { sub: Payment; now: Date }[],
-    charged: [] as { orderReference: string; amount: number }[],
-    cancelledUpstream: [] as Payment[],
-    claims: new Map<string, boolean>(),
-  };
+  const calls = makeCalls();
   let failuresLeft = options.ingestFailures ?? 0;
   const subs = makeSubsMock(rows, due, calls);
   const deps: SchedulerDeps = {
@@ -265,13 +319,13 @@ const makeDeps = (sub: Payment, options: DepsOptions = {}) => {
       Effect.sync(() => {
         lapseCalls.lapsed.push(payment);
       }),
-    upstreamCancelled: () => Effect.succeed(options.upstreamCancelled ?? false),
+    upstreamCancelled: upstreamFake(rows, options),
     cancelUpstream: (payment) =>
-      Effect.sync(() => {
-        calls.cancelledUpstream.push(payment);
-      }),
+      Effect.sync(() => void calls.cancelledUpstream.push(payment)),
     createManualCheckout: manualCheckoutStub(calls),
     claimAdvance: fakeLedger(rows, calls),
+    mintPayNow: () => Effect.die('unused'),
+    recentProlongClaim: recordingClaim(calls.claimLookups, options),
   };
   return { deps, calls, lapseCalls, rows };
 };
@@ -282,10 +336,11 @@ const tick = (
   deps: SchedulerDeps,
   state: SchedulerState = makeSchedulerState(),
   at: Date = NOW,
+  cfg: SchedulerConfig = config,
 ) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(at.getTime());
-    const fiber = yield* Effect.fork(scheduleTick(deps, config, state));
+    const fiber = yield* Effect.fork(scheduleTick(deps, cfg, state));
     yield* TestClock.adjust('1 minute');
     return yield* Fiber.join(fiber);
   });
@@ -926,3 +981,422 @@ it.effect('a later manual prompt carries its own attempt number', () =>
     ).toBe('2026-01-04T00:00:00.000Z');
   }),
 );
+// ---- near-due pay-now guard (B9) ----
+
+/** The due date: on time, so `nextPaymentDate === currentPeriodEnd`. */
+const DUE = baseSub.nextPaymentDate;
+/** The deciding tick, five minutes after the due date. */
+const T = new Date(DUE.getTime() + 5 * 60_000);
+const DEFERRED_UNTIL = new Date(T.getTime() + DAY_MS);
+/** The first tick after the deferral elapsed. */
+const NEXT_DAY = new Date(DEFERRED_UNTIL.getTime() + 60_000);
+/** The end a settled pay-now checkout stacks to: one period on the anchor. */
+const SETTLED_END = new Date('2026-03-01T00:00:00Z');
+const minutesBefore = (at: Date, n: number) =>
+  new Date(at.getTime() - n * 60_000);
+const cryptoSub: Payment = { ...baseSub, method: 1, recurringTokenRef: null };
+
+interface Claim {
+  at: Date | null;
+}
+
+/** A prolong session the buyer claimed at `claim.at` (never, when null). Mirrors the SQL:
+ * Some only while the claim is at or after `since`, i.e. within the grace. */
+const claimFake =
+  (claim: Claim): SchedulerDeps['recentProlongClaim'] =>
+  (_sub, since) =>
+    Effect.sync(() =>
+      claim.at !== null && claim.at.getTime() >= since.getTime()
+        ? Option.some({ sessionId: 'chk_paynow', claimedAt: claim.at })
+        : Option.none(),
+    );
+
+/** `findDue` over the CURRENT rows, as the SQL reads them: live and due by `now`. */
+const liveDue = (
+  deps: SchedulerDeps,
+  rows: Map<string, Payment>,
+): SchedulerDeps => ({
+  ...deps,
+  subs: {
+    ...deps.subs,
+    findDue: (now) =>
+      Effect.sync(() =>
+        [...rows.values()].filter(
+          (row) =>
+            isLive(row) && row.nextPaymentDate.getTime() <= now.getTime(),
+        ),
+      ),
+  },
+});
+
+/** A guard fixture: `sub` with a claim at `claimedAt`, and `findDue` over the live rows. */
+const guardFixture = (
+  sub: Payment,
+  claimedAt: Date | null,
+  options: DepsOptions = {},
+) => {
+  const claim: Claim = { at: claimedAt };
+  const made = makeDeps(sub, {
+    ...options,
+    recentProlongClaim: claimFake(claim),
+  });
+  return { ...made, claim, deps: liveDue(made.deps, made.rows) };
+};
+
+/** The pay-now checkout settles: one period stacked, the session no longer Pending. */
+const settle = (rows: Map<string, Payment>, sub: Payment, claim: Claim) => {
+  rows.set(sub.id, {
+    ...sub,
+    currentPeriodEnd: SETTLED_END,
+    nextPaymentDate: SETTLED_END,
+    retryAttempt: 0,
+  });
+  claim.at = null;
+};
+
+const deferrals = (published: readonly DomainEvent[]) =>
+  published.filter((event) => event.name === 'charge_deferred');
+
+const guardDefersCard = () =>
+  Effect.gen(function* () {
+    const { deps, calls, rows, claim } = guardFixture(
+      baseSub,
+      minutesBefore(T, 30),
+    );
+
+    yield* tick(deps, makeSchedulerState(), T);
+
+    expect(calls.charged).toHaveLength(0);
+    expect(calls.deferred).toEqual([
+      { id: 'sub-1', nextPaymentDate: DEFERRED_UNTIL },
+    ]);
+    expect(calls.claimLookups).toEqual([
+      { id: 'sub-1', since: minutesBefore(T, 60) },
+    ]);
+    expect(calls.published.map((event) => event.name)).toEqual([
+      'charge_deferred',
+    ]);
+    expect(calls.published[0]?.payload).toEqual({
+      paymentId: 'sub-1',
+      method: 0,
+      dueDate: DUE.toISOString(),
+      deferredUntil: DEFERRED_UNTIL.toISOString(),
+      graceSeconds: 3600,
+      sessionId: 'chk_paynow',
+      claimedAt: claim.at?.toISOString(),
+    });
+    expect(calls.ingested).toHaveLength(0);
+    expect(calls.retry).toBeNull();
+    expect(rows.get('sub-1')?.currentPeriodEnd).toEqual(DUE);
+  });
+
+/** One tick at T with the claim at `claimedAt`: the sub is charged, never deferred. */
+const chargedOnTime = (
+  sub: Payment,
+  claimedAt: Date | null,
+  lookups: number,
+  cfg: SchedulerConfig = config,
+) =>
+  Effect.gen(function* () {
+    const { deps, calls } = guardFixture(sub, claimedAt);
+
+    yield* tick(deps, makeSchedulerState(), T, cfg);
+
+    expect(calls.claimLookups).toHaveLength(lookups);
+    expect(calls.charged).toHaveLength(1);
+    expect(calls.deferred).toHaveLength(0);
+    expect(deferrals(calls.published)).toHaveLength(0);
+  });
+
+const guardDeferredDayCharges = () =>
+  Effect.gen(function* () {
+    const { deps, calls, rows, claim } = guardFixture(
+      baseSub,
+      minutesBefore(T, 30),
+    );
+    yield* tick(deps, makeSchedulerState(), T);
+    expect(rows.get('sub-1')?.nextPaymentDate).toEqual(DEFERRED_UNTIL);
+
+    // A fresh press again: the guard must stay out (next > end after the push).
+    claim.at = minutesBefore(DEFERRED_UNTIL, 10);
+    yield* tick(deps, makeSchedulerState(), NEXT_DAY);
+
+    expect(calls.claimLookups).toHaveLength(1);
+    expect(calls.charged).toEqual([
+      {
+        orderReference: `sub_sub-1_${DEFERRED_UNTIL.getTime().toString()}`,
+        amount: 30000,
+      },
+    ]);
+    expect(deferrals(calls.published)).toHaveLength(1);
+    // The success stacks on the anchor, so the cadence stays on the due date.
+    expect(calls.advanced?.anchor.nextPaymentDate).toEqual(SETTLED_END);
+  });
+
+const guardDefersCrypto = () =>
+  Effect.gen(function* () {
+    const { deps, calls } = guardFixture(cryptoSub, minutesBefore(T, 30));
+
+    yield* tick(deps, makeSchedulerState(), T);
+
+    expect(calls.manualCheckout).toHaveLength(0);
+    expect(calls.deferred).toEqual([
+      { id: 'sub-1', nextPaymentDate: DEFERRED_UNTIL },
+    ]);
+    expect(calls.published.map((event) => event.name)).toEqual([
+      'charge_deferred',
+    ]);
+
+    yield* tick(deps, makeSchedulerState(), NEXT_DAY);
+
+    expect(calls.manualCheckout).toHaveLength(1);
+    expect(calls.published.map((event) => event.name)).toEqual([
+      'charge_deferred',
+      'payment_manual_required',
+    ]);
+    expect(calls.charged).toHaveLength(0);
+  });
+
+/** Nothing happened: no charge, prompt, deferral or event, and one 'payment moved' line. */
+const expectMovedNoop = (
+  calls: ReturnType<typeof makeCalls>,
+  logs: readonly string[],
+) => {
+  // The discriminating assertion: the pre-guard path charged the stale earlier read.
+  expect(calls.charged).toHaveLength(0);
+  expect(calls.manualCheckout).toHaveLength(0);
+  expect(calls.deferred).toHaveLength(0);
+  expect(calls.published).toHaveLength(0);
+  expect(calls.ingested).toHaveLength(0);
+  expect(countOf(logs, 'scheduler: skipped, payment moved')).toBe(1);
+};
+
+const settledDuringUpstreamCheck = () =>
+  Effect.gen(function* () {
+    const claim: Claim = { at: minutesBefore(T, 30) };
+    const { deps, calls } = makeDeps(baseSub, {
+      recentProlongClaim: claimFake(claim),
+      duringUpstreamCheck: (rows) => {
+        settle(rows, baseSub, claim);
+      },
+    });
+    const logs: string[] = [];
+
+    yield* capturingLogs(logs, tick(deps, makeSchedulerState(), T));
+
+    expectMovedNoop(calls, logs);
+  });
+
+/** `lockById` that settles the row on its `nth` call (1 = recheckDue, 2 = the decision). */
+const settlingAtLock = (
+  made: ReturnType<typeof guardFixture>,
+  nth: number,
+): SchedulerDeps => {
+  let locks = 0;
+  const { lockById } = made.deps.subs;
+  return {
+    ...made.deps,
+    subs: {
+      ...made.deps.subs,
+      lockById: (id) =>
+        Effect.suspend(() => {
+          locks += 1;
+          if (locks === nth) settle(made.rows, baseSub, made.claim);
+          return lockById(id);
+        }),
+    },
+  };
+};
+
+const settledAtDecisionLock = () =>
+  Effect.gen(function* () {
+    const made = guardFixture(baseSub, minutesBefore(T, 30));
+    const logs: string[] = [];
+
+    yield* capturingLogs(
+      logs,
+      tick(settlingAtLock(made, 2), makeSchedulerState(), T),
+    );
+
+    expectMovedNoop(made.calls, logs);
+  });
+
+/** (a), then the claimed checkout settles at D+2h; the next day nothing happens, even
+ * when the stale deferred snapshot is forced into the tick. */
+const settledInsideDeferral = (sub: Payment) =>
+  Effect.gen(function* () {
+    const made = guardFixture(sub, minutesBefore(T, 30));
+    const { calls, rows } = made;
+    yield* tick(made.deps, makeSchedulerState(), T);
+    const stale = rows.get(sub.id) ?? sub;
+    expect(stale.nextPaymentDate).toEqual(DEFERRED_UNTIL);
+    settle(rows, sub, made.claim);
+
+    yield* tick(made.deps, makeSchedulerState(), NEXT_DAY);
+    const forced: SchedulerDeps = {
+      ...made.deps,
+      subs: { ...made.deps.subs, findDue: () => Effect.succeed([stale]) },
+    };
+    const logs: string[] = [];
+    yield* capturingLogs(logs, tick(forced, makeSchedulerState(), NEXT_DAY));
+
+    expect(calls.charged).toHaveLength(0);
+    expect(calls.manualCheckout).toHaveLength(0);
+    expect(calls.published.map((event) => event.name)).toEqual([
+      'charge_deferred',
+    ]);
+    expect(rows.get(sub.id)?.nextPaymentDate).toEqual(SETTLED_END);
+    expect(countOf(logs, 'scheduler: skipped, no longer due')).toBe(1);
+  });
+
+describe('near-due pay-now guard', () => {
+  it.effect(
+    '(a) a claim 30 min old defers a card charge by 24 h, quietly, once',
+    guardDefersCard,
+  );
+  it.effect('(b) a claim 90 min old is outside the grace: charged', () =>
+    chargedOnTime(baseSub, minutesBefore(T, 90), 1),
+  );
+  it.effect('(c) a never-claimed (Created-only) session: charged', () =>
+    chargedOnTime(baseSub, null, 1),
+  );
+  it.effect('(d) a retry-ladder sub is charged even with a fresh claim', () =>
+    chargedOnTime(
+      { ...baseSub, retryAttempt: 1, firstFailureAt: DUE },
+      minutesBefore(T, 5),
+      0,
+    ),
+  );
+  it.effect(
+    '(e) the deferred tick a day later charges exactly once and does not defer again',
+    guardDeferredDayCharges,
+  );
+  it.effect(
+    '(f) crypto with a fresh claim: no prompt, deferred; prompted once a day later',
+    guardDefersCrypto,
+  );
+  it.effect('(g) grace 0 turns the guard off: charged, no lookup', () =>
+    chargedOnTime(baseSub, minutesBefore(T, 5), 0, {
+      ...config,
+      payNowClaimGraceSeconds: 0,
+    }),
+  );
+  it.effect(
+    '(h) a settlement during the upstream check is seen by the locked decision',
+    settledDuringUpstreamCheck,
+  );
+  it.effect(
+    '(h) a settlement landing at the decision lock returns the moved row',
+    settledAtDecisionLock,
+  );
+  it.effect('(i) a settlement inside the deferral window: card', () =>
+    settledInsideDeferral(baseSub),
+  );
+  it.effect('(i) a settlement inside the deferral window: crypto', () =>
+    settledInsideDeferral(cryptoSub),
+  );
+});
+
+// ---- AC 7: the notice tick, then the due tick ----
+
+const NOTICE_DAY = new Date(DUE.getTime() - DAY_MS);
+const DUE_TICK = new Date(DUE.getTime() + 60_000);
+const noticeConfig: SchedulerConfig = {
+  ...config,
+  upcomingChargeNoticeDays: [1],
+};
+
+/** Notices the sub on the first sweep only; `findDue` hands back `sub` once due (the
+ * snapshot, so a moved row reaches `recheckDue`); `mintPayNow` is recorded. */
+const twoTickDeps = (sub: Payment) => {
+  const made = makeDeps(sub);
+  const minted: Payment[] = [];
+  let noticed = false;
+  const deps: SchedulerDeps = {
+    ...made.deps,
+    subs: {
+      ...made.deps.subs,
+      findDue: (now) =>
+        Effect.succeed(
+          now.getTime() >= sub.nextPaymentDate.getTime() ? [sub] : [],
+        ),
+      findUpcomingForNotice: () =>
+        Effect.sync(() => {
+          const upcoming = noticed ? [] : [sub];
+          noticed = true;
+          return upcoming;
+        }),
+    },
+    mintPayNow: (payment) =>
+      Effect.sync(() => {
+        minted.push(payment);
+        return { checkoutUrl: 'https://bill.example/c/pn', cycleOptions: [1] };
+      }),
+  };
+  return { ...made, deps, minted };
+};
+
+const noticeThenCharge = () =>
+  Effect.gen(function* () {
+    const { deps, calls, minted } = twoTickDeps(baseSub);
+
+    yield* tick(deps, makeSchedulerState(), NOTICE_DAY, noticeConfig);
+    expect(minted.map((payment) => payment.id)).toEqual(['sub-1']);
+    expect(calls.charged).toHaveLength(0);
+
+    yield* tick(deps, makeSchedulerState(), DUE_TICK, noticeConfig);
+    expect(calls.charged).toEqual([
+      {
+        orderReference: `sub_sub-1_${DUE.getTime().toString()}`,
+        amount: 30000,
+      },
+    ]);
+    expect(minted).toHaveLength(1);
+  });
+
+const noticeThenPrompt = () =>
+  Effect.gen(function* () {
+    const { deps, calls, minted } = twoTickDeps(cryptoSub);
+
+    yield* tick(deps, makeSchedulerState(), NOTICE_DAY, noticeConfig);
+    yield* tick(deps, makeSchedulerState(), DUE_TICK, noticeConfig);
+
+    expect(minted).toHaveLength(1);
+    expect(calls.manualCheckout).toHaveLength(1);
+    expect(calls.published.map((event) => event.name)).toEqual([
+      'upcoming_charge',
+      'payment_manual_required',
+    ]);
+    expect(calls.charged).toHaveLength(0);
+  });
+
+const noticeThenMoved = (sub: Payment) =>
+  Effect.gen(function* () {
+    const { deps, calls, rows } = twoTickDeps(sub);
+    yield* tick(deps, makeSchedulerState(), NOTICE_DAY, noticeConfig);
+    prolongTo(rows, sub, '2026-03-01T00:00:00Z');
+    const logs: string[] = [];
+
+    yield* capturingLogs(
+      logs,
+      tick(deps, makeSchedulerState(), DUE_TICK, noticeConfig),
+    );
+
+    expect(calls.charged).toHaveLength(0);
+    expect(calls.manualCheckout).toHaveLength(0);
+    expect(countOf(logs, 'scheduler: skipped, no longer due')).toBe(1);
+  });
+
+describe('AC 7: the notice tick, then the due tick', () => {
+  it.effect(
+    'card: the notice mints the link, the due tick charges once',
+    noticeThenCharge,
+  );
+  it.effect('crypto token-less: the due tick prompts once', noticeThenPrompt);
+  it.effect('a card row moved before the due tick: no charge', () =>
+    noticeThenMoved(baseSub),
+  );
+  it.effect('a crypto row moved before the due tick: no manual prompt', () =>
+    noticeThenMoved(cryptoSub),
+  );
+});

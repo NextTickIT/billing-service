@@ -165,12 +165,17 @@ export const oneTimePurchaseSucceeded = (
   }),
 });
 
+/** A checkout that reports as a renewal even when it creates the row: a manual renewal
+ * (AC 25), or a caller link flagged `reportAs: "renewal"` (legacy migration). */
+const reportsAsRenewal = (match: Match): boolean =>
+  match.origin === 'manual_renewal' || match.origin === 'migration';
+
 /**
  * Pick the success variant: a recurring renewal (non-checkout match) → recurring; a
  * checkout the caller opted out of recurrence (`match.recurring === false`) → one-time
- * purchase; a checkout that prolonged a live sub, or any manual renewal (even one paid
- * after its sub died, AC 25) → recurring; any other checkout → the initial
- * (subscription) success.
+ * purchase; a checkout that prolonged a live sub, or one that reports as a renewal
+ * (`reportsAsRenewal`: a manual renewal even when paid after its sub died, AC 25, or a
+ * migration link) → recurring; any other checkout → the initial (subscription) success.
  */
 const paymentSucceeded = (
   event: Charge,
@@ -184,7 +189,7 @@ const paymentSucceeded = (
   if (
     match.kind !== 'checkout' ||
     (match.recurring !== false &&
-      (applied.prolonged || match.origin === 'manual_renewal'))
+      (applied.prolonged || reportsAsRenewal(match)))
   ) {
     return recurringPaymentSucceeded(event, match, subscriptionId, applied);
   }
@@ -656,10 +661,11 @@ const process = (deps: HandleDeps, event: Charge) =>
           // ladder — the customer re-initiates checkout; the session stays open for
           // another attempt. Recurring failures never reach the pipeline (the scheduler
           // emits them), so a matched non-success is a checkout one: a failed
-          // prolongation when the contact holds a live sub or it is a manual renewal
-          // (AC 25), else a declined first payment (FR-003).
+          // prolongation when the contact holds a live sub or the checkout reports as a
+          // renewal (`reportsAsRenewal`: manual renewal, AC 25, or a migration link), else
+          // a declined first payment (FR-003).
           yield* deps.publish(
-            match.prolongOf != null || match.origin === 'manual_renewal'
+            match.prolongOf != null || reportsAsRenewal(match)
               ? recurringPaymentFailed(event, match)
               : initialPaymentFailed(event, match),
           );

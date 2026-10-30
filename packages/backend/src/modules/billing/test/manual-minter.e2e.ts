@@ -6,7 +6,7 @@ import {
   type CheckoutOrigin,
   PaymentStatus,
 } from '@billing-service/shared';
-import { Effect } from 'effect';
+import { Effect, Option } from 'effect';
 
 import type { AppConfig } from '@/config.js';
 import {
@@ -87,9 +87,16 @@ const driveTick = (config: AppConfig, holder: Holder) =>
         upstreamCancelled: () => Effect.succeed(false),
         cancelUpstream: die,
         claimAdvance: ledgerClaimAdvance(sql),
+        mintPayNow: () => Effect.die('unused'),
+        recentProlongClaim: () => Effect.succeed(Option.none()),
         createManualCheckout: manualCheckoutMinter(sql, config),
       },
-      { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+      {
+        intervalSeconds: 60,
+        batchSize: 10,
+        upcomingChargeNoticeDays: [],
+        payNowClaimGraceSeconds: 3600,
+      },
     );
   });
 

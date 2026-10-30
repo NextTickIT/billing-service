@@ -91,6 +91,7 @@ const deadPayments: PaymentRepo = {
   markCancelledLapsed: () => Effect.die('unused'),
   cancelUpstream: () => Effect.die('unused'),
   defer: () => Effect.die('unused'),
+  deferCharge: () => Effect.die('unused'),
   updateToken: () => Effect.die('unused'),
   setMethod: () => Effect.die('unused'),
   clearToken: () => Effect.die('unused'),

@@ -21,6 +21,7 @@ export const EVENT_NAMES = [
   'initial_payment_failed',
   'recurring_payment_failed',
   'charge_retry_failed',
+  'charge_deferred',
   'renewal_failed',
   'payment_manual_required',
   'upcoming_charge',
@@ -235,6 +236,32 @@ export type ChargeRetryFailedEvent = Schema.Schema.Type<
   typeof ChargeRetryFailedEvent
 >;
 
+/**
+ * A due charge held back because the payer pressed Pay on the prolong session just
+ * before the tick: the scheduler gives the claimed session `graceSeconds` to settle
+ * instead of charging. `dueDate` is the original `nextPaymentDate`, `sessionId` the
+ * claimed prolong session, `claimedAt` when Pay was pressed. Dates are ISO-8601 strings
+ * (payload-date convention).
+ */
+export const ChargeDeferredEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('charge_deferred'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({
+    paymentId: Schema.String,
+    method: Schema.Int,
+    dueDate: Schema.String,
+    deferredUntil: Schema.String,
+    graceSeconds: Schema.Int,
+    sessionId: Schema.String,
+    claimedAt: Schema.String,
+  }),
+});
+
+export type ChargeDeferredEvent = Schema.Schema.Type<
+  typeof ChargeDeferredEvent
+>;
+
 /** The retry schedule is exhausted; the subscription stops renewing (FR-005). */
 export const RenewalFailedEvent = Schema.Struct({
   ...envelope,
@@ -320,6 +347,11 @@ export const UpcomingChargeEvent = Schema.Struct({
     chargeDate: Schema.String,
     /** How many days before `chargeDate` this notice is for — lets a flow branch. */
     noticeDays: Schema.Int,
+    /** Pay-now link: a prolong session at this sub's terms, locked to its method. Null when the
+     * sub's rail cannot take a payment now (crypto while WhitePay is off). */
+    checkoutUrl: Schema.NullOr(Schema.String),
+    /** Cycle counts the linked page offers; `[]` when there is no link. */
+    cycleOptions: Schema.Array(Schema.Int),
   }),
 });
 
@@ -501,6 +533,7 @@ export const DomainEvent = Schema.Union(
   RecurringPaymentFailedEvent,
   PaymentCreatedEvent,
   ChargeRetryFailedEvent,
+  ChargeDeferredEvent,
   RenewalFailedEvent,
   PaymentManualRequiredEvent,
   UpcomingChargeEvent,
