@@ -240,7 +240,6 @@ const callback = (ref: string, at: Date, paid: Paid = {}): Charge => ({
   payload: {},
 });
 
-/** Enqueue the callback through the real pipeline and drain the queue. */
 const settle = (event: Charge) =>
   Effect.gen(function* () {
     yield* (yield* ChargePipeline).ingest(event);

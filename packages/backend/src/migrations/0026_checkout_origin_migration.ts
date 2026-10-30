@@ -36,7 +36,6 @@ import { Effect } from 'effect';
 export default Effect.flatMap(SqlClient.SqlClient, (sql) =>
   Effect.all(
     [
-      // Bounds lock acquisition only (fail fast if the table is busy).
       sql`SET LOCAL lock_timeout = '5s'`,
       // Bounds the ADD CONSTRAINT validation scan, which holds ACCESS EXCLUSIVE until
       // commit; prod's checkout_sessions is a few thousand rows (ms), 60s only caps a
@@ -61,7 +60,6 @@ export default Effect.flatMap(SqlClient.SqlClient, (sql) =>
         ALTER TABLE checkout_sessions ADD CONSTRAINT checkout_sessions_origin_check
           CHECK (origin IN ('prolong', 'manual_renewal', 'card_change', 'card_change_arrears', 'migration'))
       `,
-      // When the buyer last pressed Pay (claimForPayment); NULL when never claimed or released.
       sql`ALTER TABLE checkout_sessions ADD COLUMN IF NOT EXISTS "claimedAt" timestamptz`,
     ],
     { discard: true },

@@ -239,7 +239,6 @@ interface DepsOptions {
   readonly others?: readonly Payment[];
 }
 
-/** `upstreamCancelled`, running the `duringUpstreamCheck` hook inside the call. */
 const upstreamFake =
   (
     rows: Map<string, Payment>,
@@ -266,7 +265,6 @@ const recordingClaim =
         : options.recentProlongClaim(payment, since);
     });
 
-/** Everything one test's deps record. */
 const makeCalls = () => ({
   advanced: null as { id: string; anchor: AdvanceAnchor } | null,
   advances: [] as { id: string; anchor: AdvanceAnchor }[],

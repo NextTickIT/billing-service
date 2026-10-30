@@ -126,7 +126,6 @@ export interface SchedulerConfig {
   readonly payNowClaimGraceSeconds: number;
 }
 
-/** One day in milliseconds. */
 export const DAY_MS = 86_400_000;
 
 /** Deterministic per attempt: the timestamp changes only when the schedule moves. */
@@ -479,7 +478,6 @@ const decideDueAction = (
     Effect.gen(function* () {
       const locked = yield* deps.subs.lockById(read.id);
       if (Option.isNone(locked) || hasMoved(locked, read, now)) {
-        // Paid ahead, soft-cancelled meanwhile, or gone: nothing to do this tick.
         return { _tag: 'moved' } as const;
       }
       const fresh = locked.value;
