@@ -19,6 +19,7 @@ import {
 import { renewalScenarios } from '@/modules/charge/test/renewal.e2e.js';
 import { lapseScenarios } from '@/modules/payment/test/lapse.e2e.js';
 import { manualMinterScenarios } from '@/modules/billing/test/manual-minter.e2e.js';
+import { payNowMinterScenarios } from '@/modules/billing/test/pay-now-minter.e2e.js';
 import { crmSinkScenarios } from '@/modules/sinks/test/crm.e2e.js';
 import { settlementScenarios } from '@/modules/billing/test/settlement.e2e.js';
 import { chargeKindScenarios } from '@/modules/charge/test/charge-kind.e2e.js';
@@ -1492,6 +1493,7 @@ export const effectScenarios: readonly EffectScenario[] = [
   ...renewalScenarios,
   ...lapseScenarios,
   ...manualMinterScenarios,
+  ...payNowMinterScenarios,
   ...crmSinkScenarios,
   ...settlementScenarios,
   ...chargeKindScenarios,

@@ -34,6 +34,7 @@ import {
   prolongSession,
 } from '@/modules/checkout/domain.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
+import { hmacSha256Hex } from '@/modules/whitepay/callback.js';
 
 import {
   ADMIN_TOKEN,
@@ -63,16 +64,16 @@ export interface Http {
   readonly secret: string;
 }
 
-interface PayResult {
+export interface PayResult {
   readonly status: number;
   readonly body: Json;
 }
 
 export const FAR = new Date('2030-01-01T00:00:00Z');
-const PAST = new Date('2026-01-01T00:00:00Z');
-const CREATED = String(CheckoutSessionStatus.Created);
-const PENDING = String(CheckoutSessionStatus.Pending);
-const WHITEPAY_PAY_URL = 'https://pay.whitepay.test';
+export const PAST = new Date('2026-01-01T00:00:00Z');
+export const CREATED = String(CheckoutSessionStatus.Created);
+export const PENDING = String(CheckoutSessionStatus.Pending);
+export const WHITEPAY_PAY_URL = 'https://pay.whitepay.test';
 const INTRO = {
   amount: 100,
   currency: 0,
@@ -81,7 +82,7 @@ const INTRO = {
 };
 
 /** Run one effect on a worker runtime over this scenario's database. */
-const onDb = async <A, E>(
+export const onDb = async <A, E>(
   effect: Effect.Effect<A, E, WorkerContext>,
 ): Promise<A> => {
   let out: A | undefined;
@@ -140,7 +141,7 @@ export const httpContext = async (
 };
 
 /** The same credentials against another app instance (same database). */
-const onApp = async (http: Http, baseUrl: string): Promise<Http> => ({
+export const onApp = async (http: Http, baseUrl: string): Promise<Http> => ({
   ...http,
   baseUrl,
   bff: makeBff(await loadBffHandler(), baseUrl),
@@ -151,7 +152,7 @@ const headers = (http: Http, key?: string): Record<string, string> => ({
   ...(key === undefined ? {} : { 'idempotency-key': key }),
 });
 
-const callProlong = (http: Http, externalUserId: string, key?: string) =>
+export const callProlong = (http: Http, externalUserId: string, key?: string) =>
   postJson(
     `${http.baseUrl}/api/payment/prolong`,
     { externalUserId },
@@ -181,16 +182,20 @@ export const publicRead = async (http: Http, id: string): Promise<Json> => {
   return (await res.json()) as Json;
 };
 
-const pay = async (
+/** `/pay` through the BFF, with an option index when one is picked. */
+export const pay = async (
   http: Http,
   id: string,
   method: number,
+  option?: number,
 ): Promise<PayResult> => {
   const res = await http.bff(
     new Request(`${http.baseUrl}/api/checkout-sessions/${id}/pay`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ method }),
+      body: JSON.stringify(
+        option === undefined ? { method } : { method, option },
+      ),
     }),
   );
   return { status: res.status, body: (await res.json()) as Json };
@@ -198,7 +203,7 @@ const pay = async (
 
 /** The session a 200 pay instruction hands to the provider (card form or crypto
  * redirect from the stub, which echoes the session id). */
-const paidSession = (res: PayResult, what: string): string => {
+export const paidSession = (res: PayResult, what: string): string => {
   assert.equal(res.status, 200, `${what} → 200`);
   if (res.body['kind'] === 'form') {
     return String((res.body['fields'] as Json)['orderReference']);
@@ -209,10 +214,10 @@ const paidSession = (res: PayResult, what: string): string => {
 export const scalar = async (http: Http, sql: string): Promise<string> =>
   (await http.query(sql)).trim();
 
-const statusOf = (http: Http, id: string) =>
+export const statusOf = (http: Http, id: string) =>
   scalar(http, `SELECT status FROM checkout_sessions WHERE id = '${id}'`);
 
-const sessionsOf = (http: Http, contact: string) =>
+export const sessionsOf = (http: Http, contact: string) =>
   scalar(
     http,
     `SELECT count(*) FROM checkout_sessions WHERE "externalUserId" = '${contact}'`,
@@ -231,7 +236,7 @@ const assertNoInternals = (body: Json, what: string): void => {
   assert.equal('externalUserId' in body, false, `${what}: no externalUserId`);
 };
 
-const assertMethodLocked = (
+export const assertMethodLocked = (
   res: PayResult,
   method: PaymentMethod,
   what: string,
@@ -249,7 +254,7 @@ const assertMethodLocked = (
 };
 
 /** A recurring checkout row as a caller would have created it, for direct seeding. */
-const plainSession = (
+export const plainSession = (
   id: string,
   externalUserId: string,
   extra: Partial<NewCheckoutSession> = {},
@@ -304,7 +309,7 @@ const stubWhitePay = (req: IncomingMessage, res: ServerResponse): void => {
 };
 
 /** Set `env` around `body`, restoring every key afterwards. */
-const withEnv = async (
+export const withEnv = async (
   env: Record<string, string>,
   body: () => Promise<void>,
 ): Promise<void> => {
@@ -323,13 +328,18 @@ const withEnv = async (
   }
 };
 
+/** The webhook token the WhitePay app verifies callbacks with (`withWhitePayApp`). */
+export const WHITEPAY_WEBHOOK_TOKEN = 'e2e-webhook';
+
 /**
  * Serve a second app over the same database with WhitePay enabled and pointed at the
  * local stub. The config is read when the app is built, so the env is set only around
- * that app's life.
+ * that app's life. `extraEnv` adds scenario-specific knobs for the same app (e.g.
+ * `MANUAL_RENEWAL_CYCLE_OPTIONS`).
  */
-const withWhitePayApp = async (
+export const withWhitePayApp = async (
   body: (baseUrl: string) => Promise<void>,
+  extraEnv: Record<string, string> = {},
 ): Promise<void> => {
   const stub = createServer(stubWhitePay);
   await new Promise<void>((resolve) => stub.listen(0, '127.0.0.1', resolve));
@@ -338,8 +348,9 @@ const withWhitePayApp = async (
     WHITEPAY_ENABLED: 'true',
     WHITEPAY_SLUG: 'e2e',
     WHITEPAY_API_TOKEN: 'e2e-token',
-    WHITEPAY_WEBHOOK_TOKEN: 'e2e-webhook',
+    WHITEPAY_WEBHOOK_TOKEN,
     WHITEPAY_API_URL: `http://127.0.0.1:${port.toString()}`,
+    ...extraEnv,
   };
   try {
     await withEnv(env, async () => {
@@ -885,10 +896,176 @@ const c2StaleRenewalLink: Scenario = {
   },
 };
 
+// ---------------------------------------------------------------------------------
+// Provider callbacks with any reference, amount, currency and paid-at instant.
+// ---------------------------------------------------------------------------------
+
+/** What a provider reports for one order. `amount` is in major units, as it is sent. */
+export interface ProviderOrder {
+  readonly ref: string;
+  readonly amount: number;
+  readonly currency?: string;
+  /** The paid-at instant the callback carries (second precision); defaults to now. */
+  readonly at?: Date;
+}
+
+/** A signed WayForPay callback for `order`, then a worker pass over the queue. */
+export const w4pCallback = async (
+  http: Http,
+  transactionStatus: 'Approved' | 'Declined',
+  { ref, amount, currency = 'UAH', at = new Date() }: ProviderOrder,
+): Promise<void> => {
+  const approved = transactionStatus === 'Approved';
+  const res = await postJson(
+    `${http.baseUrl}/api/providers/wayforpay/callback`,
+    signCallback({
+      merchantAccount: MERCHANT_ACCOUNT,
+      orderReference: ref,
+      amount: String(amount),
+      currency,
+      authCode: '',
+      cardPan: '',
+      transactionStatus,
+      reasonCode: approved ? '' : '1101',
+      recToken: approved ? 'tok_w4p' : '',
+      createdDate: String(Math.floor(at.getTime() / 1000)),
+      transactionType: 'PURCHASE',
+    }),
+  );
+  assert.equal(res.status, 200, `W4P ${transactionStatus} ${ref} accepted`);
+  await drainQueue();
+};
+
+/** A WhitePay webhook signed with the WhitePay app's token (`withWhitePayApp`), then a
+ * worker pass over the queue. */
+export const whitePayCallback = async (
+  http: Http,
+  status: 'COMPLETE' | 'DECLINED',
+  { ref, amount, currency = 'USD', at = new Date() }: ProviderOrder,
+): Promise<void> => {
+  const raw = JSON.stringify({
+    order: {
+      id: `wp_${ref}`,
+      external_order_id: ref,
+      value: amount.toFixed(2),
+      currency,
+      status,
+      created_at: at.toISOString(),
+      completed_at: at.toISOString(),
+    },
+  });
+  const res = await fetch(`${http.baseUrl}/api/providers/whitepay/callback`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      signature: hmacSha256Hex(raw, WHITEPAY_WEBHOOK_TOKEN),
+    },
+    body: raw,
+  });
+  assert.equal(res.status, 200, `WhitePay ${status} ${ref} accepted`);
+  await drainQueue();
+};
+
+/** The card order a 200 `/pay` hands to WayForPay: reference and major-unit amount. */
+export const cardOrderOf = (res: PayResult, what: string) => {
+  assert.equal(res.status, 200, `${what} → 200`);
+  assert.equal(res.body['kind'], 'form', `${what}: a card form`);
+  const fields = res.body['fields'] as Json;
+  return {
+    ref: String(fields['orderReference']),
+    amount: Number(fields['amount']),
+  };
+};
+
+/** [amount, cycles] of every option the public read offers. */
+export const cyclesOffered = (read: Json) =>
+  (read['options'] as Json[]).map((o) => [o['amount'], o['cycles']]);
+
+/** UTC date of a sub's paid-through end. */
+export const endDateOf = (http: Http, subId: string) =>
+  scalar(
+    http,
+    `SELECT to_char("currentPeriodEnd" AT TIME ZONE 'UTC', 'YYYY-MM-DD') FROM payments WHERE id = '${subId}'`,
+  );
+
+/** Every column of a payments row, as text: the byte-identity check. */
+export const rowOf = (http: Http, subId: string) =>
+  scalar(http, `SELECT p::text FROM payments p WHERE id = '${subId}'`);
+
+/** name:aggregateId of a contact's events in the order they were stored. Events of one
+ * settlement share a transaction (and so `createdAt`); domain_events is insert-only, so
+ * `ctid` follows the insert order inside it. */
+export const eventsOf = (http: Http, contact: string) =>
+  scalar(
+    http,
+    `SELECT coalesce(string_agg(name || ':' || "aggregateId", ',' ORDER BY "createdAt", ctid), '') FROM domain_events WHERE "externalUserId" = '${contact}'`,
+  );
+
+// ---------------------------------------------------------------------------------
+// B10 — the on-demand /prolong link offers the configured cycles.
+// ---------------------------------------------------------------------------------
+
+const B10 = 'sp:b10';
+const B10_END = new Date('2026-12-01T00:00:00Z');
+
+/** Three cycles of the sub's P4W stacked once on Dec 1, one recurring success. */
+const assertStackedThreeOnce = async (http: Http, sub: Payment) => {
+  assert.equal(await endDateOf(http, sub.id), '2027-02-23', '3 x P4W on Dec 1');
+  assert.equal(
+    await scalar(
+      http,
+      `SELECT string_agg(name || ':' || "aggregateId" || ':' || (payload->>'cycles') || ':' || (payload->>'amount'), ',') FROM domain_events WHERE "externalUserId" = '${B10}'`,
+    ),
+    `recurring_payment_succeeded:${sub.id}:3:90000`,
+    'one recurring success for 3 cycles at 3x',
+  );
+};
+
+const b10Cycles = async (http: Http, sub: Payment) => {
+  const id = await sessionIdOf(
+    await callProlong(http, B10, 'k-b10'),
+    'prolong',
+  );
+  const replay = await callProlong(http, B10, 'k-b10');
+  assert.equal(await sessionIdOf(replay, 'replay'), id, 'same key → same id');
+  const read = await publicRead(http, id);
+  assert.equal(read['prolong'], true, 'still a prolong page');
+  assert.equal(read['methodLocked'], true);
+  assert.deepEqual(cyclesOffered(read), [
+    [30000, 1],
+    [90000, 3],
+    [180000, 6],
+  ]);
+  const crypto = await pay(http, id, PaymentMethod.Crypto, 1);
+  assertMethodLocked(crypto, PaymentMethod.Card, 'Crypto on a card prolong');
+  assert.equal(await statusOf(http, id), CREATED, 'nothing claimed');
+  const order = cardOrderOf(await pay(http, id, PaymentMethod.Card, 1), 'c3');
+  assert.deepEqual(order, { ref: `${id}_c3`, amount: 900 }, '_c3 at 3x');
+  await w4pCallback(http, 'Approved', order);
+  // A redelivered callback (same order, same status) must not stack again.
+  await w4pCallback(http, 'Approved', order);
+  await assertStackedThreeOnce(http, sub);
+};
+
+const b10ProlongCycles: Scenario = {
+  name: 'prolong (B10): with MANUAL_RENEWAL_CYCLE_OPTIONS=1,3,6 the on-demand link offers 1/3/6; option 1 pays _c3 at 3x and stacks 3 periods once; method lock and key replay unchanged',
+  run: async ({ baseUrl, query }) => {
+    const http = await httpContext(baseUrl, query, 'b10-svc');
+    const subOf = await seedSubs([{ externalUserId: B10, end: B10_END }]);
+    await withWhitePayApp(
+      async (url) => {
+        await b10Cycles(await onApp(http, url), subOf(B10));
+      },
+      { MANUAL_RENEWAL_CYCLE_OPTIONS: '1,3,6' },
+    );
+  },
+};
+
 export const prolongScenarios: readonly Scenario[] = [
   t20ProlongEndpoint,
   t31MethodLock,
   t31CryptoAndRemint,
   t35IntroOnLiveSub,
   c2StaleRenewalLink,
+  b10ProlongCycles,
 ];
