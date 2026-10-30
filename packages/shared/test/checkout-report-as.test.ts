@@ -65,17 +65,20 @@ describe('CreateCheckoutSession.reportAs', () => {
     ).toContain('reportAs: "renewal" is only allowed on a recurring checkout');
   });
 
-  test('an absent flag decodes to the same value as before', () => {
-    const withoutFlag = decode({ ...base, recurring: true });
+  test('an absent flag decodes to the pre-change shape, defaults included', () => {
+    // `recurring` is omitted on purpose: the decoder defaults it to true.
+    const withoutFlag = decode({ ...base });
     expect(Either.isRight(withoutFlag)).toBe(true);
     if (Either.isRight(withoutFlag)) {
       expect('reportAs' in withoutFlag.right).toBe(false);
-      expect(withoutFlag.right).toStrictEqual(
-        Schema.decodeUnknownSync(CreateCheckoutSession)({
-          ...base,
-          recurring: true,
-        }),
-      );
+      expect(withoutFlag.right).toStrictEqual({
+        externalUserId: '1001',
+        method: 1,
+        amount: 5000,
+        currency: 1,
+        period: 'P1M',
+        recurring: true,
+      });
     }
   });
 
