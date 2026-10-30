@@ -1021,6 +1021,32 @@ const assertStackedThreeOnce = async (http: Http, sub: Payment) => {
   );
 };
 
+/** A session's claimedAt as epoch ms, or 'null' when it was never claimed. */
+const claimedAtMs = (http: Http, id: string) =>
+  scalar(
+    http,
+    `SELECT coalesce(round(extract(epoch FROM "claimedAt") * 1000)::bigint::text, 'null') FROM checkout_sessions WHERE id = '${id}'`,
+  );
+
+/** `/pay` option 1 on an unclaimed link: `_c3` at 3x, and claimedAt stamped by this
+ * request, before any callback. */
+const payC3Claimed = async (http: Http, id: string) => {
+  assert.equal(await claimedAtMs(http, id), 'null', 'never claimed: NULL');
+  const before = Date.now();
+  const paid = await pay(http, id, PaymentMethod.Card, 1);
+  const after = Date.now();
+  const order = cardOrderOf(paid, 'c3');
+  assert.deepEqual(order, { ref: `${id}_c3`, amount: 900 }, '_c3 at 3x');
+  // Stamped by this /pay, before any callback: inside the request interval (±1 ms for
+  // the timestamptz round trip).
+  const claimedAt = Number(await claimedAtMs(http, id));
+  assert.ok(
+    claimedAt >= before - 1 && claimedAt <= after + 1,
+    `claimedAt ${String(claimedAt)} within /pay [${String(before)}, ${String(after)}]`,
+  );
+  return order;
+};
+
 const b10Cycles = async (http: Http, sub: Payment) => {
   const id = await sessionIdOf(
     await callProlong(http, B10, 'k-b10'),
@@ -1039,8 +1065,7 @@ const b10Cycles = async (http: Http, sub: Payment) => {
   const crypto = await pay(http, id, PaymentMethod.Crypto, 1);
   assertMethodLocked(crypto, PaymentMethod.Card, 'Crypto on a card prolong');
   assert.equal(await statusOf(http, id), CREATED, 'nothing claimed');
-  const order = cardOrderOf(await pay(http, id, PaymentMethod.Card, 1), 'c3');
-  assert.deepEqual(order, { ref: `${id}_c3`, amount: 900 }, '_c3 at 3x');
+  const order = await payC3Claimed(http, id);
   await w4pCallback(http, 'Approved', order);
   // A redelivered callback (same order, same status) must not stack again.
   await w4pCallback(http, 'Approved', order);
