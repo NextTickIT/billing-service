@@ -786,6 +786,60 @@ const p13SettledDuringUpstreamCheck: EffectScenario = {
     }),
 };
 
+// ---------------------------------------------------------------------------------
+// P14: the production notice query, not a copy of it
+// ---------------------------------------------------------------------------------
+
+/** Ids the production `findUpcomingForNotice` returns for `days`, sorted. */
+const noticedIds = (days: number) =>
+  Effect.gen(function* () {
+    const subs = makePaymentRepo(yield* SqlClient.SqlClient);
+    const found = yield* subs.findUpcomingForNotice(days, 100);
+    return found.map((p) => p.id).sort();
+  });
+
+const moveNextOnly = (id: string, to: Date) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE payments SET "nextPaymentDate" = ${to} WHERE id = ${id}`;
+  });
+
+const p14Seed = Effect.gen(function* () {
+  const inThree = yield* kyivNoonIn(3);
+  const onTime = yield* seed({ who: 'sp:p14-on-time', due: inThree });
+  // As `deferCharge` leaves it: due in three days, a day past its paid-through end.
+  const deferred = yield* seed({
+    who: 'sp:p14-deferred',
+    due: new Date(inThree.getTime() - DAY_MS),
+  });
+  yield* moveNextOnly(deferred.id, inThree);
+  const control = yield* seed({
+    who: 'sp:p14-control',
+    due: yield* kyivNoonIn(5),
+  });
+  return { onTime, deferred, control };
+});
+
+const p14NoticeQueryExcludesDeferred: EffectScenario = {
+  name: 'P14: the production findUpcomingForNotice returns an on-time sub due in 3 days, not a deferred one due the same day, and a control only at its own offset',
+  run: ({ config }) =>
+    withWorker(config, async (run) => {
+      const out = await run(
+        Effect.gen(function* () {
+          const subs = yield* p14Seed;
+          return {
+            subs,
+            three: yield* noticedIds(3),
+            five: yield* noticedIds(5),
+          };
+        }),
+      );
+      const { onTime, control } = out.subs;
+      assert.deepEqual(out.three, [onTime.id], 'offset 3: on-time only');
+      assert.deepEqual(out.five, [control.id], 'offset 5: the control only');
+    }),
+};
+
 export const payNowMinterScenarios: readonly EffectScenario[] = [
   p1ThreeTicksOneSession,
   p2SingleCycle,
@@ -800,4 +854,5 @@ export const payNowMinterScenarios: readonly EffectScenario[] = [
   p11SettledBeforeDue,
   p12SettledWhileDeferred,
   p13SettledDuringUpstreamCheck,
+  p14NoticeQueryExcludesDeferred,
 ];
