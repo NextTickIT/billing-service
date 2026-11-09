@@ -88,7 +88,8 @@ export const boundChargeKind = (externalRef: string): ChargeKind =>
     : 'checkout';
 
 /** Shared success payload for the initial/recurring variants (docs/07). `nextPaymentDate`
- * is the next scheduled charge (null for a one-time purchase); `periodStart`/`periodEnd`
+ * is the next scheduled charge (null for a one-time purchase) and `nextAmount` what it
+ * autocharges (null when it will not); `periodStart`/`periodEnd`
  * are the window the money actually bought, which is NOT always `period` from the start —
  * a promo bonus pushes the end further, and a buyer choosing a different duration at pay
  * time would too. All serialized ISO-8601 to match the payload-date convention
@@ -105,6 +106,7 @@ const succeededPayload = (
   source: event.source,
   chargeKind: chargeKindOf(match.kind),
   nextPaymentDate: prolongation.nextPaymentDate?.toISOString() ?? null,
+  nextAmount: prolongation.nextAmount,
   periodStart: prolongation.periodStart?.toISOString() ?? null,
   periodEnd: prolongation.periodEnd?.toISOString() ?? null,
   recurring: match.recurring ?? true,
@@ -162,6 +164,7 @@ export const oneTimePurchaseSucceeded = (
   payload: succeededPayload(event, match, {
     ...prolongation,
     nextPaymentDate: null,
+    nextAmount: null,
   }),
 });
 
@@ -327,6 +330,7 @@ export const boundPaymentSucceeded = (
     // A bind reconciles a legacy/unknown payment: no scheduled charge, no known window,
     // and no checkout ever declared an intent for it.
     nextPaymentDate: null,
+    nextAmount: null,
     periodStart: null,
     periodEnd: null,
     recurring: true,
