@@ -137,6 +137,10 @@ const NOT_RENDERED: ReadonlyMap<string, string> = new Map([
   ['method', 'numeric; the flow writes its own wording for card vs crypto'],
   ['attempt', 'a number the flow branches on to escalate wording'],
   ['cycles', 'a count of periods bought; the flow phrases its own sentence'],
+  [
+    'nextAmount',
+    'minor units of the next autocharge; read by the CRM, not messaged',
+  ],
   ['cycleOptions', 'the cycle counts a link offers; the page shows the choice'],
   ['noticeDays', 'the offset that fired this notice, not customer-facing'],
   ['days', 'granted free days; the flow phrases its own sentence'],

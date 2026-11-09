@@ -1,7 +1,8 @@
+import { type Payment, PaymentStatus } from '@billing-service/shared';
 import { Option } from 'effect';
 import { describe, expect, it } from 'vitest';
 
-import { withSettlement } from '@/modules/billing/events.js';
+import { chargeRetryFailed, withSettlement } from '@/modules/billing/events.js';
 import type { Charge } from '@/modules/charge/contracts.js';
 
 const charge: Charge = {
@@ -28,6 +29,7 @@ describe('withSettlement', () => {
         currentPeriodEnd: new Date('2026-03-01T00:00:00Z'),
         nextPaymentDate: new Date('2026-03-04T00:00:00Z'),
         metadata: { planCode: 'half_year' },
+        nextAmount: 45000,
       }),
       { period: 'P4W', method: 1 },
     );
@@ -39,6 +41,7 @@ describe('withSettlement', () => {
       periodEnd: new Date('2026-03-01T00:00:00Z'),
       nextPaymentDate: new Date('2026-03-04T00:00:00Z'),
       metadata: { planCode: 'half_year' },
+      nextAmount: 45000,
     });
   });
 
@@ -49,5 +52,49 @@ describe('withSettlement', () => {
     });
 
     expect(settled).toEqual(charge);
+  });
+});
+
+describe('chargeRetryFailed', () => {
+  it('carries the amount, currency and method the retry charges again', () => {
+    const payment: Payment = {
+      id: 'pay_1',
+      externalUserId: 'sp:1',
+      amount: 150000,
+      currency: 1,
+      method: 0,
+      period: 'P1M',
+      status: PaymentStatus.PastDue,
+      recurring: true,
+      currentPeriodStart: new Date('2026-02-01T00:00:00Z'),
+      currentPeriodEnd: new Date('2026-03-01T00:00:00Z'),
+      nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+      recurringTokenRef: 'tok',
+      firstFailureAt: null,
+      retryAttempt: 0,
+      cancelRequestedAt: null,
+      metadata: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    };
+
+    const event = chargeRetryFailed(
+      payment,
+      {
+        attempt: 1,
+        nextRetryDate: new Date('2026-03-02T00:00:00Z'),
+        reason: 'Insufficient funds',
+      },
+      new Date('2026-03-01T00:00:00Z'),
+    );
+
+    expect(event.payload).toEqual({
+      attempt: 1,
+      nextRetryDate: '2026-03-02T00:00:00.000Z',
+      reason: 'Insufficient funds',
+      amount: 150000,
+      currency: 1,
+      method: 0,
+    });
   });
 });

@@ -126,6 +126,7 @@ const succeeded: DomainEvent = {
     source: 'wayforpay_charge',
     chargeKind: 'scheduled',
     nextPaymentDate: '2026-04-01T00:00:00.000Z',
+    nextAmount: 30000,
     periodStart: '2026-03-01T00:00:00.000Z',
     periodEnd: '2026-04-01T00:00:00.000Z',
     recurring: true,

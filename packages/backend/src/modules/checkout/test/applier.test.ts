@@ -109,6 +109,8 @@ it.effect(
         periodStart: event.occurredAt,
         periodEnd: addPeriod(event.occurredAt, 'P1M'),
         metadata: null,
+        // The callback returned a card token, so the next renewal autocharges this price.
+        nextAmount: 30000,
       });
       expect(insertedToken).toBe('tok');
       expect(completed).toBe(true);
@@ -165,6 +167,8 @@ it.effect(
         periodStart: event.occurredAt,
         periodEnd: addPeriod(event.occurredAt, 'P1M'),
         metadata: null,
+        // Never charged again, so no next amount.
+        nextAmount: null,
       });
       expect(insertedRecurring).toBe(false);
       // The provider returned a recToken; a one-time payment must not store it.
@@ -220,6 +224,7 @@ it.effect(
           periodStart: new Date('2026-02-01T00:00:00Z'),
           periodEnd: new Date('2026-03-01T00:00:00Z'),
           metadata: null,
+          nextAmount: 30000,
         });
       }),
     );
@@ -242,6 +247,7 @@ it.effect(
           periodEnd: new Date('2026-03-01T00:00:00Z'),
           nextPaymentDate: new Date('2026-03-04T00:00:00Z'),
           metadata: { planCode: 'half_year' },
+          nextAmount: 45000,
         },
       },
       {
@@ -262,7 +268,38 @@ it.effect(
           periodEnd: new Date('2026-03-01T00:00:00Z'),
           nextPaymentDate: new Date('2026-03-04T00:00:00Z'),
           metadata: { planCode: 'half_year' },
+          nextAmount: 45000,
         });
+      }),
+    ),
+);
+
+it.effect(
+  'a settlement queued before it carried a next amount reports the amount as unknown',
+  () =>
+    makeCheckoutApplier(unusedSubs, unusedCheckout)(
+      {
+        ...event,
+        settlement: {
+          period: 'P1M',
+          method: 0,
+          periodStart: new Date('2026-02-01T00:00:00Z'),
+          periodEnd: new Date('2026-03-01T00:00:00Z'),
+          nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+          metadata: null,
+        },
+      },
+      {
+        matched: true,
+        kind: 'recurring',
+        subscriptionId: 'sub_x',
+        externalUserId: 'sp:1',
+        period: 'P1M',
+        method: 0,
+      },
+    ).pipe(
+      Effect.map((result) => {
+        expect(result).toMatchObject({ nextAmount: null });
       }),
     ),
 );
@@ -356,6 +393,8 @@ it.effect(
         periodStart: new Date('2026-01-01T00:00:00Z'),
         periodEnd: new Date('2026-02-01T00:00:00Z'),
         metadata: null,
+        // The card change left a card on file: the next renewal autocharges the row's price.
+        nextAmount: 30000,
       });
       expect(second).toEqual({
         refused: 'already_applied',

@@ -232,6 +232,26 @@ it.effect(
         periodStart: null,
         periodEnd: null,
         metadata: null,
+        nextAmount: null,
+      });
+    }),
+);
+
+it.effect(
+  'a card change that moved money but credited no period reports the next autocharge of the row',
+  () =>
+    Effect.gen(function* () {
+      const { repo } = recordingRepo();
+      const checkout = completingCheckout(() => undefined);
+
+      const result = yield* makeCheckoutApplier(repo, checkout)(
+        event({ recToken: 'new-tok' }),
+        { ...cardChangeMatch(CARD, false), amountCharged: true },
+      );
+
+      expect(result).toMatchObject({
+        nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+        nextAmount: 30000,
       });
     }),
 );

@@ -71,6 +71,7 @@ export const withSettlement = (
         periodEnd: period.currentPeriodEnd,
         nextPaymentDate: period.nextPaymentDate,
         metadata: period.metadata,
+        nextAmount: period.nextAmount,
       },
     }),
   });
@@ -103,6 +104,10 @@ export const chargeRetryFailed = (
     attempt: failure.attempt,
     nextRetryDate: failure.nextRetryDate.toISOString(),
     reason: failure.reason,
+    // The terms the retry will charge again, so a flow can say how much and by what means.
+    amount: sub.amount,
+    currency: sub.currency,
+    method: sub.method,
   },
 });
 

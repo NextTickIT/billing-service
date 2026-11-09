@@ -80,6 +80,12 @@ const succeededPayload = {
   // renews). A string (not Schema.Date) to match the payload-date convention used by
   // `payment_deferred.newPeriodEnd` / `charge_retry_failed.nextRetryDate`.
   nextPaymentDate: Schema.NullOr(Schema.String),
+  // Minor units the next scheduled charge takes by itself: the payment's renewal terms
+  // while a card token is on file. Null when the next renewal will not autocharge (a
+  // token-less crypto renewal is a manual prompt that may offer several cycle counts) or
+  // there is no next charge (a one-time purchase, an operator bind). May differ from
+  // `amount`: a multi-cycle or intro-priced charge renews at one cycle's terms.
+  nextAmount: Schema.NullOr(Schema.Int.pipe(Schema.nonNegative())),
   // How many cycles of the subscription's terms a multi-cycle (manual renewal) checkout
   // bought; absent when the charge was not such a purchase. `amount` is then the total
   // charged and `period` the time bought, `cycles` × the subscription's period.
@@ -228,6 +234,10 @@ export const ChargeRetryFailedEvent = Schema.Struct({
     attempt: Schema.Int,
     nextRetryDate: Schema.String,
     reason: Schema.String,
+    // The payment's terms the retry charges again, as on `payment_manual_required`.
+    amount: Schema.Int,
+    currency: CurrencySchema,
+    method: Schema.Int,
   }),
 });
 

@@ -366,6 +366,8 @@ it.effect(
         periodEnd: new Date('2026-03-01T00:00:00Z'),
         nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
         metadata: { planCode: 'half_year' },
+        // The card stays on file, so the next renewal autocharges the row's price again.
+        nextAmount: 30000,
       });
     }),
 );
