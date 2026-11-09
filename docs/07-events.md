@@ -17,7 +17,7 @@ kind (`checkout` → initial, `recurring` → renewal); see 22.
 | `recurring_payment_succeeded` | a renewal charge approved (match kind `recurring`), incl. an operator-bound quarantine | external_user_id, amount, currency, method, period, source, charge_kind |
 | `one_time_purchase_succeeded` | a one-time (non-recurring) checkout approved — a single buy, never renewed (match kind `checkout`, session `recurring = false`) | external_user_id, amount, currency, method, period, source, charge_kind |
 | `initial_payment_failed` | first checkout payment **declined** for a known session — no retry ladder; the customer re-initiates checkout | external_user_id, amount, currency, method, period, reason, source |
-| `charge_retry_failed` | failed intermediate **recurring** charge attempt | external_user_id, attempt number, next retry date, provider reason |
+| `charge_retry_failed` | failed intermediate **recurring** charge attempt | external_user_id, attempt number, next retry date, provider reason, amount, currency, method (the payment's terms the retry charges again) |
 | `renewal_failed` | final failure of the **recurring** retry cycle (day 7) | external_user_id, reason |
 | `payment_created` | new gateway Payment record appeared | external_user_id, amount, currency, method, period |
 | `payment_cancelled` | Payment soft-cancelled by an operator (access runs to period end) | external_user_id, reason |
@@ -37,6 +37,15 @@ the old end, which is every on-time scheduled renewal. A charge stacked onto tim
 running keeps the earlier start of the whole coverage: a renewal paid early, or a prolong
 checkout. That charge's own slice is [the previous success event's `periodEnd`,
 `periodEnd`]. The anchors come from `stackAnchors` (`payment/domain.ts`).
+
+**`nextAmount`** (`next_amount` on the CRM wire) on the success events is what the next
+scheduled charge takes by itself, in minor units of the event's `currency`: the payment's
+renewal terms after this charge while a card token is on file (`autochargeAmount` in
+`payment/domain.ts`). It can differ from `amount`: a multi-cycle or intro-priced charge
+renews at one cycle's terms. It is null when the next renewal will not autocharge (a
+token-less crypto payment gets a `payment_manual_required` prompt whose page may offer
+several cycle counts) and when there is no next charge (a one-time purchase, an operator
+bind). Events stored before the field existed lack it.
 
 **`chargeKind`** (`charge_kind` on the CRM wire) on the three success events says what
 STARTED the charge (owner decision 2026-10-21): `scheduled` for billing's own renewal

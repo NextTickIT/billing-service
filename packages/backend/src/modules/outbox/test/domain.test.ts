@@ -32,6 +32,7 @@ const event = (id: string): DomainEvent => ({
     source: 'test',
     chargeKind: 'checkout',
     nextPaymentDate: '2026-02-01T00:00:00.000Z',
+    nextAmount: 30000,
     periodStart: '2026-01-01T00:00:00.000Z',
     periodEnd: '2026-02-01T00:00:00.000Z',
     recurring: true,

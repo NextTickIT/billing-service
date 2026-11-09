@@ -81,7 +81,18 @@ export interface ApplyPaymentResult {
   readonly periodEnd: Date;
   /** What the payment carries after this charge — supplied value, else the stored one. */
   readonly metadata: Record<string, unknown> | null;
+  /** What the next renewal will autocharge (`autochargeAmount`). */
+  readonly nextAmount: number | null;
 }
+
+/**
+ * The amount the next renewal takes by itself: the row's stored terms while a reusable
+ * token is on file. Without one (crypto, or a one-time payment) the next renewal is a
+ * manual prompt whose page may offer several cycle counts, so no amount is promised.
+ */
+export const autochargeAmount = (
+  row: Pick<Payment, 'amount' | 'recurringTokenRef'>,
+): number | null => (row.recurringTokenRef === null ? null : row.amount);
 
 /** The period a successful charge pays for; the next charge anchors on its end. */
 interface PeriodAnchors {
@@ -146,6 +157,7 @@ const insertNew =
           periodStart: anchors.currentPeriodStart,
           periodEnd: anchors.currentPeriodEnd,
           metadata: created.metadata,
+          nextAmount: autochargeAmount(created),
         })),
       );
 
@@ -216,6 +228,7 @@ const prolongedResult = (
   row: Payment,
   stacked: AdvanceAnchor,
   supplied: ApplyPaymentParams['metadata'],
+  terms: Pick<Payment, 'amount' | 'recurringTokenRef'>,
 ): ApplyPaymentResult => ({
   subscriptionId: row.id,
   created: false,
@@ -227,6 +240,7 @@ const prolongedResult = (
   // Mirrors what `extend`'s COALESCE just wrote: the supplied declaration, or the stored
   // one when this charge supplied none.
   metadata: supplied ?? row.metadata,
+  nextAmount: autochargeAmount(terms),
 });
 
 /**
@@ -269,6 +283,7 @@ export const createOrExtend =
             periodStart: row.currentPeriodStart,
             periodEnd: row.currentPeriodEnd,
             metadata: row.metadata,
+            nextAmount: autochargeAmount(row),
           };
         }
         // The promo is dropped here: a live contact paying a promo link stacks the paid
@@ -279,23 +294,28 @@ export const createOrExtend =
           params.paidAt,
           params.cycles,
         );
-        yield* repo.extend(row.id, {
+        const terms = {
           amount: params.renewal?.amount ?? params.amount,
+          ...tokenRule(params.source, params.recurringTokenRef, row),
+        };
+        yield* repo.extend(row.id, {
+          ...terms,
           currency: params.currency,
           period: params.renewal?.period ?? params.period,
-          ...tokenRule(params.source, params.recurringTokenRef, row),
           ...stacked,
           metadata: params.metadata,
         });
-        return prolongedResult(row, stacked, params.metadata);
+        return prolongedResult(row, stacked, params.metadata, terms);
       }
       return yield* insertNew(repo)(params, anchors);
     });
 
 /** What an advance credited: the anchors it wrote, plus the declaration the row carries
- * (an advance never rewrites it), so a succeeded event can report the window it bought. */
+ * and what its next renewal autocharges (an advance rewrites neither), so a succeeded
+ * event can report the window it bought. */
 export interface AdvancedPeriod extends AdvanceAnchor {
   readonly metadata: Record<string, unknown> | null;
+  readonly nextAmount: number | null;
 }
 
 /**
@@ -321,7 +341,11 @@ export const advanceLocked =
         }
         const anchors = stackAnchors(locked.value, period, at);
         yield* repo.advanceAfterSuccess(id, anchors);
-        return Option.some({ ...anchors, metadata: locked.value.metadata });
+        return Option.some({
+          ...anchors,
+          metadata: locked.value.metadata,
+          nextAmount: autochargeAmount(locked.value),
+        });
       }),
     );
 
