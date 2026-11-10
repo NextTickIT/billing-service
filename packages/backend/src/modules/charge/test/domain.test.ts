@@ -25,13 +25,16 @@ import type {
 } from '@/modules/charge/data-access.js';
 import {
   boundChargeKind,
+  boundPaymentSucceeded,
   cardChangeFailed,
   cardChangeSucceeded,
   chargeKindOf,
   handleChargeEvent,
   ingest,
   initialPaymentFailed,
+  initialPaymentSucceeded,
   isBuyerId,
+  oneTimePurchaseSucceeded,
   paymentRefunded,
   quarantined,
   type RefundableOriginal,
@@ -275,8 +278,10 @@ const matcherOf =
   () =>
     Effect.succeed(result);
 
-/** The fields a settled result defaults: not prolonged, and no window or declaration. */
-type Defaulted = 'prolonged' | 'periodStart' | 'periodEnd' | 'metadata';
+/** The fields a settled result defaults: not prolonged, and no window, declaration or
+ * next amount. */
+type Defaulted =
+  'prolonged' | 'periodStart' | 'periodEnd' | 'metadata' | 'nextAmount';
 
 /** A settled applier result; the `Defaulted` fields may be omitted. */
 type Settled = Omit<SettledCharge, Defaulted> &
@@ -287,6 +292,7 @@ const settledDefaults = {
   periodStart: null,
   periodEnd: null,
   metadata: null,
+  nextAmount: null,
 } as const;
 
 const applierOf =
@@ -567,6 +573,7 @@ it('recurringPaymentSucceeded carries the docs/07 required payload fields', () =
       periodStart: new Date('2026-01-01T00:00:00Z'),
       periodEnd: new Date('2026-02-01T00:00:00Z'),
       metadata: { plan: 'half_year' },
+      nextAmount: 45000,
     },
   );
   expect(event.payload).toEqual({
@@ -578,6 +585,8 @@ it('recurringPaymentSucceeded carries the docs/07 required payload fields', () =
     // A recurring match is billing's own renewal order: started by the schedule.
     chargeKind: 'scheduled',
     nextPaymentDate: '2026-02-01T00:00:00.000Z',
+    // What the next charge takes, not what this one took.
+    nextAmount: 45000,
     // The window the money bought, and the caller's own declaration echoed back.
     periodStart: '2026-01-01T00:00:00.000Z',
     periodEnd: '2026-02-01T00:00:00.000Z',
@@ -585,6 +594,79 @@ it('recurringPaymentSucceeded carries the docs/07 required payload fields', () =
     metadata: { plan: 'half_year' },
   });
   expect(event.aggregateId).toBe('sub_9');
+});
+
+const expectedNextAmount = 45000;
+
+const renewingProlongation = {
+  nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+  periodStart: new Date('2026-01-01T00:00:00Z'),
+  periodEnd: new Date('2026-02-01T00:00:00Z'),
+  metadata: null,
+  nextAmount: expectedNextAmount,
+};
+
+const checkoutMatchFor = (recurring: boolean): Match => ({
+  matched: true,
+  kind: 'checkout',
+  subscriptionId: null,
+  externalUserId: 'sp:4',
+  period: 'P1M',
+  method: 0,
+  recurring,
+});
+
+it.each([
+  {
+    name: 'a first subscription payment reports what the next renewal takes',
+    build: () =>
+      initialPaymentSucceeded(
+        decodedCharge('k4'),
+        checkoutMatchFor(true),
+        'sub_4',
+        renewingProlongation,
+      ),
+    expected: expectedNextAmount,
+  },
+  {
+    name: 'a renewal reports what the next renewal takes',
+    build: () =>
+      recurringPaymentSucceeded(
+        decodedCharge('k4'),
+        checkoutMatchFor(true),
+        'sub_4',
+        renewingProlongation,
+      ),
+    expected: expectedNextAmount,
+  },
+  {
+    name: 'a one-time purchase never renews, so it reports no next amount',
+    build: () =>
+      oneTimePurchaseSucceeded(
+        decodedCharge('k4'),
+        checkoutMatchFor(false),
+        'sub_4',
+        renewingProlongation,
+      ),
+    expected: null,
+  },
+  {
+    name: 'an operator bind knows no schedule, so it reports no next amount',
+    build: () =>
+      boundPaymentSucceeded(decodedCharge('k4'), {
+        incomingEventId: 'inc_4',
+        quarantineId: 'q_4',
+        externalUserId: 'sp:4',
+        subscriptionId: null,
+        period: 'P1M',
+        method: 0,
+      }),
+    expected: null,
+  },
+])('$name', ({ build, expected }) => {
+  const event = build();
+
+  expect(event.payload.nextAmount).toBe(expected);
 });
 
 it('initialPaymentFailed carries the decline reason and required fields', () => {

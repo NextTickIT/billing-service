@@ -45,6 +45,8 @@ const prolongation: Prolongation = {
   periodStart: new Date('2026-01-15T00:00:00Z'),
   periodEnd: next,
   metadata: null,
+  // One cycle's price: the payment renews at its own terms, not the three-cycle total.
+  nextAmount: 5000,
 };
 
 describe('events for a multi-cycle payment', () => {
@@ -90,6 +92,7 @@ describe('events for a multi-cycle payment', () => {
         source: 'whitepay_callback',
         chargeKind: 'checkout',
         nextPaymentDate: '2026-04-09T00:00:00.000Z',
+        nextAmount: 5000,
         periodStart: '2026-01-15T00:00:00.000Z',
         periodEnd: '2026-04-09T00:00:00.000Z',
         recurring: true,

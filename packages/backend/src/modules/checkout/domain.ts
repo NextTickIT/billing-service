@@ -37,6 +37,7 @@ import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import {
   type AdvancedPeriod,
   advanceLocked,
+  autochargeAmount,
   createOrExtend,
   type FindActiveRecurring,
 } from '@/modules/payment/domain.js';
@@ -580,6 +581,7 @@ const creditedChange = (
   periodStart: credited.currentPeriodStart,
   periodEnd: credited.currentPeriodEnd,
   metadata: credited.metadata,
+  nextAmount: credited.nextAmount,
 });
 
 /**
@@ -604,6 +606,7 @@ const uncreditedChange = (
       periodStart: null,
       periodEnd: null,
       metadata: current?.metadata ?? null,
+      nextAmount: current === null ? null : autochargeAmount(current),
     })),
   );
 
@@ -726,6 +729,7 @@ const applyCheckout =
         periodStart: applied.periodStart,
         periodEnd: applied.periodEnd,
         metadata: applied.metadata,
+        nextAmount: applied.nextAmount,
       };
     }).pipe(
       payments.transaction,
@@ -772,6 +776,8 @@ export const makeCheckoutApplier =
           periodEnd: settled.periodEnd,
           nextPaymentDate: settled.nextPaymentDate,
           metadata: settled.metadata,
+          // A snapshot queued before the field existed has none: report it unknown.
+          nextAmount: settled.nextAmount ?? null,
         });
       }
       // No snapshot (the poller saw the charge first, or the message predates the field):
@@ -790,6 +796,7 @@ export const makeCheckoutApplier =
           periodStart: found?.currentPeriodStart ?? null,
           periodEnd: found?.currentPeriodEnd ?? null,
           metadata: found?.metadata ?? null,
+          nextAmount: found === null ? null : autochargeAmount(found),
         };
       });
     }
