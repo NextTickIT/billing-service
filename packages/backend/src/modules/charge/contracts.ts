@@ -58,6 +58,8 @@ export const Settlement = Schema.Struct({
   metadata: Schema.NullOr(
     Schema.Record({ key: Schema.String, value: Schema.Unknown }),
   ),
+  // Optional: a message queued before the field existed decodes without it.
+  nextAmount: Schema.optional(Schema.NullOr(Schema.Int)),
 });
 
 /**
@@ -197,7 +199,12 @@ export interface SettledCharge {
   readonly periodEnd: Date | null;
   /** The declaration the payment carries AFTER this charge: the one just supplied, or the
    * stored one a renewal left standing. Null when none was ever declared. */
-  readonly metadata: Record<string, unknown> | null;
+  readonly metadata: Record<
+    string,
+    unknown
+  > | null; /** What the next renewal autocharges after this charge; null when it will not autocharge
+   * (no token: crypto or one-time) or there is no next charge. */
+  readonly nextAmount: number | null;
 }
 
 /**
@@ -210,6 +217,7 @@ export interface Prolongation {
   readonly periodStart: Date | null;
   readonly periodEnd: Date | null;
   readonly metadata: Record<string, unknown> | null;
+  readonly nextAmount: number | null;
 }
 
 /**

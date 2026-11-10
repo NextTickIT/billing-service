@@ -298,6 +298,8 @@ it.effect(
         periodEnd: new Date('2026-03-01T00:00:00Z'),
         // Nothing declared on this charge: the row's own (none) stands.
         metadata: null,
+        // The adopted terms, charged by the card it keeps.
+        nextAmount: 5000,
       });
       expect(fake.getInserted()).toBe(null);
       expect(fake.getExtended()).toEqual({
@@ -465,6 +467,8 @@ it.effect(
           currentPeriodEnd: new Date('2026-03-01T00:00:00Z'),
           nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
           metadata: null,
+          // The row still holds its card token, so the next renewal autocharges its price.
+          nextAmount: paidAhead.amount,
         }),
       );
       expect(refused).toEqual(Option.none());
@@ -520,6 +524,7 @@ it.effect(
         periodStart: paidAhead.currentPeriodStart,
         periodEnd: paidAhead.currentPeriodEnd,
         metadata: null,
+        nextAmount: paidAhead.amount,
       });
       expect(fake.getExtended()).toBe(null);
       expect(fake.getInserted()).toBe(null);
@@ -557,4 +562,112 @@ it.effect(
 
       expect(result.prolonged).toBe(true);
     }),
+);
+
+// ---- nextAmount: what the next renewal autocharges after this charge ----
+
+const expectedRenewalPrice = 30000;
+const expectedProlongPrice = 45000;
+const expectedOneCyclePrice = 5000;
+
+it.effect.each([
+  {
+    name: 'a new card payment renews at its own price',
+    over: {},
+    expected: expectedRenewalPrice,
+  },
+  {
+    name: 'an intro-priced first charge renews at the renewal price, not the intro one',
+    over: {
+      amount: 1000,
+      renewal: { amount: expectedRenewalPrice, period: 'P1M' },
+    },
+    expected: expectedRenewalPrice,
+  },
+  {
+    name: 'a multi-cycle first charge renews at one cycle',
+    over: { amount: expectedOneCyclePrice, cycles: 3 },
+    expected: expectedOneCyclePrice,
+  },
+  {
+    name: 'a new crypto payment has no token, so promises no amount',
+    over: {
+      method: 1,
+      recurringTokenRef: null,
+      source: 'whitepay_callback',
+    },
+    expected: null,
+  },
+  {
+    name: 'a one-time purchase never renews',
+    over: { recurring: false },
+    expected: null,
+  },
+] satisfies readonly {
+  name: string;
+  over: Partial<ApplyPaymentParams>;
+  expected: number | null;
+}[])('$name', ({ over, expected }) =>
+  Effect.gen(function* () {
+    const fake = makeFakeRepo(null);
+
+    const result = yield* createOrExtend(fake.repo)({ ...params, ...over });
+
+    expect(result.nextAmount).toBe(expected);
+  }),
+);
+
+it.effect.each([
+  {
+    name: 'a card prolongation renews at the terms it adopted',
+    over: { amount: expectedProlongPrice, source: 'wayforpay_callback' },
+    expected: expectedProlongPrice,
+  },
+  {
+    name: 'a card prolongation without a new token keeps the stored one and renews',
+    over: { recurringTokenRef: null, source: 'wayforpay_callback' },
+    expected: expectedRenewalPrice,
+  },
+  {
+    name: 'a crypto prolongation drops the token, so promises no amount',
+    over: {
+      method: 1,
+      recurringTokenRef: null,
+      source: 'whitepay_callback',
+    },
+    expected: null,
+  },
+] satisfies readonly {
+  name: string;
+  over: Partial<ApplyPaymentParams>;
+  expected: number | null;
+}[])('$name', ({ over, expected }) =>
+  Effect.gen(function* () {
+    const fake = makeFakeRepo(paidAhead);
+
+    const result = yield* createOrExtend(fake.repo)({ ...params, ...over });
+
+    expect(result).toMatchObject({ prolonged: true, nextAmount: expected });
+  }),
+);
+
+it.effect('advanceLocked on a token-less row promises no amount', () =>
+  Effect.gen(function* () {
+    const repo: PaymentRepo = {
+      ...makeFakeRepo({ ...paidAhead, recurringTokenRef: null, method: 1 })
+        .repo,
+      advanceAfterSuccess: () => Effect.void,
+    };
+
+    const next = yield* advanceLocked(repo)(
+      'sub_1',
+      'P1M',
+      new Date('2026-02-03T00:00:00Z'),
+      () => true,
+    );
+
+    expect(Option.map(next, (credited) => credited.nextAmount)).toEqual(
+      Option.some(null),
+    );
+  }),
 );
