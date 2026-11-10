@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 
 import { SqlClient } from '@effect/sql';
+import type { SqlError } from '@effect/sql';
 import {
   type CheckoutSession,
-  SinkKind,
   type Payment,
+  PaymentMethod,
+  SinkKind,
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
@@ -29,7 +31,11 @@ import {
   ChargePipeline,
   type ChargePipelineService,
 } from '@/modules/charge/domain.js';
-import { sinkCancelled } from '@/modules/billing/events.js';
+import {
+  NO_PAY_NOW,
+  type PayNowLink,
+  sinkCancelled,
+} from '@/modules/billing/events.js';
 import {
   ForeignManualCheckout,
   ledgerClaimAdvance,
@@ -44,12 +50,17 @@ import {
   type SendPulseClient,
 } from '@/modules/sinks/sendpulse.js';
 import { makeRateLimiter } from '@/infra/rate-limiter.js';
-import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
+import {
+  type CheckoutRepo,
+  findRecentProlongClaim,
+  makeCheckoutRepo,
+} from '@/modules/checkout/data-access.js';
 import {
   checkoutPath,
   cycleOptions,
   manualRenewalSession,
   offeredCycles,
+  prolongSession,
 } from '@/modules/checkout/domain.js';
 import { EXTERNAL_USER_ID_CHANGE } from '@/modules/identity/contracts.js';
 import { externalUserIdChangedNotify } from '@/modules/identity/domain.js';
@@ -210,6 +221,59 @@ export const manualCheckoutMinter =
       };
     });
 
+/** Whether the session under a `paynow:{subId}:{dueMs}` key is this sub's own pay-now link:
+ * a prolong session renewing this very sub. Anything else was planted through the shared
+ * key column and must never be sent. */
+const ownsPayNowKey = (session: CheckoutSession, sub: Payment): boolean =>
+  session.origin === 'prolong' && session.renewalOf === sub.id;
+
+/**
+ * Mint (or reuse) the pay-now link an `upcoming_charge` notice carries: a prolong session
+ * at the sub's own terms, method locked. One link per (sub, due date): the key embeds the
+ * due date, so every notice for that due date reuses the same link and a moved due date
+ * gets a new one. The link is live until the due date; once it lapses, `/pay` re-mints it
+ * at the sub's current terms with its cycle choices kept. A crypto sub gets no link while
+ * WhitePay is off, because the rail cannot take a payment.
+ */
+export const payNowMinter =
+  (repo: CheckoutRepo, config: AppConfig) =>
+  (sub: Payment): Effect.Effect<PayNowLink, SqlError.SqlError> =>
+    Effect.gen(function* () {
+      if (sub.method === PaymentMethod.Crypto && !config.whitepay.enabled) {
+        return NO_PAY_NOW;
+      }
+      const idempotencyKey = `paynow:${sub.id}:${sub.nextPaymentDate.getTime().toString()}`;
+      const id = `chk_${randomUUID()}`;
+      const cycles = config.scheduler.manualRenewalCycleOptions;
+      const inserted = yield* repo.insert({
+        ...prolongSession(sub, id, sub.nextPaymentDate, idempotencyKey),
+        options: cycleOptions(cycles),
+      });
+      if (inserted) {
+        return {
+          checkoutUrl: checkoutPath(config.checkoutBaseUrl, id),
+          cycleOptions: cycles,
+        };
+      }
+      const existing = yield* repo.findByIdempotencyKey(idempotencyKey);
+      if (Option.isNone(existing) || !ownsPayNowKey(existing.value, sub)) {
+        yield* Effect.logError(
+          'pay-now checkout: idempotency key held by a foreign session',
+        ).pipe(
+          Effect.annotateLogs({
+            paymentId: sub.id,
+            idempotencyKey,
+            sessionId: Option.isSome(existing) ? existing.value.id : null,
+          }),
+        );
+        return NO_PAY_NOW;
+      }
+      return {
+        checkoutUrl: checkoutPath(config.checkoutBaseUrl, existing.value.id),
+        cycleOptions: offeredCycles(existing.value),
+      };
+    });
+
 /**
  * Build the scheduler's pre-charge "cancelled upstream?" check from the SendPulse
  * sink (docs/23). Reads the sink token once at boot; if the sink is disabled or
@@ -353,11 +417,15 @@ const startScheduler = (
           // Token-less (crypto) renewal prompt (docs/28): mint/reuse our internal checkout.
           createManualCheckout: manualCheckoutMinter(sql, config),
           claimAdvance: ledgerClaimAdvance(sql),
+          mintPayNow: payNowMinter(makeCheckoutRepo(sql), config),
+          recentProlongClaim: (sub, since) =>
+            findRecentProlongClaim(sql)(sub.id, since),
         },
         {
           intervalSeconds: config.scheduler.intervalSeconds,
           batchSize: config.scheduler.batchSize,
           upcomingChargeNoticeDays: config.scheduler.upcomingChargeNoticeDays,
+          payNowClaimGraceSeconds: config.scheduler.payNowClaimGraceSeconds,
         },
       ),
     );

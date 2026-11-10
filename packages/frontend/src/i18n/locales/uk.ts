@@ -41,6 +41,8 @@ export default {
     methodCrypto: 'Крипто',
     pay: 'Сплатити',
     expired: 'Посилання на оплату вичерпало термін дії.',
+    pastDue:
+      'Термін дії цього посилання минув {date}. Якщо оплата ще потрібна, ми надішлемо нове повідомлення.',
     completed: 'Оплату виконано.',
     processing: 'Обробляємо ваш платіж…',
     confirmed: 'Платіж підтверджено.',
@@ -173,6 +175,7 @@ export default {
       initial_payment_failed: 'Перший платіж не вдався',
       recurring_payment_failed: 'Повторний платіж не вдався',
       charge_retry_failed: 'Повтор списання не вдався',
+      charge_deferred: 'Списання відкладено (оплата за посиланням у процесі)',
       renewal_failed: 'Поновлення не вдалось',
       payment_manual_required: 'Потрібна ручна оплата',
       payment_created: 'Платіж створено',

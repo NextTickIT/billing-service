@@ -131,9 +131,16 @@ export interface SchedulerConfig {
   /**
    * How many cycles a manual (crypto) renewal page lets the payer buy at once
    * (`MANUAL_RENEWAL_CYCLE_OPTIONS`, e.g. "1,3,6"; default "1", a single-cycle page as
-   * before). Must contain 1, so the page always has its one-cycle default.
+   * before). Must contain 1, so the page always has its one-cycle default. The same knob
+   * also drives the pay-now link in `upcoming_charge` and the on-demand `/prolong` link.
    */
   readonly manualRenewalCycleOptions: readonly number[];
+  /**
+   * How long (seconds) a due charge waits for a prolong session the payer has just
+   * claimed with Pay (`PAY_NOW_CLAIM_GRACE_SECONDS`, default 3600). `0` turns the guard
+   * off. A non-integer or negative value fails the boot.
+   */
+  readonly payNowClaimGraceSeconds: number;
 }
 
 /**
@@ -322,6 +329,21 @@ const cycleOptions = (raw: string | undefined): readonly number[] => {
   return parsed;
 };
 
+/**
+ * Parse `PAY_NOW_CLAIM_GRACE_SECONDS`. `0` is valid and disables the guard, so a bad
+ * value fails the boot rather than falling back: a typo must not silently switch the
+ * guard off or change how long a paying customer's charge is held.
+ */
+const claimGraceSeconds = (raw: string | undefined): number => {
+  const text = (raw ?? '3600').trim();
+  if (!/^\d+$/.test(text)) {
+    throw new Error(
+      `PAY_NOW_CLAIM_GRACE_SECONDS must be a non-negative integer, got '${raw ?? ''}'`,
+    );
+  }
+  return Number(text);
+};
+
 const loadSchedulerConfig = (): SchedulerConfig => ({
   enabled: process.env['SCHEDULER_ENABLED'] === 'true',
   intervalSeconds: Number(process.env['SCHEDULER_INTERVAL_SECONDS'] ?? '300'),
@@ -335,6 +357,9 @@ const loadSchedulerConfig = (): SchedulerConfig => ({
   ),
   manualRenewalCycleOptions: cycleOptions(
     process.env['MANUAL_RENEWAL_CYCLE_OPTIONS'],
+  ),
+  payNowClaimGraceSeconds: claimGraceSeconds(
+    process.env['PAY_NOW_CLAIM_GRACE_SECONDS'],
   ),
 });
 

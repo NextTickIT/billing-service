@@ -1,9 +1,10 @@
 import { fileURLToPath } from 'node:url';
 
+import type { FileSystem } from '@effect/platform/FileSystem';
 import { NodeContext } from '@effect/platform-node';
 import { SqlClient } from '@effect/sql';
 import { PgClient, PgMigrator } from '@effect/sql-pg';
-import { MigrationError } from '@effect/sql/Migrator';
+import { MigrationError, type Loader } from '@effect/sql/Migrator';
 import { fromFileSystem } from '@effect/sql/Migrator/FileSystem';
 import { Effect, Layer, Redacted } from 'effect';
 
@@ -16,7 +17,9 @@ import type { DatabaseConfig } from '@/config.js';
  * `src/migrations` under `tsx` and `dist/migrations` under `node dist` — same
  * relative path, right files in each, no copy step.
  */
-const migrationsDir = fileURLToPath(new URL('../migrations', import.meta.url));
+export const migrationsDir = fileURLToPath(
+  new URL('../migrations', import.meta.url),
+);
 
 /** A migration's identity: the `{id}_{name}` of its file, or of its applied row. */
 export interface MigrationIdentity {
@@ -38,36 +41,35 @@ export const unmatchedApplied = (
     (row) => !files.some((f) => f.id === row.id && f.name === row.name),
   );
 
-const loader = fromFileSystem(migrationsDir);
-
 /**
  * Fail boot when the database has applied a migration this image does not ship under
  * the same id and name — e.g. a DB that ran another branch's 0021. A fresh database has
  * no bookkeeping table yet and passes.
  */
-const assertAppliedMatchFiles = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  const [table] = yield* sql<{ readonly present: boolean }>`
+const assertAppliedMatchFiles = (loader: Loader<FileSystem>) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const [table] = yield* sql<{ readonly present: boolean }>`
     SELECT to_regclass('effect_sql_migrations') IS NOT NULL AS present
   `;
-  if (table?.present !== true) return;
-  const applied = yield* sql<{
-    readonly migration_id: number;
-    readonly name: string;
-  }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-  const files = (yield* loader).map(([id, name]) => ({ id, name }));
-  const unmatched = unmatchedApplied(
-    applied.map((row) => ({ id: row.migration_id, name: row.name })),
-    files,
-  );
-  if (unmatched.length > 0) {
-    const list = unmatched.map((m) => `${String(m.id)}_${m.name}`).join(', ');
-    return yield* new MigrationError({
-      reason: 'failed',
-      message: `Applied migrations have no matching file (same id and name): ${list}. The database was migrated by a different migration line; reset it or renumber before booting.`,
-    });
-  }
-});
+    if (table?.present !== true) return;
+    const applied = yield* sql<{
+      readonly migration_id: number;
+      readonly name: string;
+    }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
+    const files = (yield* loader).map(([id, name]) => ({ id, name }));
+    const unmatched = unmatchedApplied(
+      applied.map((row) => ({ id: row.migration_id, name: row.name })),
+      files,
+    );
+    if (unmatched.length > 0) {
+      const list = unmatched.map((m) => `${String(m.id)}_${m.name}`).join(', ');
+      return yield* new MigrationError({
+        reason: 'failed',
+        message: `Applied migrations have no matching file (same id and name): ${list}. The database was migrated by a different migration line; reset it or renumber before booting.`,
+      });
+    }
+  });
 
 /**
  * Plain connection for migrations — deliberately WITHOUT the app's
@@ -85,16 +87,27 @@ const migrationSqlLayer = (config: DatabaseConfig) =>
   });
 
 /**
- * Apply all pending migrations to `config`'s database. Idempotent — the
+ * Apply all pending migrations from `loader` to `config`'s database. Both the
+ * applied-vs-files check and the migrator read the same injected loader, so a test
+ * can run a subset of the shipped migrations. `NodeContext.layer` supplies FileSystem
+ * + Path for a filesystem loader; the short-lived connection layer is built and
+ * disposed around the run.
+ */
+export const runMigrationsWith = (
+  config: DatabaseConfig,
+  loader: Loader<FileSystem>,
+) =>
+  assertAppliedMatchFiles(loader).pipe(
+    Effect.zipRight(PgMigrator.run({ loader })),
+    Effect.provide(Layer.merge(NodeContext.layer, migrationSqlLayer(config))),
+  );
+
+/**
+ * Apply all pending migrations shipped in `migrationsDir`. Idempotent — the
  * migrator's applied-tracking table skips already-applied migrations, so a
  * second run applies nothing. This is the single migration authority, reused by
  * the server startup hook (main.ts) and `npm run db:migrate` (db-migrate.ts).
  * It first refuses a database whose applied migrations this image does not ship.
- * `NodeContext.layer` supplies FileSystem + Path for the loader; the short-lived
- * connection layer is built and disposed around the run.
  */
 export const runMigrations = (config: DatabaseConfig) =>
-  assertAppliedMatchFiles.pipe(
-    Effect.zipRight(PgMigrator.run({ loader })),
-    Effect.provide(Layer.merge(NodeContext.layer, migrationSqlLayer(config))),
-  );
+  runMigrationsWith(config, fromFileSystem(migrationsDir));

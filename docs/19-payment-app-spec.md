@@ -111,6 +111,22 @@ period)`. A user due on day X but paying on X+7 is still covered only to the anc
 and the next charge stays on cadence — no drift, no gifted weeks. `paid_till` is **not**
 exposed (SendPulse owns access); operators see our period + schedule only.
 
+**One exception: the near-due pay-now guard.** When the due tick finds that the payer
+pressed Pay on a prolong link within the last `PAY_NOW_CLAIM_GRACE_SECONDS` (default 3600),
+it does not charge. It moves `nextPaymentDate` to *deciding tick + 24 h* — once — and
+leaves `currentPeriodEnd` (the anchor) alone, so the claimed payment has a day to settle.
+This is the only writer that sets a `nextPaymentDate` of an Active, ladder-free sub that
+is not `currentPeriodEnd`; see `billing/scheduler.ts` (`decideDueAction`) and
+`payment/data-access.ts` (`deferCharge`). Two things keep it safe:
+
+- **One-shot.** Normally `nextPaymentDate === currentPeriodEnd` for an on-time Active sub.
+  After the push `nextPaymentDate > currentPeriodEnd`, which the guard does not match, and
+  a sub on the retry ladder (`retryAttempt > 0`) is never deferred. So a sub is deferred at
+  most once per due date.
+- **No drift.** The next success advances from the anchor (`currentPeriodEnd`), exactly as
+  above, and sets `nextPaymentDate` back equal to it. The +24 h date never feeds a period
+  calculation.
+
 > Verify against `subscription/period.ts` (`addPeriod`), `subscription/retry.ts`,
 > `billing/scheduler.ts`. The normal-success path already advances from the scheduled date
 > (anchored); the **retry-success path** must advance from the preserved anchor, not the

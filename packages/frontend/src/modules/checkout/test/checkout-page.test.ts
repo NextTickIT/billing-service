@@ -176,6 +176,46 @@ describe('CheckoutPage', () => {
   });
 });
 
+describe('past-due prolong link', () => {
+  const past = new Date('2020-01-01T00:00:00Z');
+  const future = new Date('2099-01-01T00:00:00Z');
+  const prolongPending: CheckoutSessionPublic = {
+    ...single,
+    prolong: true,
+    status: CheckoutSessionStatus.Pending,
+    expiresAt: past,
+  };
+
+  it('a lapsed Pay-pressed prolong link shows the past-due state and no Pay button', async () => {
+    const html = await render(prolongPending);
+    expect(html).toContain('Термін дії цього посилання минув');
+    expect(html).toContain('checkout__msg--warn');
+    expect(html).not.toContain('Сплатити');
+    expect(html).not.toContain('checkout__content');
+  });
+
+  it('a lapsed Created prolong link keeps the normal page', async () => {
+    const html = await render({
+      ...prolongPending,
+      status: CheckoutSessionStatus.Created,
+    });
+    expect(html).not.toContain('Термін дії цього посилання минув');
+    expect(html).toContain('Сплатити');
+  });
+
+  it('a live Pending prolong link keeps the normal page', async () => {
+    const html = await render({ ...prolongPending, expiresAt: future });
+    expect(html).not.toContain('Термін дії цього посилання минув');
+    expect(html).toContain('Сплатити');
+  });
+
+  it('a non-prolong Pending session with a past expiry is unaffected', async () => {
+    const html = await render({ ...prolongPending, prolong: false });
+    expect(html).not.toContain('Термін дії цього посилання минув');
+    expect(html).toContain('Сплатити');
+  });
+});
+
 describe('pay', () => {
   afterEach(() => {
     vi.unstubAllGlobals();

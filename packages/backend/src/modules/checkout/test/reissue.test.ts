@@ -9,6 +9,7 @@ import {
 import { Effect, Option } from 'effect';
 import { describe, expect, test } from 'vitest';
 
+import { cycleOptions } from '@/modules/checkout/domain.js';
 import { resolvePayableSessionId } from '@/modules/checkout/routes.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 
@@ -318,6 +319,69 @@ describe("T23: a lapsed link re-mints at the live sub's current terms", () => {
   );
 });
 
+describe('a lapsed pay-now (prolong) link keeps its cycle choices', () => {
+  const OPTIONS = cycleOptions([1, 3, 6]);
+
+  const lapsedPayNow = (over: Partial<CheckoutSession> = {}) =>
+    session({
+      origin: 'prolong',
+      renewalOf: 'pay_live',
+      options: OPTIONS,
+      promo: null,
+      method: 1,
+      idempotencyKey: 'paynow:pay_live:1',
+      ...over,
+    });
+
+  test('a live sub re-mints with the same options, origin and the live sub’s ids', () => {
+    const { repo, minted } = repoWith(lapsedPayNow());
+    const result = run(repo, subscription(PaymentStatus.Active), 1);
+
+    expect(result._tag).toBe('Right');
+    expect(minted).toHaveLength(1);
+    expect(minted[0]).toMatchObject({
+      origin: 'prolong',
+      renewalOf: 'pay_live',
+      method: 1,
+      options: [{ cycles: 1 }, { cycles: 3 }, { cycles: 6 }],
+      idempotencyKey: null,
+    });
+  });
+
+  test('a lapsed Pending pay-now session is refused as not re-issuable, nothing minted', () => {
+    const { repo, minted } = repoWith(
+      lapsedPayNow({
+        status: CheckoutSessionStatus.Pending,
+        idempotencyKey: `paynow:pay_live:${(NOW - HOUR).toString()}`,
+      }),
+    );
+    const result = run(repo, subscription(PaymentStatus.Active), 1);
+
+    expect(result._tag === 'Left' && result.left).toMatchObject({
+      _tag: 'Conflict',
+      field: 'checkout session (not re-issuable)',
+    });
+    expect(minted).toHaveLength(0);
+  });
+
+  test('a stale method re-mints locked to the sub’s method with the options kept', () => {
+    // Minted for method 0, the sub has since moved to method 1. The link is still live,
+    // so only stale-method detection (not expiry) can trigger the replacement.
+    const { repo, minted } = repoWith(
+      lapsedPayNow({ method: 0, expiresAt: new Date(NOW + HOUR) }),
+    );
+    const result = run(repo, subscription(PaymentStatus.Active), 1);
+
+    expect(result._tag).toBe('Right');
+    expect(minted[0]).toMatchObject({
+      origin: 'prolong',
+      renewalOf: 'pay_live',
+      method: 1,
+      options: [{ cycles: 1 }, { cycles: 3 }, { cycles: 6 }],
+    });
+  });
+});
+
 describe('T23: a lapsed manual-renewal link', () => {
   test('a lapsed manual-renewal link with a live sub re-mints labelled manual_renewal', () => {
     const { repo, minted } = repoWith(
@@ -360,6 +424,64 @@ describe('T23: a lapsed link with no live sub is cloned on its own terms', () =>
     expect(result._tag).toBe('Right');
     expect(minted[0]).toMatchObject({
       amount: 5000,
+      promo: { additionalFreePeriod: 'P7D' },
+    });
+  });
+});
+
+describe('a lapsed migration link', () => {
+  // A caller link flagged reportAs: "renewal", with a promo a re-mint at the sub's
+  // terms must drop. (Priced options would make the re-mint refuse the pick with
+  // OptionUnavailable, as for any caller link.)
+  const flagged = (over: Partial<CheckoutSession> = {}) =>
+    session({ origin: 'migration', ...over });
+
+  test('with a PastDue contact the replacement keeps the flag, at the sub’s terms, method unlocked', () => {
+    const { repo, minted } = repoWith(flagged());
+    // Paid with method 0 while the sub is on method 1: not refused, so unlocked.
+    const result = run(repo, subscription(PaymentStatus.PastDue), 0);
+
+    expect(result._tag).toBe('Right');
+    expect(minted).toHaveLength(1);
+    expect(minted[0]).toMatchObject({
+      origin: 'migration',
+      renewalOf: null,
+      options: null,
+      amount: 7000,
+      period: 'P4W',
+      method: 1,
+      promo: null,
+    });
+  });
+
+  test('an unflagged link in the same setup re-mints with origin null', () => {
+    const { repo, minted } = repoWith(flagged({ origin: null }));
+    const result = run(repo, subscription(PaymentStatus.PastDue), 0);
+
+    expect(result._tag).toBe('Right');
+    expect(minted[0]).toMatchObject({ origin: null, renewalOf: null });
+  });
+
+  test('with an Active contact it is refused, nothing minted', () => {
+    const { repo, minted } = repoWith(flagged());
+    const result = run(repo, subscription(PaymentStatus.Active));
+
+    expect(result._tag === 'Left' && result.left._tag).toBe(
+      'AlreadySubscribed',
+    );
+    expect(minted).toHaveLength(0);
+  });
+
+  test('with no live sub it is cloned with its flag', () => {
+    const { repo, minted } = repoWith(flagged());
+    const result = run(repo, noSubscription);
+
+    expect(result._tag).toBe('Right');
+    expect(minted[0]).toMatchObject({
+      origin: 'migration',
+      renewalOf: null,
+      amount: 5000,
+      period: 'P1M',
       promo: { additionalFreePeriod: 'P7D' },
     });
   });

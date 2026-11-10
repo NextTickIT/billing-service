@@ -8,7 +8,9 @@ import {
   postJson,
   signCallback,
 } from './http-harness.js';
+import { migrationScenarios } from './migration.e2e.js';
 import { optionsScenarios } from './options.e2e.js';
+import { payNowScenarios } from './pay-now.e2e.js';
 import { prolongScenarios } from './prolong.e2e.js';
 import { refundBindScenarios } from './refund-bind.e2e.js';
 import type { Scenario } from './http-harness.js';
@@ -423,4 +425,6 @@ export const edgeScenarios: readonly Scenario[] = [
   ...prolongScenarios,
   ...optionsScenarios,
   ...refundBindScenarios,
+  ...migrationScenarios,
+  ...payNowScenarios,
 ];

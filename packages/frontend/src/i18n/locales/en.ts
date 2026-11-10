@@ -41,6 +41,8 @@ export default {
     methodCrypto: 'Crypto',
     pay: 'Pay',
     expired: 'Payment link has expired.',
+    pastDue:
+      'This link expired on {date}. If payment is still due, we will send a new message.',
     completed: 'Payment completed.',
     processing: 'Processing your payment…',
     confirmed: 'Payment confirmed.',
@@ -172,6 +174,7 @@ export default {
       initial_payment_failed: 'Initial payment failed',
       recurring_payment_failed: 'Recurring payment failed',
       charge_retry_failed: 'Charge retry failed',
+      charge_deferred: 'Charge deferred (payment via link in progress)',
       renewal_failed: 'Renewal failed',
       payment_manual_required: 'Manual payment required',
       payment_created: 'Payment created',

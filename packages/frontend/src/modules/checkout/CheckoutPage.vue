@@ -283,6 +283,21 @@ const legalLinks = [
           {{ t('checkout.completed') }}
         </div>
 
+        <div
+          v-else-if="
+            store.session.prolong &&
+            store.session.status === CheckoutSessionStatus.Pending &&
+            new Date(store.session.expiresAt).getTime() < Date.now()
+          "
+          class="checkout__msg checkout__msg--warn"
+        >
+          {{
+            t('checkout.pastDue', {
+              date: formatDate(store.session.expiresAt, locale),
+            })
+          }}
+        </div>
+
         <div v-else-if="isVerify" class="checkout__msg">
           {{ t('checkout.redirecting') }}
         </div>

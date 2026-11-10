@@ -83,3 +83,44 @@ it('payment_manual_required carries the cycle counts the link offers', () => {
   // The prompt still states one cycle's price; the page prices the others.
   expect(event.payload.amount).toBe(5000);
 });
+
+describe('PAY_NOW_CLAIM_GRACE_SECONDS', () => {
+  const GRACE_KEY = 'PAY_NOW_CLAIM_GRACE_SECONDS';
+  const savedGrace = process.env[GRACE_KEY];
+
+  afterEach(() => {
+    if (savedGrace === undefined) {
+      Reflect.deleteProperty(process.env, GRACE_KEY);
+    } else {
+      process.env[GRACE_KEY] = savedGrace;
+    }
+  });
+
+  const graceFrom = (raw: string | undefined): number => {
+    if (raw === undefined) {
+      Reflect.deleteProperty(process.env, GRACE_KEY);
+    } else {
+      process.env[GRACE_KEY] = raw;
+    }
+    return loadConfig().scheduler.payNowClaimGraceSeconds;
+  };
+
+  it('defaults to an hour', () => {
+    expect(graceFrom(undefined)).toBe(3600);
+  });
+
+  it('allows 0, which turns the guard off', () => {
+    expect(graceFrom('0')).toBe(0);
+  });
+
+  it('parses a value', () => {
+    expect(graceFrom('900')).toBe(900);
+  });
+
+  it.each([
+    ['negative', '-1'],
+    ['not a number', 'abc'],
+  ])('fails the boot when %s', (_label, raw) => {
+    expect(() => graceFrom(raw)).toThrow(GRACE_KEY);
+  });
+});

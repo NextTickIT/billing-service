@@ -55,10 +55,14 @@ export interface CheckoutRepo {
    * A `prolong` session is method-locked: the claim also loses when `method` differs
    * from the session's. This is the SQL backstop behind the route's own check, so a race
    * can never switch a locked session to another method.
+   *
+   * `at` is stamped into `"claimedAt"` (SQL-only, not on `CheckoutSession`): the near-due
+   * pay-now guard reads it to hold back a charge the buyer is paying right now.
    */
   readonly claimForPayment: (
     id: string,
     method: number,
+    at: Date,
   ) => Effect.Effect<boolean, SqlError.SqlError>;
   /**
    * Release a claim back to `created` after the provider mint failed, so the buyer can
@@ -191,10 +195,11 @@ const reissueLapsed =
   };
 
 const claimForPayment =
-  (sql: SqlClient.SqlClient) => (id: string, method: number) =>
+  (sql: SqlClient.SqlClient) => (id: string, method: number, at: Date) =>
     sql<{ readonly id: string }>`
       UPDATE checkout_sessions
-      SET method = ${method}, status = ${CheckoutSessionStatus.Pending}
+      SET method = ${method}, status = ${CheckoutSessionStatus.Pending},
+          "claimedAt" = ${at}
       WHERE id = ${id} AND status = ${CheckoutSessionStatus.Created}
         AND (origin IS DISTINCT FROM 'prolong' OR method = ${method})
       RETURNING id
@@ -202,7 +207,8 @@ const claimForPayment =
 
 const releasePending = (sql: SqlClient.SqlClient) => (id: string) =>
   sql`
-    UPDATE checkout_sessions SET status = ${CheckoutSessionStatus.Created}
+    UPDATE checkout_sessions
+    SET status = ${CheckoutSessionStatus.Created}, "claimedAt" = NULL
     WHERE id = ${id} AND status = ${CheckoutSessionStatus.Pending}
   `.pipe(Effect.asVoid);
 
@@ -221,6 +227,39 @@ const renameOpenSessionsExternalUser =
         AND status IN (${CheckoutSessionStatus.Created}, ${CheckoutSessionStatus.Pending})
       RETURNING id
     `.pipe(Effect.map((rows) => rows.length));
+
+/**
+ * The latest prolong session for `subId` that the buyer claimed (pressed Pay) at or after
+ * `since` and that has not settled yet (`Pending`). The near-due pay-now guard reads it
+ * inside the scheduler's row-locked decision. A plain SELECT, no lock: the scheduler holds
+ * only the payment row, while settlement locks checkout then payment, so no deadlock.
+ * Covers pay-now and on-demand `/prolong` links alike, since both carry `renewalOf`.
+ */
+export const findRecentProlongClaim =
+  (sql: SqlClient.SqlClient) =>
+  (
+    subId: string,
+    since: Date,
+  ): Effect.Effect<
+    Option.Option<{ readonly sessionId: string; readonly claimedAt: Date }>,
+    SqlError.SqlError
+  > =>
+    sql<{ readonly id: string; readonly claimedAt: Date }>`
+      SELECT id, "claimedAt" FROM checkout_sessions
+      WHERE origin = 'prolong'
+        AND "renewalOf" = ${subId}
+        AND status = ${CheckoutSessionStatus.Pending}
+        AND "claimedAt" >= ${since}
+      ORDER BY "claimedAt" DESC
+      LIMIT 1
+    `.pipe(
+      Effect.map((rows) =>
+        Option.map(Option.fromNullable(rows[0]), (row) => ({
+          sessionId: row.id,
+          claimedAt: row.claimedAt,
+        })),
+      ),
+    );
 
 export const makeCheckoutRepo = (sql: SqlClient.SqlClient): CheckoutRepo => ({
   insert: insert(sql),

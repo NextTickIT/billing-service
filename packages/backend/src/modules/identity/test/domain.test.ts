@@ -35,6 +35,7 @@ const unusedPayments: PaymentRepo = {
   markCancelledLapsed: die,
   cancelUpstream: die,
   defer: die,
+  deferCharge: die,
   updateToken: die,
   setMethod: die,
   clearToken: die,

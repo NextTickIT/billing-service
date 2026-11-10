@@ -1,4 +1,5 @@
 import type {
+  ChargeDeferredEvent,
   ChargeRetryFailedEvent,
   PaymentCancelledEvent,
   Payment,
@@ -155,6 +156,16 @@ export interface ManualCheckout {
   readonly cycleOptions: readonly number[];
 }
 
+/** The pay-now link an `upcoming_charge` notice carries: a prolong session at the sub's
+ * terms plus the cycle counts its page offers. */
+export interface PayNowLink {
+  readonly checkoutUrl: string | null;
+  readonly cycleOptions: readonly number[];
+}
+
+/** No link: the sub's rail cannot take a payment now (crypto while WhitePay is off). */
+export const NO_PAY_NOW: PayNowLink = { checkoutUrl: null, cycleOptions: [] };
+
 /** Where a manual prompt sits on the retry ladder: which attempt, and the next ladder date. */
 export interface ManualLadder {
   readonly attempt: number;
@@ -202,6 +213,7 @@ export const upcomingCharge = (
   sub: Payment,
   noticeDays: number,
   now: Date,
+  link: PayNowLink,
 ): UpcomingChargeEvent => ({
   id: `evt_sub_${sub.id}_upcoming_${sub.nextPaymentDate.getTime().toString()}_${noticeDays.toString()}`,
   name: 'upcoming_charge',
@@ -217,5 +229,43 @@ export const upcomingCharge = (
     period: sub.period,
     chargeDate: sub.nextPaymentDate.toISOString(),
     noticeDays,
+    checkoutUrl: link.checkoutUrl,
+    cycleOptions: link.cycleOptions,
+  },
+});
+
+/** The facts of a due charge held back for a just-claimed prolong session. */
+export interface ChargeDeferral {
+  readonly dueDate: Date;
+  readonly deferredUntil: Date;
+  readonly graceSeconds: number;
+  readonly sessionId: string;
+  readonly claimedAt: Date;
+}
+
+/**
+ * A due charge held back because the payer pressed Pay on the prolong session just before
+ * the tick. The id keys on the original due date, so every tick that defers the same due
+ * date dedupes in the outbox and the payer hears of it once.
+ */
+export const chargeDeferred = (
+  sub: Payment,
+  deferral: ChargeDeferral,
+  now: Date,
+): ChargeDeferredEvent => ({
+  id: `evt_sub_${sub.id}_deferred_${deferral.dueDate.getTime().toString()}`,
+  name: 'charge_deferred',
+  occurredAt: now,
+  correlationId: sub.id,
+  externalUserId: sub.externalUserId,
+  aggregateId: sub.id,
+  payload: {
+    paymentId: sub.id,
+    method: sub.method,
+    dueDate: deferral.dueDate.toISOString(),
+    deferredUntil: deferral.deferredUntil.toISOString(),
+    graceSeconds: deferral.graceSeconds,
+    sessionId: deferral.sessionId,
+    claimedAt: deferral.claimedAt.toISOString(),
   },
 });

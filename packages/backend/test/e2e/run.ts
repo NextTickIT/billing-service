@@ -15,6 +15,10 @@ import {
   type EffectScenario,
 } from '@/modules/charge/test/pipeline.e2e.js';
 import { edgeScenarios } from './edge.e2e.js';
+import {
+  migrationGuardScenarios,
+  type MigrationScenario,
+} from './migration.e2e.js';
 
 /**
  * E2E test runner. Spins up the only external dependency (Postgres) in Docker,
@@ -164,6 +168,29 @@ const runEffectScenario = async (
   }
 };
 
+/**
+ * Migration scenarios prove a migration's own behaviour, so they get the database
+ * BEFORE any migration: it is created, handed over unmigrated with no app booted (the
+ * scenario migrates it as far as it needs), and dropped.
+ */
+const runMigrationScenario = async (
+  scenario: MigrationScenario,
+  index: number,
+): Promise<void> => {
+  const database = `test_m${index.toString()}_${randomUUID().replace(/-/g, '')}`;
+  psql('postgres', `CREATE DATABASE ${database}`);
+  try {
+    await scenario.run({
+      dbConfig: testDbConfig(database),
+      psql: (sql) => psql(database, sql),
+      query: queryTestDb(database),
+    });
+    console.log(`  ✓ ${scenario.name}`);
+  } finally {
+    psql('postgres', `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+  }
+};
+
 const runHttpScenarios = async (): Promise<void> => {
   for (let index = 0; index < scenarios.length; index += 1) {
     const scenario = scenarios[index];
@@ -191,6 +218,15 @@ const runEdgeScenarios = async (): Promise<void> => {
   }
 };
 
+const runMigrationScenarios = async (): Promise<void> => {
+  for (let index = 0; index < migrationGuardScenarios.length; index += 1) {
+    const scenario = migrationGuardScenarios[index];
+    if (scenario !== undefined) {
+      await runMigrationScenario(scenario, index);
+    }
+  }
+};
+
 const verifyNoLeaks = (): void => {
   dropStaleTestDbs();
   const remaining = psql(
@@ -201,7 +237,10 @@ const verifyNoLeaks = (): void => {
     throw new Error(`leaked ${remaining} test database(s)`);
   }
   const total =
-    scenarios.length + effectScenarios.length + edgeScenarios.length;
+    scenarios.length +
+    effectScenarios.length +
+    edgeScenarios.length +
+    migrationGuardScenarios.length;
   console.log(`e2e: ${total.toString()} scenarios passed; 0 leaked databases`);
 };
 
@@ -213,6 +252,7 @@ const main = async (): Promise<void> => {
     await runHttpScenarios();
     await runEffectScenarios();
     await runEdgeScenarios();
+    await runMigrationScenarios();
     verifyNoLeaks();
   } finally {
     console.log('e2e: tearing down (docker compose down -v)...');

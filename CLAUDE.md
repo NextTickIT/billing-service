@@ -199,6 +199,13 @@ hoist nested callbacks. Run `npm run lint` and `npm run typecheck`.
   clamp to the last valid day of the target month (e.g. Jan 31 → Feb 28), computed in
   the canonical billing timezone (`payment/period.ts`; docs/04, docs/17). `paid_till` is
   external (owned by SendPulse), not a field on the Payment entity.
+  **One exception:** the near-due pay-now guard (`deferCharge`) sets
+  `nextPaymentDate = deciding tick + 24 h`, once, on an Active, ladder-free sub whose
+  payer pressed Pay on a prolong link within the last `PAY_NOW_CLAIM_GRACE_SECONDS`.
+  Otherwise `nextPaymentDate === currentPeriodEnd` for every on-time Active sub, and that
+  invariant is what makes the deferral one-shot (afterwards `nextPaymentDate` is later than
+  `currentPeriodEnd`, so the guard cannot match again). It cannot drift: the next success
+  stacks from `currentPeriodEnd`, not from the deferred date.
 
 ## 7. Events & outbox (docs/07, docs/00 §6)
 

@@ -1,8 +1,9 @@
 import { it } from '@effect/vitest';
-import { Effect, Schema } from 'effect';
+import { Effect, Either, Schema } from 'effect';
 import { expect } from 'vitest';
 
 import { CreateCheckoutSession } from '@/schemas/checkout.js';
+import { DomainEvent, EVENT_NAMES } from '@/schemas/event.js';
 import {
   CreatePayment,
   Currency,
@@ -119,3 +120,63 @@ it.effect('CreateCheckoutSession: a recurring checkout requires period', () =>
     expect(ok.period).toBe('P1M');
   }),
 );
+
+const eventEnvelope = {
+  id: 'evt_1',
+  occurredAt: '2026-10-29T00:00:00.000Z',
+  correlationId: 'c',
+  aggregateId: 'sub_1',
+  externalUserId: 'sendpulse:1',
+};
+
+const upcomingPayload = {
+  paymentId: 'sub_1',
+  amount: 5000,
+  currency: Currency.USD,
+  method: PaymentMethod.Card,
+  period: 'P1M',
+  chargeDate: '2026-11-01T00:00:00.000Z',
+  noticeDays: 3,
+};
+
+const decodeEvent = Schema.decodeUnknownEither(DomainEvent);
+
+it('upcoming_charge decodes with a pay-now link', () => {
+  const r = decodeEvent({
+    ...eventEnvelope,
+    name: 'upcoming_charge',
+    payload: {
+      ...upcomingPayload,
+      checkoutUrl: 'https://pay.example/c/chk_1',
+      cycleOptions: [1, 3, 6],
+    },
+  });
+  expect(Either.isRight(r)).toBe(true);
+});
+
+it('upcoming_charge decodes with a null link and no cycle options', () => {
+  const r = decodeEvent({
+    ...eventEnvelope,
+    name: 'upcoming_charge',
+    payload: { ...upcomingPayload, checkoutUrl: null, cycleOptions: [] },
+  });
+  expect(Either.isRight(r)).toBe(true);
+});
+
+it('charge_deferred is a known event name and decodes', () => {
+  expect(EVENT_NAMES).toContain('charge_deferred');
+  const r = decodeEvent({
+    ...eventEnvelope,
+    name: 'charge_deferred',
+    payload: {
+      paymentId: 'sub_1',
+      method: PaymentMethod.Card,
+      dueDate: '2026-11-01T00:00:00.000Z',
+      deferredUntil: '2026-11-01T01:00:00.000Z',
+      graceSeconds: 3600,
+      sessionId: 'chk_1',
+      claimedAt: '2026-10-31T23:59:00.000Z',
+    },
+  });
+  expect(Either.isRight(r)).toBe(true);
+});

@@ -1,6 +1,6 @@
 import { SqlClient } from '@effect/sql';
 import { CheckoutSessionKind, PaymentStatus } from '@billing-service/shared';
-import { Effect } from 'effect';
+import { Effect, Option } from 'effect';
 
 import {
   ledgerClaimAdvance,
@@ -74,10 +74,17 @@ const bySchedulerCall = Effect.gen(function* () {
       upstreamCancelled: () => Effect.succeed(false),
       cancelUpstream: () => Effect.void,
       claimAdvance: ledgerClaimAdvance(sql),
+      mintPayNow: () => Effect.die('unused'),
+      recentProlongClaim: () => Effect.succeed(Option.none()),
       createManualCheckout: () =>
         Effect.die('manual checkout unused: this payment has a token'),
     },
-    { intervalSeconds: 60, batchSize: 10, upcomingChargeNoticeDays: [] },
+    {
+      intervalSeconds: 60,
+      batchSize: 10,
+      upcomingChargeNoticeDays: [],
+      payNowClaimGraceSeconds: 3600,
+    },
   );
   yield* drain;
 });

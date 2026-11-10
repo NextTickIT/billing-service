@@ -1,5 +1,9 @@
 import { SqlClient, type SqlError } from '@effect/sql';
-import type { DomainEvent, Payment } from '@billing-service/shared';
+import {
+  type DomainEvent,
+  type Payment,
+  PaymentStatus,
+} from '@billing-service/shared';
 import {
   Cause,
   Clock,
@@ -21,10 +25,12 @@ import { PAYMENT_ORDER_PREFIX } from '@/modules/payment/matcher.js';
 import type { WayForPayClient } from '@/modules/wayforpay/client.js';
 import type { W4pChargeResponse } from '@/modules/wayforpay/contracts.js';
 import {
+  chargeDeferred,
   chargeIncomingEvent,
   withSettlement,
   chargeRetryFailed,
   type ManualCheckout,
+  type PayNowLink,
   paymentManualRequired,
   upcomingCharge,
   renewalFailed,
@@ -63,6 +69,23 @@ export interface SchedulerDeps {
     sub: Payment,
     now: Date,
   ) => Effect.Effect<ManualCheckout, SqlError.SqlError | ForeignManualCheckout>;
+  /** Mint (or find) the pay-now link for a sub's upcoming charge: a prolong session at the
+   * sub's terms. Idempotent per (sub, due date), so the 3-day and 1-day notices carry the
+   * same link. `NO_PAY_NOW` for a rail that cannot take a payment now; an error skips this
+   * notice until the next tick. */
+  readonly mintPayNow: (
+    sub: Payment,
+  ) => Effect.Effect<PayNowLink, SqlError.SqlError>;
+  /** The latest prolong session for this sub that the buyer claimed (pressed Pay) at or
+   * after `since` and that is still Pending. The near-due guard defers on Some; the
+   * session id and claim time go into `charge_deferred`. A plain read, no lock. */
+  readonly recentProlongClaim: (
+    sub: Payment,
+    since: Date,
+  ) => Effect.Effect<
+    Option.Option<{ readonly sessionId: string; readonly claimedAt: Date }>,
+    SqlError.SqlError
+  >;
   /** Run the post-charge write as ONE transaction under the persistent per-attempt claim
    * `scheduler.advance:{orderReference}` (the idempotency ledger): the first run commits
    * the claim with its result, a later run for the same attempt replays it untouched. */
@@ -99,7 +122,11 @@ export interface SchedulerConfig {
   readonly batchSize: number;
   /** Days before a charge to announce it; empty disables the notice sweep. */
   readonly upcomingChargeNoticeDays: readonly number[];
+  /** Seconds a due charge waits for a prolong session the payer just claimed; 0 = off. */
+  readonly payNowClaimGraceSeconds: number;
 }
+
+export const DAY_MS = 86_400_000;
 
 /** Deterministic per attempt: the timestamp changes only when the schedule moves. */
 const orderReferenceFor = (sub: Payment): string =>
@@ -133,6 +160,7 @@ interface TickContext {
   readonly deps: SchedulerDeps;
   readonly state: SchedulerState;
   readonly now: Date;
+  readonly payNowClaimGraceSeconds: number;
 }
 
 /**
@@ -369,6 +397,128 @@ const actionable = (ctx: TickContext, snapshot: Payment) =>
     return recheck;
   });
 
+/** What the locked due decision tells `chargeOne` to do with this sub. */
+type DueAction =
+  | { readonly _tag: 'moved' }
+  | { readonly _tag: 'deferred' }
+  | { readonly _tag: 'proceed'; readonly sub: Payment };
+
+/** The locked row is no longer the due row this tick read: gone, not live, paid ahead,
+ * moved since the read, or its cancel state changed. */
+const hasMoved = (
+  locked: Option.Option<Payment>,
+  read: Payment,
+  now: Date,
+): boolean =>
+  Option.match(locked, {
+    onNone: () => true,
+    onSome: (row) =>
+      !isLive(row) ||
+      row.nextPaymentDate.getTime() > now.getTime() ||
+      row.nextPaymentDate.getTime() !== read.nextPaymentDate.getTime() ||
+      (row.cancelRequestedAt?.getTime() ?? null) !==
+        (read.cancelRequestedAt?.getTime() ?? null),
+  });
+
+/** The guard can defer only an Active, ladder-free sub that is on time
+ * (`nextPaymentDate <= currentPeriodEnd`; after a deferral it is past the anchor, so a
+ * deferred sub never defers twice), and only while the grace is on. */
+const guardEligible = (row: Payment, graceSeconds: number): boolean =>
+  graceSeconds > 0 &&
+  row.status === PaymentStatus.Active &&
+  row.retryAttempt === 0 &&
+  row.nextPaymentDate.getTime() <= row.currentPeriodEnd.getTime();
+
+/** Defer `row` by 24 h from this tick and write its `charge_deferred`, in the caller's
+ * transaction. */
+const deferDue = (
+  { deps, now, payNowClaimGraceSeconds }: TickContext,
+  row: Payment,
+  claim: { readonly sessionId: string; readonly claimedAt: Date },
+) =>
+  Effect.gen(function* () {
+    const deferredUntil = new Date(now.getTime() + DAY_MS);
+    yield* deps.subs.deferCharge(row.id, deferredUntil);
+    yield* deps.publish(
+      chargeDeferred(
+        row,
+        {
+          dueDate: row.nextPaymentDate,
+          deferredUntil,
+          graceSeconds: payNowClaimGraceSeconds,
+          sessionId: claim.sessionId,
+          claimedAt: claim.claimedAt,
+        },
+        now,
+      ),
+    );
+  });
+
+/**
+ * The near-due pay-now guard (B9) and the last due re-check, as ONE transaction on the
+ * row lock. It runs after the `upstreamCancelled` call, so a pay-now settlement that
+ * committed during that SendPulse call is seen here before any charge: the row has moved
+ * (`'moved'`), and a Pending-only claim lookup would no longer find the session anyway.
+ * Otherwise, an eligible sub whose prolong session the buyer claimed within the grace is
+ * deferred by 24 h from this tick, once, with its internal `charge_deferred` written in
+ * the same transaction (the outbox insert, as `whileUnmoved` does). The claim lookup is a
+ * plain SELECT, so this holds only the payment lock (settlement takes checkout then
+ * payment: no deadlock). The caller charges or prompts only from the row this returns.
+ * Residual: a settlement that commits after this transaction and before the provider
+ * answers stacks a second period through `advanceLocked` (double-paid, double-credited,
+ * no time lost); a decline or a prompt in that gap is skipped by `whileUnmoved`.
+ */
+const decideDueAction = (
+  ctx: TickContext,
+  read: Payment,
+): Effect.Effect<DueAction, SqlError.SqlError> => {
+  const { deps, now } = ctx;
+  const grace = ctx.payNowClaimGraceSeconds;
+  return deps.subs.transaction(
+    Effect.gen(function* () {
+      const locked = yield* deps.subs.lockById(read.id);
+      if (Option.isNone(locked) || hasMoved(locked, read, now)) {
+        return { _tag: 'moved' } as const;
+      }
+      const fresh = locked.value;
+      const claim = guardEligible(fresh, grace)
+        ? yield* deps.recentProlongClaim(
+            fresh,
+            new Date(now.getTime() - grace * 1000),
+          )
+        : Option.none();
+      if (Option.isSome(claim)) {
+        yield* deferDue(ctx, fresh, claim.value);
+        return { _tag: 'deferred' } as const;
+      }
+      return { _tag: 'proceed', sub: fresh } as const;
+    }),
+  );
+};
+
+/** After the upstream check: decide under the lock, then charge or prompt from the row
+ * the decision read (never the earlier read), or do nothing when it moved or deferred. */
+const actOnDue = (ctx: TickContext, read: Payment) =>
+  Effect.gen(function* () {
+    const decision = yield* decideDueAction(ctx, read);
+    if (decision._tag === 'moved') {
+      yield* Effect.logInfo('scheduler: skipped, payment moved').pipe(
+        Effect.annotateLogs('paymentId', read.id),
+      );
+      return;
+    }
+    if (decision._tag === 'deferred') {
+      return;
+    }
+    const live = decision.sub;
+    if (live.recurringTokenRef === null) {
+      // No reusable token (WhitePay crypto): can't autocharge — prompt the user to pay
+      // again at our internal checkout (docs/28) instead.
+      return yield* promptManual(ctx.deps, live, ctx.now);
+    }
+    yield* chargeCard(ctx, live);
+  });
+
 const chargeOne = (ctx: TickContext, snapshot: Payment) =>
   Effect.gen(function* () {
     const { deps, now } = ctx;
@@ -391,19 +541,39 @@ const chargeOne = (ctx: TickContext, snapshot: Payment) =>
       yield* deps.cancelUpstream(sub, now);
       return;
     }
-    if (sub.recurringTokenRef === null) {
-      // No reusable token (WhitePay crypto): can't autocharge — prompt the user to pay
-      // again at our internal checkout (docs/28) instead.
-      return yield* promptManual(deps, sub, now);
-    }
-    yield* chargeCard(ctx, sub);
+    yield* actOnDue(ctx, sub);
   });
+
+/** One sub's notice: mint its pay-now link, then publish. Any failure is logged and
+ * swallowed, so a bad row costs only its own notice (the next tick retries it). */
+const noticeOne = (
+  deps: SchedulerDeps,
+  sub: Payment,
+  days: number,
+  now: Date,
+) =>
+  deps.mintPayNow(sub).pipe(
+    Effect.flatMap((link) =>
+      deps.publish(upcomingCharge(sub, days, now, link)),
+    ),
+    Effect.catchAllCause((cause) =>
+      Effect.logError('scheduler: notice failed').pipe(
+        Effect.annotateLogs({
+          paymentId: sub.id,
+          noticeDays: days,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    ),
+  );
 
 /**
  * Send advance notices for charges coming up on each configured offset.
  *
- * Runs on the same tick as the charge sweep but is strictly read-then-publish: it never
- * charges and never moves a date, so a failure here can only cost a notice, never money.
+ * Runs on the same tick as the charge sweep. It never charges and never moves a date, so
+ * a failure here can only cost a notice, never money. It does write one thing: each notice
+ * mints (or finds) the sub's pay-now link, which inserts a checkout session. That insert is
+ * idempotent per (sub, due date), so re-runs and the second offset reuse the same session.
  * Exactly-once comes from the event id, which pins (payment, due date, offset) — the
  * outbox's `ON CONFLICT (id) DO NOTHING` absorbs every re-run, so a 5-minute tick does
  * not mean a notice every 5 minutes.
@@ -420,18 +590,7 @@ const noticeSweep = (deps: SchedulerDeps, config: SchedulerConfig, now: Date) =>
         // Isolate each notice: one bad row must not cost the rest their warning.
         yield* Effect.forEach(
           upcoming,
-          (sub) =>
-            deps.publish(upcomingCharge(sub, days, now)).pipe(
-              Effect.catchAllCause((cause) =>
-                Effect.logError('scheduler: notice failed').pipe(
-                  Effect.annotateLogs({
-                    paymentId: sub.id,
-                    noticeDays: days,
-                    cause: Cause.pretty(cause),
-                  }),
-                ),
-              ),
-            ),
+          (sub) => noticeOne(deps, sub, days, now),
           { discard: true },
         );
       }),
@@ -450,7 +609,15 @@ export const scheduleTick = (
     yield* Effect.forEach(
       due,
       (sub) =>
-        chargeOne({ deps, state, now }, sub).pipe(
+        chargeOne(
+          {
+            deps,
+            state,
+            now,
+            payNowClaimGraceSeconds: config.payNowClaimGraceSeconds,
+          },
+          sub,
+        ).pipe(
           Effect.catchAllCause((cause) =>
             Effect.logError('scheduler: charge failed').pipe(
               Effect.annotateLogs({
