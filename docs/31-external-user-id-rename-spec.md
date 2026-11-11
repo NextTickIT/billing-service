@@ -46,8 +46,10 @@ Response: { "from", "to", "movedPayments": <n>, "movedSessions": <n> }   (200)
 Errors (typed, each with `toHttp`):
 
 - `422 UnprocessableEntity` — `from`/`to` empty, or `from === to` (a no-op).
-- `409 Conflict` — the **target id is already in use** (`to` already owns any payment). A
-  rename targets an UNUSED id, so an occupied target is refused rather than merged — this
+- `409 Conflict` — the **target id is already in use** (`to` owns a payment that is not
+  Cancelled: Active, PastDue or RenewalFailed). A cancelled payment never charges again, so
+  it does not occupy the id: a buyer who cancelled and bought again under another id can be
+  renamed onto it. An occupied target is refused rather than merged — this
   prevents silently stacking two recurring payments under one user (the unique index only
   catches the active+active case, not active+past_due, so it can't be the sole guard). A
   concurrent active-recurring collision is still caught as a backstop by the SQLSTATE
@@ -77,10 +79,13 @@ The whole operation runs in **one transaction** (`sql.withTransaction`), so a co
 an empty match rolls back cleanly with nothing moved and no ledger row:
 
 1. Validate `from`/`to` (non-empty, distinct) — carried **verbatim**, never trimmed.
+   Then take the per-user transaction lock on both ids (`pg_advisory_xact_lock(hashtext(id))`,
+   sorted; the same key the checkout session mint takes), so two concurrent renames onto
+   one target cannot both read it as free.
 2. Idempotent replay: if `from` owns no payment and an identical `from` → `to` remap is on
    record (`ledger.findLatestChange`), return that recorded result — a retried call is safe.
-3. Refuse if `to` already owns any payment (`findByExternalUser(to)` non-empty) →
-   `Conflict`. A rename targets an unused id; an occupied target is a merge, not a rename.
+3. Refuse if `to` owns a non-cancelled payment (`findByExternalUser(to)`) → `Conflict`.
+   An occupied target is a merge, not a rename; cancelled-only history does not occupy it.
 4. `payments.renameExternalUser(from, to)` → moved count; a 23505 unique violation maps
    to `Conflict` (backstop for the concurrent case).
 5. `checkout.renameOpenSessionsExternalUser(from, to)` → moved count (created/pending).
@@ -123,5 +128,5 @@ Module layout mirrors `auth` (a new module = a new capability, AC8 spirit):
   it is a follow-up).
 - Emitting an `external_user_id_changed` domain event to sinks — unnecessary while the
   service that owns identity is the initiator.
-- Merging two users with billing history: any rename onto an occupied `to` is a 409 (a
-  rename targets an unused id). A real merge is a separate, out-of-scope operation.
+- Merging two users with live billing: a rename onto a `to` that owns a non-cancelled
+  payment is a 409. A real merge is a separate, out-of-scope operation.

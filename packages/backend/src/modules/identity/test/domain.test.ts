@@ -130,6 +130,7 @@ const ledger = (
         Effect.succeed(
           prior === undefined ? Option.none() : Option.some(prior),
         ),
+      lockUsers: () => Effect.void,
     },
   };
 };
@@ -267,7 +268,11 @@ it.effect(
         payments: payments(2, {
           targetRecords: [
             { ...existingPayment, status: PaymentStatus.Cancelled },
-            { ...existingPayment, id: 'pay_live', status: PaymentStatus.Active },
+            {
+              ...existingPayment,
+              id: 'pay_live',
+              status: PaymentStatus.Active,
+            },
           ],
         }),
         checkout: checkout(1),
@@ -331,4 +336,34 @@ it.effect(
       });
       expect(log.appends).toHaveLength(0);
     }),
+);
+
+it.effect('locks both ids before deciding whether the target is free', () =>
+  Effect.gen(function* () {
+    const steps: string[] = [];
+    const log = ledger();
+    const deps = {
+      payments: {
+        ...payments(1),
+        findByExternalUser: (uid: string) =>
+          Effect.sync(() => {
+            steps.push(`read ${uid}`);
+            return uid === cmd.to ? [] : [existingPayment];
+          }),
+      },
+      checkout: checkout(0),
+      ledger: {
+        ...log.repo,
+        lockUsers: (ids: readonly string[]) =>
+          Effect.sync(() => {
+            steps.push(`lock ${[...ids].sort().join(',')}`);
+          }),
+      },
+    };
+
+    yield* renameExternalUser(deps)(cmd, 'service');
+
+    expect(steps[0]).toBe('lock sp:new,sp:old');
+    expect(steps).toContain('read sp:new');
+  }),
 );

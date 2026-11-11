@@ -331,6 +331,18 @@ export type MethodChangePlan =
     };
 
 /**
+ * The recurring payment a card/method change acts on, from a user's payments (newest
+ * first): the newest recurring one that is not cancelled, or none. One-time payments hold
+ * no reusable token and are never the target. A cancelled row is skipped rather than
+ * taken as the answer — after an external-id rename a user can own an older live payment
+ * next to a newer cancelled one. Intentionally accepts a RenewalFailed (owed) payment so
+ * a method change can revive it in place by billing the arrears.
+ */
+export const changeablePayment = (
+  payments: readonly Payment[],
+): Payment | undefined =>
+  payments.find((p) => p.recurring && p.status !== PaymentStatus.Cancelled);
+/**
  * Decide how a method change takes effect (docs/32), previous-method agnostic:
  * an up-to-date subscription switching TO crypto flips server-side — crypto has no free
  * verify (WhitePay minimum), so we just drop the card token and record crypto, and the

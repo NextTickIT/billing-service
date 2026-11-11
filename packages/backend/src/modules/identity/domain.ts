@@ -96,6 +96,10 @@ export const renameExternalUser =
   > =>
     Effect.gen(function* () {
       yield* validateCmd(cmd);
+      // Serialize ownership decisions on both ids: without it two concurrent renames onto
+      // the same target both read it as free and both move a live payment there (the
+      // unique index only catches active+active, not active+past_due).
+      yield* deps.ledger.lockUsers([cmd.from, cmd.to]);
       // Idempotent retry: a repeated identical rename replays its recorded result.
       const replay = yield* priorReplay(deps, cmd);
       if (Option.isSome(replay)) {
