@@ -27,6 +27,15 @@ export interface ExternalUserIdChangeRepo {
     from: string,
     to: string,
   ) => Effect.Effect<Option.Option<ExternalUserIdChange>, SqlError.SqlError>;
+  /**
+   * Take the per-user transaction lock on each id, in sorted order (no deadlock between
+   * an A→B and a B→A rename). Same key checkout session reissue takes
+   * (`hashtext(externalUserId)`), so a rename also waits for a reissue on either id. Held
+   * until the surrounding transaction ends; outside one it is released at once.
+   */
+  readonly lockUsers: (
+    ids: readonly string[],
+  ) => Effect.Effect<void, SqlError.SqlError>;
 }
 
 const COLUMNS = columnList(ExternalUserIdChange.fields);
@@ -51,9 +60,17 @@ const findLatestChange =
       LIMIT 1
     `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
 
+const lockUsers = (sql: SqlClient.SqlClient) => (ids: readonly string[]) =>
+  Effect.forEach(
+    [...new Set(ids)].sort(),
+    (id) => sql`SELECT pg_advisory_xact_lock(hashtext(${id}))`,
+    { discard: true },
+  );
+
 export const makeExternalUserIdChangeRepo = (
   sql: SqlClient.SqlClient,
 ): ExternalUserIdChangeRepo => ({
   append: append(sql),
   findLatestChange: findLatestChange(sql),
+  lockUsers: lockUsers(sql),
 });

@@ -10,6 +10,7 @@ import { expect } from 'vitest';
 import type { Charge, Match } from '@/modules/charge/contracts.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
+  changeablePayment,
   makeCheckoutApplier,
   planMethodChange,
 } from '@/modules/checkout/domain.js';
@@ -46,6 +47,63 @@ const paymentWith = (status: PaymentStatus): Payment => ({
   metadata: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
+});
+
+// ---- changeablePayment: which of a user's payments (newest first) a change acts on ----
+
+const row = (id: string, status: PaymentStatus, recurring = true): Payment => ({
+  ...paymentWith(status),
+  id,
+  recurring,
+});
+
+it.each([
+  [
+    'an older live payment behind a newer cancelled one',
+    [row('new', PaymentStatus.Cancelled), row('old', PaymentStatus.Active)],
+    'old',
+  ],
+  [
+    'the newest live payment over an older cancelled one',
+    [row('new', PaymentStatus.Active), row('old', PaymentStatus.Cancelled)],
+    'new',
+  ],
+  [
+    'an owed payment (renewal failed) behind a newer cancelled one',
+    [
+      row('new', PaymentStatus.Cancelled),
+      row('old', PaymentStatus.RenewalFailed),
+    ],
+    'old',
+  ],
+  [
+    'the recurring payment behind a newer one-time payment',
+    [
+      row('once', PaymentStatus.Active, false),
+      row('sub', PaymentStatus.PastDue),
+    ],
+    'sub',
+  ],
+] as const)('a change acts on %s', (_, payments, expectedId) => {
+  const result = changeablePayment(payments);
+
+  expect(result?.id).toBe(expectedId);
+});
+
+it.each([
+  ['the user has no payments', []],
+  [
+    'every recurring payment is cancelled',
+    [row('a', PaymentStatus.Cancelled), row('b', PaymentStatus.Cancelled)],
+  ],
+  [
+    'the only live payment is one-time',
+    [row('once', PaymentStatus.Active, false)],
+  ],
+] as const)('no payment is changeable when %s', (_, payments) => {
+  const result = changeablePayment(payments);
+
+  expect(result).toBeUndefined();
 });
 
 // ---- planMethodChange: the owed/active × target-method decision matrix ----

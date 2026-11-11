@@ -51,6 +51,7 @@ import {
   makeCheckoutRepo,
 } from '@/modules/checkout/data-access.js';
 import {
+  changeablePayment,
   checkoutPath,
   cycleOptions,
   defaultOptionIndex,
@@ -921,18 +922,16 @@ const changeOriginOf = (plan: MethodChangePlan): ChangeOrigin =>
     ? 'card_change_arrears'
     : 'card_change';
 
-/** The user's ONE recurring payment a card/method change acts on, or a 409: a cancelled
- * one (or none) is refused — start a fresh checkout. One-time payments hold no reusable
- * token and are never the target, so skip past them to the newest recurring. */
+/** The user's recurring payment a card/method change acts on ({@link changeablePayment}),
+ * or a 409 when there is none that is not cancelled — start a fresh checkout. */
 const resolveChangeable = (sql: SqlClient.SqlClient, externalUserId: string) =>
   Effect.gen(function* () {
     const found =
       yield* makePaymentRepo(sql).findByExternalUser(externalUserId);
-    // Intentionally accepts a RenewalFailed (owed) recurring payment so a method-change
-    // can revive it in place by billing the arrears — a deliberate divergence from
+    // Accepts a RenewalFailed (owed) payment — a deliberate divergence from
     // `findActiveRecurringByExternalUser`, which treats RenewalFailed as terminal.
-    const payment = found.find((p) => p.recurring);
-    if (payment === undefined || payment.status === PaymentStatus.Cancelled) {
+    const payment = changeablePayment(found);
+    if (payment === undefined) {
       return yield* Effect.fail(
         new ChangeUnavailable({
           reason: 'no changeable payment; start a new checkout',
