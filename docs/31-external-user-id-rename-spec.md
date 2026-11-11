@@ -80,7 +80,7 @@ an empty match rolls back cleanly with nothing moved and no ledger row:
 
 1. Validate `from`/`to` (non-empty, distinct) — carried **verbatim**, never trimmed.
    Then take the per-user transaction lock on both ids (`pg_advisory_xact_lock(hashtext(id))`,
-   sorted; the same key the checkout session mint takes), so two concurrent renames onto
+   sorted; the same key checkout session reissue takes), so two concurrent renames onto
    one target cannot both read it as free.
 2. Idempotent replay: if `from` owns no payment and an identical `from` → `to` remap is on
    record (`ledger.findLatestChange`), return that recorded result — a retried call is safe.

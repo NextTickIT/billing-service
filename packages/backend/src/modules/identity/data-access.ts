@@ -29,8 +29,8 @@ export interface ExternalUserIdChangeRepo {
   ) => Effect.Effect<Option.Option<ExternalUserIdChange>, SqlError.SqlError>;
   /**
    * Take the per-user transaction lock on each id, in sorted order (no deadlock between
-   * an A→B and a B→A rename). Same key as the checkout session mint
-   * (`hashtext(externalUserId)`), so a rename also waits for a mint on either id. Held
+   * an A→B and a B→A rename). Same key checkout session reissue takes
+   * (`hashtext(externalUserId)`), so a rename also waits for a reissue on either id. Held
    * until the surrounding transaction ends; outside one it is released at once.
    */
   readonly lockUsers: (

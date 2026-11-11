@@ -22,8 +22,10 @@ the label.
 { "externalUserId": "1001", "method": 1 } // method = DESTINATION: 0 = Card, 1 = Crypto
 ```
 
-The server resolves the user's ONE recurring payment (`resolveChangeable`): the
-newest recurring row, refusing a Cancelled one (or none) with `409`. One-time
+The server resolves the user's recurring payment (`resolveChangeable` →
+`changeablePayment`): the newest recurring row that is not Cancelled (RenewalFailed
+included), or `409` when there is none — after a rename a user can hold an older live
+payment behind a newer cancelled one. One-time
 payments are never a target. `/api/payment/card-change` is retained as the card-only
 special case (`method: 0`, never a flip) for existing SendPulse callers.
 
