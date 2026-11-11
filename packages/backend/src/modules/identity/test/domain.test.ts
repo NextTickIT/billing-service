@@ -1,9 +1,10 @@
 import { SqlError } from '@effect/sql';
 import { it } from '@effect/vitest';
-import type {
-  ExternalUserIdChange,
-  NewExternalUserIdChange,
-  Payment,
+import {
+  type ExternalUserIdChange,
+  type NewExternalUserIdChange,
+  type Payment,
+  PaymentStatus,
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
@@ -230,21 +231,78 @@ it.effect('maps the one-active-per-user unique violation to a Conflict', () =>
   }),
 );
 
-it.effect('refuses a rename onto an id that already has billing records', () =>
-  Effect.gen(function* () {
-    const log = ledger();
-    // The target id is occupied; the remap must not stack a second payment there.
-    const deps = {
-      payments: payments(2, { targetRecords: [existingPayment] }),
-      checkout: checkout(1),
-      ledger: log.repo,
-    };
+it.effect.each([
+  ['active', PaymentStatus.Active],
+  ['past-due', PaymentStatus.PastDue],
+  ['renewal-failed', PaymentStatus.RenewalFailed],
+] as const)(
+  'refuses a rename onto an id that holds a %s payment',
+  ([, status]) =>
+    Effect.gen(function* () {
+      const log = ledger();
+      // The target id holds a live payment; the remap must not stack a second one there.
+      const deps = {
+        payments: payments(2, {
+          targetRecords: [{ ...existingPayment, status }],
+        }),
+        checkout: checkout(1),
+        ledger: log.repo,
+      };
 
-    const error = yield* Effect.flip(renameExternalUser(deps)(cmd, 'service'));
+      const error = yield* Effect.flip(
+        renameExternalUser(deps)(cmd, 'service'),
+      );
 
-    expect(error._tag).toBe('Conflict');
-    expect(log.appends).toHaveLength(0);
-  }),
+      expect(error._tag).toBe('Conflict');
+      expect(log.appends).toHaveLength(0);
+    }),
+);
+
+it.effect(
+  'refuses a rename onto an id that holds a cancelled and a live payment',
+  () =>
+    Effect.gen(function* () {
+      const log = ledger();
+      const deps = {
+        payments: payments(2, {
+          targetRecords: [
+            { ...existingPayment, status: PaymentStatus.Cancelled },
+            { ...existingPayment, id: 'pay_live', status: PaymentStatus.Active },
+          ],
+        }),
+        checkout: checkout(1),
+        ledger: log.repo,
+      };
+
+      const error = yield* Effect.flip(
+        renameExternalUser(deps)(cmd, 'service'),
+      );
+
+      expect(error._tag).toBe('Conflict');
+      expect(log.appends).toHaveLength(0);
+    }),
+);
+
+it.effect(
+  'remaps onto an id whose only payment is cancelled (a buyer who re-bought under another id)',
+  () =>
+    Effect.gen(function* () {
+      const log = ledger();
+      const deps = {
+        payments: payments(1, {
+          targetRecords: [
+            { ...existingPayment, status: PaymentStatus.Cancelled },
+          ],
+        }),
+        checkout: checkout(0),
+        ledger: log.repo,
+      };
+
+      const result = yield* renameExternalUser(deps)(cmd, 'service');
+
+      expect(result).toMatchObject({ movedPayments: 1, movedSessions: 0 });
+      expect(log.appends).toHaveLength(1);
+    }),
 );
 
 it.effect(

@@ -2,6 +2,7 @@ import type { SqlError } from '@effect/sql';
 import {
   type DomainEvent,
   type ExternalUserIdChangedEvent,
+  PaymentStatus,
   type RenameAccepted,
   type RenameExternalUserRequest,
 } from '@billing-service/shared';
@@ -100,12 +101,14 @@ export const renameExternalUser =
       if (Option.isSome(replay)) {
         return replay.value;
       }
-      // Rename targets an UNUSED id. If `to` already owns billing records this would be
-      // a merge — silently stacking two recurring payments under one user (the unique
-      // index only catches the active+active case, not active+past_due) and risking a
-      // double charge. Refuse it; merging two live users is a separate operation.
+      // Rename targets an id with no LIVE payment. If `to` owns a non-cancelled payment
+      // this would be a merge — silently stacking two recurring payments under one user
+      // (the unique index only catches the active+active case, not active+past_due) and
+      // risking a double charge. Refuse it; merging two live users is a separate
+      // operation. A cancelled payment never charges again, so it does not block: a buyer
+      // who cancelled and later bought again under another id can still be remapped.
       const existingAtTarget = yield* deps.payments.findByExternalUser(cmd.to);
-      if (existingAtTarget.length > 0) {
+      if (existingAtTarget.some((p) => p.status !== PaymentStatus.Cancelled)) {
         return yield* Effect.fail(
           new Conflict({ field: 'target external user' }),
         );
