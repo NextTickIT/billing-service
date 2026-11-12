@@ -25,7 +25,8 @@ export interface CheckoutRepo {
   ) => Effect.Effect<Option.Option<CheckoutSession>, SqlError.SqlError>;
   /**
    * Whether a session was ever handed to a provider: it is Pending or Completed, or it
-   * carries a `claimedAt` (a re-issue reuse resets the status to Created but keeps it).
+   * carries `firstSentToProviderAt` (stamped by the first claim, never cleared, so a
+   * release cannot hide it) or, for a row claimed before that column, `claimedAt`.
    * False for an unknown id.
    */
   readonly everSentToProvider: (
@@ -66,7 +67,10 @@ export interface CheckoutRepo {
    * can never switch a locked session to another method.
    *
    * `at` is stamped into `"claimedAt"` (SQL-only, not on `CheckoutSession`): the near-due
-   * pay-now guard reads it to hold back a charge the buyer is paying right now.
+   * pay-now guard reads it to hold back a charge the buyer is paying right now. The first
+   * claim also stamps `"firstSentToProviderAt"`, which no release or re-claim changes: a
+   * claim is the hand-out (the form or crypto order follows it in the same request), so a
+   * claim whose crypto mint then fails still counts — erring towards "a payment may land".
    */
   readonly claimForPayment: (
     id: string,
@@ -144,7 +148,7 @@ const findById = (sql: SqlClient.SqlClient) => (id: string) =>
 const everSentToProvider = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<{ readonly sent: boolean }>`
     SELECT (status IN (${CheckoutSessionStatus.Pending}, ${CheckoutSessionStatus.Completed})
-            OR "claimedAt" IS NOT NULL) AS sent
+            OR "firstSentToProviderAt" IS NOT NULL OR "claimedAt" IS NOT NULL) AS sent
     FROM checkout_sessions WHERE id = ${id}
   `.pipe(Effect.map((rows) => rows[0]?.sent === true));
 
@@ -221,7 +225,8 @@ const claimForPayment =
     sql<{ readonly id: string }>`
       UPDATE checkout_sessions
       SET method = ${method}, status = ${CheckoutSessionStatus.Pending},
-          "claimedAt" = ${at}
+          "claimedAt" = ${at},
+          "firstSentToProviderAt" = COALESCE("firstSentToProviderAt", ${at})
       WHERE id = ${id} AND status = ${CheckoutSessionStatus.Created}
         AND ((origin IS DISTINCT FROM 'prolong' AND NOT "lockMethod")
           OR method = ${method})

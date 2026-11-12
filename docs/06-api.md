@@ -13,8 +13,9 @@ Public and support HTTP surface. Authentication requirements are noted per secti
   BFF secret for the hosted page; a missing or invalid credential is 401) — read a session
   by ID, read-only, the same body either way: `status` (0 created, 1 pending, 2 completed,
   3 expired), `expiresAt`, the terms and options, `startsAt`, `payableUntil`,
-  `methodLocked`, and `everSentToProvider` (true once the session was claimed for payment:
-  Pending or Completed, or `claimedAt` set). Never `externalUserId` or `origin`.
+  `methodLocked`, and `everSentToProvider` (true once the session was claimed for payment — its order handed to
+  a provider: the first claim stamps `firstSentToProviderAt`, which no release ever
+  clears — or while it is Pending or Completed; false only for a session never claimed). Never `externalUserId` or `origin`.
 - `GET /checkout/:sessionId` (auth: none — public checkout page on `bill.nexttick.it`, unguessable session ID)
 
 ### `POST /api/checkout-sessions`

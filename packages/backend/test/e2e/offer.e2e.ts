@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 
+import { SqlClient } from '@effect/sql';
 import { CheckoutSessionStatus, PaymentMethod } from '@billing-service/shared';
+import { Effect } from 'effect';
 
 import { buildApp } from '@/app.js';
+import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 
 import { loadBffHandler, makeBff, type Scenario } from './http-harness.js';
 import {
@@ -12,6 +15,7 @@ import {
   httpContext,
   insertSessions,
   type Json,
+  onDb,
   pay,
   plainSession,
   publicRead,
@@ -239,6 +243,16 @@ const refusedAndSent = async (
   const sent = (await (await read(url, bearer)).json()) as Json;
   assert.equal(sent['status'], CheckoutSessionStatus.Pending);
   assert.equal(sent['everSentToProvider'], true, 'claimed for payment');
+  // Released (as a failed crypto mint or a re-press does) and never re-claimed: the
+  // status is back to Created, yet the order was handed out.
+  await onDb(
+    Effect.flatMap(SqlClient.SqlClient, (sql) =>
+      makeCheckoutRepo(sql).releasePending(id),
+    ),
+  );
+  const released = (await (await read(url, bearer)).json()) as Json;
+  assert.equal(released['status'], CheckoutSessionStatus.Created);
+  assert.equal(released['everSentToProvider'], true, 'released, still sent');
 };
 
 const serviceReadScenario: Scenario = {
