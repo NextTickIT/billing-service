@@ -18,6 +18,7 @@ export const EVENT_NAMES = [
   'initial_payment_succeeded',
   'recurring_payment_succeeded',
   'one_time_purchase_succeeded',
+  'subscription_migrated',
   'initial_payment_failed',
   'recurring_payment_failed',
   'charge_retry_failed',
@@ -109,6 +110,10 @@ const succeededPayload = {
   // The caller's own declaration of what was bought (see `Metadata`), echoed unchanged.
   // Null when no checkout ever supplied one.
   metadata: Schema.NullOr(Metadata),
+  // The checkout session that settled this charge — the one actually paid, so a re-issued
+  // link reports its replacement's id. Absent when no session settled it: a scheduled
+  // renewal, or an operator bind of a quarantined charge.
+  checkoutSessionId: Schema.optional(Schema.String),
 };
 
 export const InitialPaymentSucceededEvent = Schema.Struct({
@@ -142,6 +147,23 @@ export const OneTimePurchaseSucceededEvent = Schema.Struct({
 
 export type OneTimePurchaseSucceededEvent = Schema.Schema.Type<
   typeof OneTimePurchaseSucceededEvent
+>;
+
+/**
+ * A checkout created with `reportAs: "renewal"` was paid: a subscriber who already held a
+ * subscription elsewhere is now billed here. Published IN ADDITION to that charge's
+ * success event (whichever variant it is, with the same payload), so a sink can act on the
+ * move itself without re-deriving it from the success event. Never a scheduler renewal.
+ */
+export const SubscriptionMigratedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('subscription_migrated'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct(succeededPayload),
+});
+
+export type SubscriptionMigratedEvent = Schema.Schema.Type<
+  typeof SubscriptionMigratedEvent
 >;
 
 /** The facts of a declined checkout payment, shared by the initial and recurring
@@ -539,6 +561,7 @@ export const DomainEvent = Schema.Union(
   InitialPaymentSucceededEvent,
   RecurringPaymentSucceededEvent,
   OneTimePurchaseSucceededEvent,
+  SubscriptionMigratedEvent,
   InitialPaymentFailedEvent,
   RecurringPaymentFailedEvent,
   PaymentCreatedEvent,

@@ -4,6 +4,7 @@ import { SqlClient } from '@effect/sql';
 import {
   CheckoutSessionKind,
   type CheckoutOrigin,
+  type NewCheckoutSession,
   PaymentStatus,
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
@@ -40,6 +41,35 @@ interface Holder {
   readonly renewalOf: string | null;
 }
 
+/** The session the holder already holds for this cycle, before the tick runs. */
+const heldSession = (
+  holder: Holder,
+  idempotencyKey: string,
+): NewCheckoutSession => ({
+  id: 'chk_held',
+  externalUserId: holder.externalUserId,
+  amount: 30000,
+  currency: 0,
+  period: 'P4W',
+  method: 1,
+  email: '',
+  kind: CheckoutSessionKind.Checkout,
+  recurring: true,
+  paymentId: null,
+  successUrl: null,
+  failureUrl: null,
+  promo: null,
+  renewal: null,
+  origin: holder.origin,
+  renewalOf: holder.renewalOf,
+  startsAt: null,
+  payableUntil: null,
+  lockMethod: false,
+  options: null,
+  idempotencyKey,
+  expiresAt: new Date(Date.now() + DAY),
+});
+
 const driveTick = (config: AppConfig, holder: Holder) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -55,27 +85,9 @@ const driveTick = (config: AppConfig, holder: Holder) =>
       retryAttempt: 1,
       nextPaymentDate: new Date(Date.now() - HOUR),
     });
-    yield* makeCheckoutRepo(sql).insert({
-      id: 'chk_held',
-      externalUserId: holder.externalUserId,
-      amount: 30000,
-      currency: 0,
-      period: 'P4W',
-      method: 1,
-      email: '',
-      kind: CheckoutSessionKind.Checkout,
-      recurring: true,
-      paymentId: null,
-      successUrl: null,
-      failureUrl: null,
-      promo: null,
-      renewal: null,
-      origin: holder.origin,
-      renewalOf: holder.renewalOf,
-      options: null,
-      idempotencyKey: `manual:${sub.id}:${anchor.getTime().toString()}`,
-      expiresAt: new Date(Date.now() + DAY),
-    });
+    yield* makeCheckoutRepo(sql).insert(
+      heldSession(holder, `manual:${sub.id}:${anchor.getTime().toString()}`),
+    );
     const die = () => Effect.die('unused on a manual renewal');
     yield* scheduleTick(
       {

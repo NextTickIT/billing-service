@@ -23,6 +23,14 @@ export interface CheckoutRepo {
   readonly findById: (
     id: string,
   ) => Effect.Effect<Option.Option<CheckoutSession>, SqlError.SqlError>;
+  /**
+   * Whether a session was ever handed to a provider: it is Pending or Completed, or it
+   * carries a `claimedAt` (a re-issue reuse resets the status to Created but keeps it).
+   * False for an unknown id.
+   */
+  readonly everSentToProvider: (
+    id: string,
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
   /** The session an idempotency key maps to (for replaying a deduped create). */
   readonly findByIdempotencyKey: (
     key: string,
@@ -38,9 +46,10 @@ export interface CheckoutRepo {
    *
    * Terms are matched, not just liveness: handing back a session at a different amount
    * or period would silently charge something other than what this link promised. So
-   * are `renewal`, `options`, `origin` and `renewalOf`: a replacement for one
-   * subscription is never handed to a link for another on the same terms, and a
-   * method-locked prolong replacement is reused only for the same method.
+   * are `renewal`, `options`, `origin`, `renewalOf`, `startsAt`, `payableUntil` and
+   * `lockMethod`: a replacement for one subscription is never handed to a link for another
+   * on the same terms, a reused session starts the period where this one would, and a
+   * method-locked replacement (prolong or `lockMethod`) is reused only for the same method.
    */
   readonly reissueLapsed: (
     input: NewCheckoutSession,
@@ -52,8 +61,8 @@ export interface CheckoutRepo {
    * `created` and loses the claim, so exactly one caller mints exactly one provider
    * order per session. Returns true iff this call won the claim.
    *
-   * A `prolong` session is method-locked: the claim also loses when `method` differs
-   * from the session's. This is the SQL backstop behind the route's own check, so a race
+   * A `prolong` or `lockMethod` session is method-locked: the claim also loses when
+   * `method` differs from the session's. This is the SQL backstop behind the route's own check, so a race
    * can never switch a locked session to another method.
    *
    * `at` is stamped into `"claimedAt"` (SQL-only, not on `CheckoutSession`): the near-due
@@ -112,14 +121,16 @@ const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
     INSERT INTO checkout_sessions
       (id, "externalUserId", amount, currency, period, method, kind, recurring,
        "paymentId", "successUrl", "failureUrl", promo, "idempotencyKey", email,
-       "expiresAt", renewal, origin, "renewalOf", options, metadata)
+       "expiresAt", renewal, origin, "renewalOf", options, metadata, "startsAt",
+       "payableUntil", "lockMethod")
     VALUES
       (${input.id}, ${input.externalUserId}, ${input.amount}, ${input.currency},
        ${input.period}, ${input.method ?? null}, ${input.kind}, ${input.recurring},
        ${input.paymentId}, ${input.successUrl}, ${input.failureUrl},
        ${promo}::jsonb, ${input.idempotencyKey}, ${input.email},
        ${input.expiresAt}, ${renewal}::jsonb, ${input.origin}, ${input.renewalOf},
-       ${options}::jsonb, ${metadata}::jsonb)
+       ${options}::jsonb, ${metadata}::jsonb, ${input.startsAt},
+       ${input.payableUntil}, ${input.lockMethod})
     ON CONFLICT ("idempotencyKey") WHERE "idempotencyKey" IS NOT NULL DO NOTHING
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
@@ -129,6 +140,13 @@ const findById = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<CheckoutSession>`
     SELECT ${sql.unsafe(COLUMNS)} FROM checkout_sessions WHERE id = ${id}
   `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
+
+const everSentToProvider = (sql: SqlClient.SqlClient) => (id: string) =>
+  sql<{ readonly sent: boolean }>`
+    SELECT (status IN (${CheckoutSessionStatus.Pending}, ${CheckoutSessionStatus.Completed})
+            OR "claimedAt" IS NOT NULL) AS sent
+    FROM checkout_sessions WHERE id = ${id}
+  `.pipe(Effect.map((rows) => rows[0]?.sent === true));
 
 const findByIdempotencyKey = (sql: SqlClient.SqlClient) => (key: string) =>
   sql<CheckoutSession>`
@@ -178,7 +196,11 @@ const reissueLapsed =
               AND metadata IS NOT DISTINCT FROM ${metadata}::jsonb
               AND origin IS NOT DISTINCT FROM ${input.origin}
               AND "renewalOf" IS NOT DISTINCT FROM ${input.renewalOf}
-              AND (origin IS DISTINCT FROM 'prolong' OR method = ${input.method ?? null})
+              AND "startsAt" IS NOT DISTINCT FROM ${input.startsAt}
+              AND "payableUntil" IS NOT DISTINCT FROM ${input.payableUntil}
+              AND "lockMethod" = ${input.lockMethod}
+              AND ((origin IS DISTINCT FROM 'prolong' AND NOT "lockMethod")
+                OR method = ${input.method ?? null})
             ORDER BY "createdAt" DESC
             LIMIT 1
           )
@@ -201,7 +223,8 @@ const claimForPayment =
       SET method = ${method}, status = ${CheckoutSessionStatus.Pending},
           "claimedAt" = ${at}
       WHERE id = ${id} AND status = ${CheckoutSessionStatus.Created}
-        AND (origin IS DISTINCT FROM 'prolong' OR method = ${method})
+        AND ((origin IS DISTINCT FROM 'prolong' AND NOT "lockMethod")
+          OR method = ${method})
       RETURNING id
     `.pipe(Effect.map((rows) => rows.length > 0));
 
@@ -264,6 +287,7 @@ export const findRecentProlongClaim =
 export const makeCheckoutRepo = (sql: SqlClient.SqlClient): CheckoutRepo => ({
   insert: insert(sql),
   findById: findById(sql),
+  everSentToProvider: everSentToProvider(sql),
   findByIdempotencyKey: findByIdempotencyKey(sql),
   reissueLapsed: reissueLapsed(sql),
   claimForPayment: claimForPayment(sql),

@@ -57,6 +57,12 @@ export interface ApplyPaymentParams {
    * a checkout that actually supplied one re-stamps the payment. See `Metadata`.
    */
   readonly metadata?: Record<string, unknown> | null | undefined;
+  /**
+   * When a subscription this charge CREATES begins, if later than `paidAt` (the checkout's
+   * `startsAt`). Null, absent or earlier than `paidAt` anchors at `paidAt`. A charge that
+   * stacks onto a live row ignores it: stacking already starts from the row's own end.
+   */
+  readonly startsAt?: Date | null | undefined;
 }
 
 export interface ApplyPaymentResult {
@@ -101,9 +107,16 @@ interface PeriodAnchors {
   readonly nextPaymentDate: Date;
 }
 
-const periodAnchors = (params: ApplyPaymentParams): PeriodAnchors => {
+export const periodAnchors = (params: ApplyPaymentParams): PeriodAnchors => {
+  // A payment that arrives after `startsAt` (a late settlement) never backdates the
+  // period: the buyer gets the full time they paid for from the moment they paid.
+  const start =
+    params.startsAt != null &&
+    params.startsAt.getTime() > params.paidAt.getTime()
+      ? params.startsAt
+      : params.paidAt;
   const paidThrough = addPeriod(
-    params.paidAt,
+    start,
     scalePeriod(params.period, params.cycles ?? 1),
   );
   // A promo grants free time ON TOP of the paid period, once: it pushes the paid-through
@@ -116,7 +129,7 @@ const periodAnchors = (params: ApplyPaymentParams): PeriodAnchors => {
       ? addPeriod(paidThrough, params.promoBonus)
       : paidThrough;
   return {
-    currentPeriodStart: params.paidAt,
+    currentPeriodStart: start,
     currentPeriodEnd,
     nextPaymentDate: currentPeriodEnd,
   };

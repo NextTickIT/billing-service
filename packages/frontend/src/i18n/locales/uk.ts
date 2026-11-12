@@ -41,6 +41,7 @@ export default {
     methodCrypto: 'Крипто',
     pay: 'Сплатити',
     expired: 'Посилання на оплату вичерпало термін дії.',
+    closed: 'Ця пропозиція закрита, оплатити її вже не можна.',
     pastDue:
       'Термін дії цього посилання минув {date}. Якщо оплата ще потрібна, ми надішлемо нове повідомлення.',
     completed: 'Оплату виконано.',
@@ -81,6 +82,7 @@ export default {
     typeSubscription: 'Підписка',
     typeOneTime: 'Одноразовий платіж',
     linkValidUntil: 'Посилання на оплату дійсне до {date}',
+    startsAt: 'Оплачений період почнеться {date}',
     redirecting: 'Перенаправлення на перевірку картки…',
     legalNote: 'Оплачуючи, ви приймаєте:',
     legalOffer: 'Оферта',
@@ -172,6 +174,7 @@ export default {
     events: {
       initial_payment_succeeded: 'Перший платіж успішний',
       recurring_payment_succeeded: 'Повторний платіж успішний',
+      subscription_migrated: 'Підписку перенесено',
       initial_payment_failed: 'Перший платіж не вдався',
       recurring_payment_failed: 'Повторний платіж не вдався',
       charge_retry_failed: 'Повтор списання не вдався',

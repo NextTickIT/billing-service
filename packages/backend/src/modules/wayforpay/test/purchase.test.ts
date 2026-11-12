@@ -38,6 +38,9 @@ const session = (expiresAt: Date) => ({
   renewal: null,
   origin: null,
   renewalOf: null,
+  startsAt: null,
+  payableUntil: null,
+  lockMethod: false,
   options: null,
   idempotencyKey: null,
   metadata: null,
@@ -66,6 +69,9 @@ describe('buildPurchase', () => {
       renewal: null,
       origin: null,
       renewalOf: null,
+      startsAt: null,
+      payableUntil: null,
+      lockMethod: false,
       options: null,
       idempotencyKey: null,
       metadata: null,
@@ -142,5 +148,53 @@ describe('orderTimeout keeps the provider order and our link on one clock', () =
     expect(withTimeout.fields['merchantSignature']).toBe(
       withDifferentTimeout.fields['merchantSignature'],
     );
+  });
+});
+
+describe('orderTimeout never outlives a bounded offer', () => {
+  const orderDate = 1700000000;
+  const closesIn = (seconds: number) => new Date((orderDate + seconds) * 1000);
+  const boundedSession = (expiresAt: Date, payableUntil: Date) => ({
+    ...session(expiresAt),
+    payableUntil,
+  });
+
+  test('an offer closing before the session TTL ends caps the order at the close', () => {
+    const form = buildPurchase(
+      config,
+      boundedSession(closesIn(7200), closesIn(1800)),
+      orderDate,
+    );
+    expect(form.fields['orderTimeout']).toBe(1800);
+  });
+
+  test('an offer closing after the TTL leaves the TTL-derived timeout', () => {
+    const form = buildPurchase(
+      config,
+      boundedSession(closesIn(7200), closesIn(9000)),
+      orderDate,
+    );
+    expect(form.fields['orderTimeout']).toBe(7200);
+  });
+
+  test('the cap overrides the five-minute floor', () => {
+    const form = buildPurchase(
+      config,
+      boundedSession(closesIn(10), closesIn(10)),
+      orderDate,
+    );
+    expect(form.fields['orderTimeout']).toBe(10);
+  });
+
+  test('a sub-second remainder still yields a valid one-second order', () => {
+    const form = buildPurchase(
+      config,
+      boundedSession(
+        closesIn(10),
+        new Date(orderDate * 1000 + 400), // closes 0.4 s after the order date
+      ),
+      orderDate,
+    );
+    expect(form.fields['orderTimeout']).toBe(1);
   });
 });

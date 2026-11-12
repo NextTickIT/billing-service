@@ -8,7 +8,9 @@ import {
   CheckoutSessionKind,
   CheckoutSessionStatus,
   type CheckoutTerms,
+  type CreateCheckoutSession,
   DEFAULT_CHOICE,
+  MAX_CHECKOUT_HORIZON_DAYS,
   type NewCheckoutSession,
   optionTerms,
   parseCheckoutRef,
@@ -89,9 +91,65 @@ export const subscriptionTermsSession = (
   // A renewal prompt re-charges terms the buyer already declared; it adds no declaration
   // of its own, so paying it leaves the payment's stored metadata standing.
   metadata: null,
+  // Paying it stacks onto the sub (or, after it died, starts now), and no caller set a
+  // deadline on a server-minted prompt.
+  startsAt: null,
+  payableUntil: null,
+  // A prolong is locked by its origin; the others are open.
+  lockMethod: false,
   idempotencyKey,
   expiresAt,
 });
+
+const HORIZON_MS = MAX_CHECKOUT_HORIZON_DAYS * 24 * 60 * 60 * 1000;
+
+type Schedule = Pick<
+  CreateCheckoutSession,
+  'recurring' | 'startsAt' | 'payableUntil'
+>;
+
+/**
+ * The clock-dependent rules a create request's `startsAt` and `payableUntil` must keep,
+ * in order. They live here rather than in the schema because they read `now`.
+ */
+const SCHEDULE_RULES: readonly {
+  readonly holds: (s: Schedule, nowMillis: number) => boolean;
+  readonly message: string;
+}[] = [
+  // Only a subscription has a period to anchor; a one-time purchase starts nothing.
+  {
+    holds: (s) => s.startsAt === undefined || s.recurring,
+    message: 'startsAt is only allowed on a recurring checkout',
+  },
+  {
+    holds: (s, now) => s.startsAt === undefined || s.startsAt.getTime() >= now,
+    message: 'startsAt must not be in the past',
+  },
+  {
+    holds: (s, now) =>
+      s.startsAt === undefined || s.startsAt.getTime() <= now + HORIZON_MS,
+    message: `startsAt must be at most ${String(MAX_CHECKOUT_HORIZON_DAYS)} days ahead`,
+  },
+  {
+    holds: (s, now) =>
+      s.payableUntil === undefined || s.payableUntil.getTime() > now,
+    message: 'payableUntil must be in the future',
+  },
+  {
+    holds: (s, now) =>
+      s.payableUntil === undefined ||
+      s.payableUntil.getTime() <= now + HORIZON_MS,
+    message: `payableUntil must be at most ${String(MAX_CHECKOUT_HORIZON_DAYS)} days ahead`,
+  },
+];
+
+/** The first schedule rule a create request breaks at `nowMillis`, as its message;
+ * undefined when it keeps them all. */
+export const brokenScheduleRule = (
+  schedule: Schedule,
+  nowMillis: number,
+): string | undefined =>
+  SCHEDULE_RULES.find((rule) => !rule.holds(schedule, nowMillis))?.message;
 
 /**
  * Build OUR internal checkout session for a token-less (crypto) renewal prompt (docs/28):
@@ -433,6 +491,9 @@ const checkoutMatch = (
   cycles,
   // The caller's declaration for THIS purchase; stamped on the payment when applied.
   metadata: session.metadata,
+  // Where a subscription this payment creates begins; ignored when it stacks.
+  startsAt: session.startsAt,
+  checkoutSessionId: session.id,
 });
 
 /** The session a provider reference names and the terms of the option it paid for; None
@@ -557,6 +618,7 @@ export const makeCardChangeMatcher =
         // Usually null — a card change re-tokenizes rather than declaring a purchase — so
         // the extend COALESCE leaves the payment's existing declaration standing.
         metadata: session.metadata,
+        checkoutSessionId: session.id,
       };
     });
 
@@ -720,6 +782,7 @@ const applyCheckout =
         cycles: match.cycles ?? 1,
         // Absent when the caller declared none — `extend` then keeps what is stored.
         metadata: match.metadata,
+        startsAt: match.startsAt,
         source: event.source,
         recurringTokenRef: recToken(event.payload),
         paidAt: event.occurredAt,

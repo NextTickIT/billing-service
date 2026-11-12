@@ -9,6 +9,7 @@ import {
   signCallback,
 } from './http-harness.js';
 import { migrationScenarios } from './migration.e2e.js';
+import { offerScenarios } from './offer.e2e.js';
 import { optionsScenarios } from './options.e2e.js';
 import { payNowScenarios } from './pay-now.e2e.js';
 import { prolongScenarios } from './prolong.e2e.js';
@@ -426,5 +427,6 @@ export const edgeScenarios: readonly Scenario[] = [
   ...optionsScenarios,
   ...refundBindScenarios,
   ...migrationScenarios,
+  ...offerScenarios,
   ...payNowScenarios,
 ];

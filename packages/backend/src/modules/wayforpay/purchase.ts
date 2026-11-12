@@ -32,11 +32,29 @@ const MIN_ORDER_TIMEOUT_SECONDS = 300;
  * nothing (as we used to) inherits WayForPay's own default, which is unrelated to our
  * TTL — that gap is what leaves a buyer staring at a live Pay button on a dead order.
  */
-const orderTimeoutFor = (session: CheckoutSession, orderDate: number): number =>
+const ttlTimeout = (session: CheckoutSession, orderDate: number): number =>
   Math.max(
     MIN_ORDER_TIMEOUT_SECONDS,
     Math.floor(session.expiresAt.getTime() / 1000) - orderDate,
   );
+
+/**
+ * The TTL-derived timeout, capped so the provider order never outlives the offer's
+ * `payableUntil` — the floor above included: a closed offer must not stay payable at the
+ * provider for its five minutes. At least one second, since a zero or negative timeout is
+ * not a valid order (`/pay` refuses a closed offer before it gets here).
+ */
+const orderTimeoutFor = (
+  session: CheckoutSession,
+  orderDate: number,
+): number => {
+  const timeout = ttlTimeout(session, orderDate);
+  if (session.payableUntil === null) return timeout;
+  const left = Math.floor(
+    (session.payableUntil.getTime() - orderDate * 1000) / 1000,
+  );
+  return Math.max(1, Math.min(timeout, left));
+};
 
 /**
  * Build a signed WayForPay Purchase (docs/14 flow A). No `regularMode`: we take the

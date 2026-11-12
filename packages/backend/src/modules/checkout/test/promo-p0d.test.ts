@@ -62,6 +62,9 @@ const sessionWith = (promo: CheckoutPromo | null): CheckoutSession => ({
   renewal: null,
   origin: null,
   renewalOf: null,
+  startsAt: null,
+  payableUntil: null,
+  lockMethod: false,
   options: null,
   idempotencyKey: null,
   email: '',
@@ -123,6 +126,7 @@ const insertedFor = (promo: CheckoutPromo | null) =>
     };
     const checkout: CheckoutRepo = {
       findById: () => Effect.succeed(Option.some(sessionWith(promo))),
+      everSentToProvider: () => Effect.succeed(false),
       findByIdempotencyKey: () => Effect.succeed(Option.none()),
       reissueLapsed: () => Effect.die('unexpected reissueLapsed'),
       insert: () => Effect.succeed(true),

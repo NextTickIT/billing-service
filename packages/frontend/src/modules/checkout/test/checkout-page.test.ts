@@ -32,8 +32,11 @@ const single: CheckoutSessionPublic = {
   failureUrl: null,
   expiresAt: new Date('2030-01-01T00:00:00Z'),
   renewal: null,
+  startsAt: null,
+  payableUntil: null,
   methodLocked: false,
   prolong: false,
+  everSentToProvider: false,
   options: [
     { amount: 5000, period: 'P4W', promo: null, renewal: null, cycles: null },
   ],
@@ -290,5 +293,85 @@ describe('option refusals', () => {
     });
     store.notice = afterOptionPick(store.notice);
     expect(store.notice).toBeNull();
+  });
+});
+
+describe('a bounded offer', () => {
+  const past = new Date('2020-01-01T00:00:00Z');
+  const future = new Date('2099-01-01T00:00:00Z');
+
+  it('once payableUntil has passed the page says the offer is closed, with no Pay button', async () => {
+    const html = await render({ ...single, payableUntil: past });
+    expect(html).toContain('Ця пропозиція закрита');
+    expect(html).not.toContain('Сплатити');
+  });
+
+  it('before payableUntil the page is the normal one', async () => {
+    const html = await render({ ...single, payableUntil: future });
+    expect(html).not.toContain('Ця пропозиція закрита');
+    expect(html).toContain('Сплатити');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('a 410 closed refusal at Pay shows the closed message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof globalThis.fetch>(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ error: 'closed', code: 'checkout_closed' }),
+            { status: 410 },
+          ),
+        ),
+      ),
+    );
+    const store = useCheckoutStore(createPinia());
+    store.session = single;
+    await store.pay(ID, PaymentMethod.Card, 0);
+    expect(store.error).toBe('checkout.closed');
+  });
+});
+
+describe('startsAt', () => {
+  it.each([
+    ['ru', 'Оплаченный период начнётся'],
+    ['uk', 'Оплачений період почнеться'],
+    ['en', 'Your paid period starts'],
+  ])('a future start is announced (%s)', async (locale, expected) => {
+    const html = await render(
+      { ...single, startsAt: new Date('2099-01-01T00:00:00Z') },
+      locale,
+    );
+    expect(html).toContain(expected);
+  });
+
+  it('a start already past is not announced', async () => {
+    const html = await render(
+      { ...single, startsAt: new Date('2020-01-01T00:00:00Z') },
+      'en',
+    );
+    expect(html).not.toContain('Your paid period starts');
+  });
+});
+
+describe('a caller-locked method', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('hides the method picker like a prolong link, even with crypto offered', async () => {
+    vi.stubEnv('VITE_WHITEPAY_ENABLED', 'true');
+
+    const open = await render({ ...single, method: PaymentMethod.Card }, 'en');
+    const locked = await render(
+      { ...single, method: PaymentMethod.Card, methodLocked: true },
+      'en',
+    );
+
+    expect(open).toContain('checkout__methods');
+    expect(locked).not.toContain('checkout__methods');
   });
 });

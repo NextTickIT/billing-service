@@ -46,6 +46,21 @@ const isPayable = computed(
     store.session?.status !== CheckoutSessionStatus.Expired,
 );
 
+// The offer's `payableUntil` has passed: the server refuses Pay (410), so the page says
+// the offer is closed instead of offering a button that cannot work.
+const isClosed = computed(() => {
+  const until = store.session?.payableUntil;
+  return until != null && new Date(until).getTime() <= Date.now();
+});
+
+// Shown only while the start is ahead; once it has passed the period starts on payment.
+const startsLater = computed(() => {
+  const startsAt = store.session?.startsAt;
+  return startsAt != null && new Date(startsAt).getTime() > Date.now()
+    ? startsAt
+    : null;
+});
+
 // Crypto (WhitePay) is offered whenever the build flag is on — both methods are shown on
 // every checkout so a buyer can pick crypto even when the checkout didn't preselect it
 // (the backend `pay` route honors whichever method the buyer picks). Kept dark until the
@@ -283,6 +298,10 @@ const legalLinks = [
           {{ t('checkout.completed') }}
         </div>
 
+        <div v-else-if="isClosed" class="checkout__msg checkout__msg--warn">
+          {{ t('checkout.closed') }}
+        </div>
+
         <div
           v-else-if="
             store.session.prolong &&
@@ -391,6 +410,11 @@ const legalLinks = [
                     ),
                     period: formatPeriod(selected.renewal.period, locale),
                   })
+            }}
+          </p>
+          <p v-if="startsLater" class="checkout__renewal">
+            {{
+              t('checkout.startsAt', { date: formatDate(startsLater, locale) })
             }}
           </p>
           <p class="checkout__expiry">

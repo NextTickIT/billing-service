@@ -165,6 +165,39 @@ const KINDS: readonly (readonly [
     },
   ],
   [
+    'subscription_migrated',
+    {
+      amount: 150000,
+      currency: 0,
+      method: 0,
+      period: 'P1M',
+      source: 'wayforpay_callback',
+      chargeKind: 'checkout',
+      nextPaymentDate: '2026-05-01T00:00:00.000Z',
+      nextAmount: 150000,
+      periodStart: '2026-04-01T00:00:00.000Z',
+      periodEnd: '2026-05-01T00:00:00.000Z',
+      recurring: true,
+      metadata: null,
+    },
+    {
+      aggregate_id: SUBSCRIPTION,
+      correlation_id: CORRELATION,
+      amount: 150000,
+      currency: 0,
+      method: 0,
+      period: 'P1M',
+      source: 'wayforpay_callback',
+      charge_kind: 'checkout',
+      next_payment_date: '2026-05-01T00:00:00.000Z',
+      next_amount: 150000,
+      period_start: '2026-04-01T00:00:00.000Z',
+      period_end: '2026-05-01T00:00:00.000Z',
+      recurring: true,
+      metadata: null,
+    },
+  ],
+  [
     'one_time_purchase_succeeded',
     {
       amount: 90000,
@@ -499,6 +532,19 @@ describe('crmBody', () => {
     expect(KINDS.map(([name]) => name).sort()).toEqual([...EVENT_NAMES].sort());
   });
 
+  it('carries the settling checkout session as checkout_session_id', () => {
+    const body = crmBody(
+      event({
+        payload: { chargeKind: 'checkout', checkoutSessionId: 'chk_paid' },
+      }),
+    ) as { payload: Record<string, unknown> };
+
+    expect(body.payload).toMatchObject({
+      charge_kind: 'checkout',
+      checkout_session_id: 'chk_paid',
+    });
+  });
+
   it('never adds the SendPulse *_formatted twins', () => {
     const body = crmBody(event()) as { payload: Record<string, unknown> };
     // Those exist so a flow can drop a value into a Russian sentence. The CRM renders its
@@ -682,6 +728,11 @@ describe('makeCrmConnector — what the CRM stored', () => {
     ['upcoming_charge', 'validated', DELIVERED],
     ['upcoming_charge', 'unregistered', DELIVERED],
     ['upcoming_charge', 'rejected', PERMANENT],
+    // It rides beside a success event, which carries the money; this one does not, so a
+    // CRM that has not registered it yet must not dead-letter it.
+    ['subscription_migrated', 'validated', DELIVERED],
+    ['subscription_migrated', 'unregistered', DELIVERED],
+    ['subscription_migrated', 'rejected', PERMANENT],
   ] as const)('%s stored %s → %o', ([name, schemaStatus, expected]) =>
     Effect.gen(function* () {
       const crm = crmAnswering(ack(schemaStatus));

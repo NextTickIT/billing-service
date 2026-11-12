@@ -940,10 +940,11 @@ it.effect('no pending cancel → no payment_reactivated', () =>
 );
 
 it.effect.each([
-  ['prolong', 'initial_payment_succeeded'],
-  ['manual_renewal', 'recurring_payment_succeeded'],
-  // A caller link flagged reportAs: "renewal" names no sub it renews.
-  ['migration', 'recurring_payment_succeeded'],
+  ['prolong', ['initial_payment_succeeded']],
+  ['manual_renewal', ['recurring_payment_succeeded']],
+  // A caller link flagged reportAs: "renewal" names no sub it renews, and announces the
+  // move beside the success.
+  ['migration', ['recurring_payment_succeeded', 'subscription_migrated']],
 ] as const)(
   'a %s session paid after its sub died → payment_created + %s on the fresh row',
   ([origin, succeeded]) =>
@@ -965,7 +966,7 @@ it.effect.each([
 
       expect(h.events.map((e) => e.name)).toEqual([
         'payment_created',
-        succeeded,
+        ...succeeded,
       ]);
       expect(h.events.every((e) => e.aggregateId === 'sub_fresh')).toBe(true);
       // AC 21: the renewal terms ride along; amount/period stay the first charge.
@@ -1016,6 +1017,7 @@ it.effect.each(RAILS)(
       expect(flagged.map((e) => e.name)).toEqual([
         'payment_created',
         'recurring_payment_succeeded',
+        'subscription_migrated',
       ]);
       // AC 15: everything but the name is a first checkout's.
       expect(flagged[0]).toStrictEqual(plain[0]);
@@ -1046,9 +1048,135 @@ it.effect(
 
       expect(h.events.map((e) => e.name)).toEqual([
         'recurring_payment_succeeded',
+        'subscription_migrated',
       ]);
       expect(h.events[0]?.aggregateId).toBe('sub_live');
     }),
+);
+
+it.effect(
+  'a created migration payment announces the move with the success payload under its own id',
+  () =>
+    Effect.gen(function* () {
+      const h = harness(
+        recurringCheckout({ origin: 'migration', renewalOf: null }),
+        applierOf({
+          subscriptionId: 'sub_fresh',
+          created: true,
+          nextPaymentDate: NEXT,
+          periodStart: new Date('2026-02-01T00:00:00Z'),
+          periodEnd: NEXT,
+        }),
+      );
+
+      yield* h.run(encodedPayload('kmc'));
+
+      const [, succeeded, migrated] = h.events;
+      expect(migrated).toMatchObject({
+        id: 'evt_kmc:migrated',
+        name: 'subscription_migrated',
+        aggregateId: 'sub_fresh',
+        externalUserId: 'sp:p',
+        payload: {
+          periodStart: '2026-02-01T00:00:00.000Z',
+          periodEnd: '2026-03-01T00:00:00.000Z',
+        },
+      });
+      expect(migrated?.payload).toStrictEqual(succeeded?.payload);
+    }),
+);
+
+it.effect(
+  'a stacked migration payment announces the move against the live sub',
+  () =>
+    Effect.gen(function* () {
+      const h = harness(
+        recurringCheckout({ origin: 'migration', renewalOf: null }),
+        applierOf({
+          subscriptionId: 'sub_live',
+          created: false,
+          prolonged: true,
+          nextPaymentDate: NEXT,
+        }),
+      );
+
+      yield* h.run(encodedPayload('kms'));
+
+      expect(h.events[1]).toMatchObject({
+        id: 'evt_kms:migrated',
+        name: 'subscription_migrated',
+        aggregateId: 'sub_live',
+      });
+    }),
+);
+
+it.effect.each([['prolong'], ['manual_renewal'], [null]] as const)(
+  'a %s checkout does not announce a move',
+  ([origin]) =>
+    Effect.gen(function* () {
+      const h = harness(
+        recurringCheckout({ origin }),
+        applierOf({
+          subscriptionId: 'sub_fresh',
+          created: true,
+          nextPaymentDate: NEXT,
+        }),
+      );
+
+      yield* h.run(encodedPayload('kno'));
+
+      expect(h.events.map((e) => e.name)).not.toContain(
+        'subscription_migrated',
+      );
+    }),
+);
+
+it.effect(
+  'a checkout success reports the session that settled it; a scheduled renewal none',
+  () =>
+    Effect.gen(function* () {
+      const checkout = harness(
+        recurringCheckout({ checkoutSessionId: 'chk_paid' }),
+        applierOf({
+          subscriptionId: 'sub_fresh',
+          created: true,
+          nextPaymentDate: NEXT,
+        }),
+      );
+      const scheduled = recordingPublish();
+
+      yield* checkout.run(encodedPayload('kcs'));
+      yield* recurringHandler(
+        makeFakeRepo().repo,
+        scheduled.publish,
+      )(encodedPayload('kss'));
+
+      expect(checkout.events[1]?.payload).toMatchObject({
+        chargeKind: 'checkout',
+        checkoutSessionId: 'chk_paid',
+      });
+      expect(scheduled.events[0]?.payload).toMatchObject({
+        chargeKind: 'scheduled',
+      });
+      expect(scheduled.events[0]?.payload).not.toHaveProperty(
+        'checkoutSessionId',
+      );
+    }),
+);
+
+it.effect('a scheduler renewal never announces a move', () =>
+  Effect.gen(function* () {
+    const pub = recordingPublish();
+
+    yield* recurringHandler(
+      makeFakeRepo().repo,
+      pub.publish,
+    )(encodedPayload('ksr'));
+
+    expect(pub.events.map((e) => e.name)).toEqual([
+      'recurring_payment_succeeded',
+    ]);
+  }),
 );
 
 it.effect(

@@ -256,8 +256,8 @@ const assertMigratedIn = async (
   );
   assert.equal(
     await eventsOf(http, contact),
-    `payment_created:${row},recurring_payment_succeeded:${row}`,
-    `${contact}: payment_created then recurring_payment_succeeded`,
+    `payment_created:${row},recurring_payment_succeeded:${row},subscription_migrated:${row}`,
+    `${contact}: payment_created, recurring_payment_succeeded, then subscription_migrated`,
   );
   assert.equal(
     await scalar(
@@ -315,7 +315,7 @@ const r3Card = async (http: Http) => {
 };
 
 const r3Scenario: Scenario = {
-  name: 'migration (R3): the worked example, option 1 paid by WhitePay and by card for a contact with no row → 5000/P1M until paidAt+P3M+P7D; payment_created then recurring_payment_succeeded (P3M)',
+  name: 'migration (R3): the worked example, option 1 paid by WhitePay and by card for a contact with no row → 5000/P1M until paidAt+P3M+P7D; payment_created, recurring_payment_succeeded (P3M), subscription_migrated',
   run: async ({ baseUrl, query }) => {
     const http = await httpContext(baseUrl, query, 'r3-svc');
     await withWhitePayApp(async (url) => {
@@ -454,8 +454,8 @@ const r6SettlesOnPastDue = async (http: Http, sub: Payment) => {
   );
   assert.equal(
     await eventsOf(http, sub.externalUserId),
-    `recurring_payment_succeeded:${sub.id}`,
-    'R6: a stack and recurring_payment_succeeded, no payment_created',
+    `recurring_payment_succeeded:${sub.id},subscription_migrated:${sub.id}`,
+    'R6: a stack, recurring_payment_succeeded and subscription_migrated, no payment_created',
   );
 };
 
@@ -494,8 +494,8 @@ const r7SettlesAfterDeath = async (http: Http, sub: Payment) => {
   );
   assert.equal(
     await eventsOf(http, contact),
-    `payment_created:${fresh},recurring_payment_succeeded:${fresh}`,
-    'R7: payment_created then recurring_payment_succeeded',
+    `payment_created:${fresh},recurring_payment_succeeded:${fresh},subscription_migrated:${fresh}`,
+    'R7: payment_created, recurring_payment_succeeded, then subscription_migrated',
   );
 };
 

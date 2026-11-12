@@ -46,6 +46,7 @@ const unusedPayments: PaymentRepo = {
 
 const unusedCheckout: CheckoutRepo = {
   findById: die,
+  everSentToProvider: die,
   findByIdempotencyKey: die,
   reissueLapsed: die,
   insert: die,

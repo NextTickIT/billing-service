@@ -41,6 +41,7 @@ export default {
     methodCrypto: 'Crypto',
     pay: 'Pay',
     expired: 'Payment link has expired.',
+    closed: 'This offer is closed and can no longer be paid.',
     pastDue:
       'This link expired on {date}. If payment is still due, we will send a new message.',
     completed: 'Payment completed.',
@@ -79,6 +80,7 @@ export default {
     typeSubscription: 'Subscription',
     typeOneTime: 'One-time payment',
     linkValidUntil: 'Payment link valid until {date}',
+    startsAt: 'Your paid period starts {date}',
     redirecting: 'Redirecting to card verification…',
     legalNote: 'By paying, you accept:',
     legalOffer: 'Offer',
@@ -171,6 +173,7 @@ export default {
     events: {
       initial_payment_succeeded: 'Initial payment succeeded',
       recurring_payment_succeeded: 'Recurring payment succeeded',
+      subscription_migrated: 'Subscription migrated',
       initial_payment_failed: 'Initial payment failed',
       recurring_payment_failed: 'Recurring payment failed',
       charge_retry_failed: 'Charge retry failed',

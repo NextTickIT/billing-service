@@ -13,6 +13,7 @@ import {
   type RecurringPaymentFailedEvent,
   type RecurringPaymentSucceededEvent,
   scalePeriod,
+  type SubscriptionMigratedEvent,
   type UnknownPaymentQuarantinedEvent,
 } from '@billing-service/shared';
 import { Context, Effect, Layer, Option, Schema } from 'effect';
@@ -87,6 +88,13 @@ export const boundChargeKind = (externalRef: string): ChargeKind =>
     ? 'scheduled'
     : 'checkout';
 
+/** The checkout session that settled a charge, when one did (a checkout or card-change
+ * match); nothing for a scheduled renewal. */
+const settlingSession = (match: Match) =>
+  match.checkoutSessionId === undefined
+    ? {}
+    : { checkoutSessionId: match.checkoutSessionId };
+
 /** Shared success payload for the initial/recurring variants (docs/07). `nextPaymentDate`
  * is the next scheduled charge (null for a one-time purchase) and `nextAmount` what it
  * autocharges (null when it will not); `periodStart`/`periodEnd`
@@ -111,6 +119,7 @@ const succeededPayload = (
   periodEnd: prolongation.periodEnd?.toISOString() ?? null,
   recurring: match.recurring ?? true,
   metadata: prolongation.metadata,
+  ...settlingSession(match),
 });
 
 /** initial_payment_succeeded — a first checkout payment (match kind 'checkout'). */
@@ -167,6 +176,29 @@ export const oneTimePurchaseSucceeded = (
     nextAmount: null,
   }),
 });
+
+/**
+ * subscription_migrated — a checkout created with `reportAs: "renewal"` (origin
+ * `migration`) settled, whether it created the payment or stacked onto one. Published
+ * beside that charge's success event with the same payload and its own id. Only a
+ * checkout match carries an origin, so a scheduler renewal never produces it.
+ */
+export const subscriptionMigrated = (
+  event: Charge,
+  match: Match,
+  applied: SettledCharge,
+): SubscriptionMigratedEvent | null =>
+  match.kind === 'checkout' && match.origin === 'migration'
+    ? {
+        id: eventId(event.idemKey, 'migrated'),
+        name: 'subscription_migrated',
+        occurredAt: event.occurredAt,
+        correlationId: event.idemKey,
+        externalUserId: match.externalUserId,
+        aggregateId: applied.subscriptionId,
+        payload: succeededPayload(event, match, applied),
+      }
+    : null;
 
 /** A checkout that reports as a renewal even when it creates the row: a manual renewal
  * (AC 25), or a caller link flagged `reportAs: "renewal"` (legacy migration). */
@@ -507,6 +539,10 @@ const recordMatchedSuccess = (
       );
     }
     yield* deps.publish(paymentSucceeded(event, match, applied));
+    const migrated = subscriptionMigrated(event, match, applied);
+    if (migrated !== null) {
+      yield* deps.publish(migrated);
+    }
     yield* deps.repo.setMatchResult(incomingId, 'matched');
   });
 

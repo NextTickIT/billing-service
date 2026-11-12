@@ -148,8 +148,11 @@ describe('public session and prolong contracts', () => {
       failureUrl: null,
       expiresAt: new Date(0).toISOString(),
       renewal: null,
+      startsAt: null,
+      payableUntil: null,
       methodLocked: true,
       prolong: true,
+      everSentToProvider: false,
       options: [
         {
           amount: 5000,
