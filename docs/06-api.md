@@ -9,7 +9,17 @@ Public and support HTTP surface. Authentication requirements are noted per secti
 ## Checkout sessions
 
 - `POST /api/checkout-sessions` (auth: service token)
-- `GET /api/checkout-sessions/:id` (auth: service token) — read a session by ID
+- `GET /api/checkout-sessions/:id` (auth: service token as `Authorization: Bearer`, or the
+  BFF secret for the hosted page; a missing or invalid credential is 401) — read a session
+  by ID, read-only, the same body either way: `status` (0 created, 1 pending, 2 completed,
+  3 expired), `expiresAt`, the terms and options, `startsAt`, `payableUntil`,
+  `methodLocked`, and `everSentToProvider` (true once the session was claimed for payment — its order handed to
+  a provider: the first claim stamps `firstSentToProviderAt`, which no release ever
+  clears — or while it is Pending or Completed; false only for a session never claimed). Never `externalUserId` or `origin`.
+  Deploy note (migration 0027): every row existing when it runs is backfilled as sent,
+  since pre-upgrade history cannot tell a released hand-out from an untouched link. It must
+  run with no old-version API or worker still writing (the standard full-path deploy
+  replaces them first); rows an old process writes after the backfill are not covered.
 - `GET /checkout/:sessionId` (auth: none — public checkout page on `bill.nexttick.it`, unguessable session ID)
 
 ### `POST /api/checkout-sessions`
@@ -25,7 +35,7 @@ Request body:
 }
 ```
 
-Optional: `method` (defaults to Card), `recurring` (defaults to `true`), and
+Optional: `method` (defaults to Card; see `lockMethod` below), `recurring` (defaults to `true`), and
 `successUrl`/`failureUrl` (http(s) post-payment redirects). `period` (ISO-8601 duration)
 is **required for a recurring checkout** but **optional for a one-time purchase**
 (`recurring: false`) — a one-time never renews, so it has no cadence.
@@ -37,6 +47,40 @@ that link to `recurring_payment_succeeded` / `recurring_payment_failed`;
 it is the explicit form of the default (same as omitting the field), is allowed on any
 checkout, and exists because SendPulse cannot omit a JSON property conditionally, so its
 flows send the field every time.
+
+`startsAt` (optional, ISO-8601 instant): when the paid period of a subscription this
+checkout **creates** begins, if later than the payment. Recurring checkouts only, and
+`now ≤ startsAt ≤ now + 62 days`; otherwise **422** with the broken rule as `error`
+(`startsAt is only allowed on a recurring checkout`, `startsAt must not be in the past`,
+`startsAt must be at most 62 days ahead`). On settlement the new payment's
+`currentPeriodStart` is `max(paidAt, startsAt)` and `currentPeriodEnd` /
+`nextPaymentDate` = that + period × cycles (+ promo bonus). A payment that stacks onto the
+contact's live subscription ignores it. Every replacement of a lapsed link (clone or re-mint)
+keeps it. An `Idempotency-Key` replay with a different `startsAt` is **409**. A retry under
+an existing `Idempotency-Key` is replayed before any validation, so an identical retry after
+`startsAt` / `payableUntil` have passed still returns the same session.
+
+`payableUntil` (optional, ISO-8601 instant): makes the checkout a **bounded offer** that
+closes at that instant. `now < payableUntil ≤ now + 62 days`, otherwise **422**
+(`payableUntil must be in the future`, `payableUntil must be at most 62 days ahead`). The
+session's `expiresAt` is `payableUntil` instead of the usual TTL, and a bounded session is
+**never** re-issued, cloned or re-minted: from `payableUntil` on — or once it lapses —
+`POST /api/checkout-sessions/:id/pay` answers **410** `{"error":"this checkout is closed","code":"checkout_closed"}`
+and writes nothing. While it is live, a Pending bounded session can be paid again (same
+order reference). The WayForPay order timeout is capped so the provider order never
+outlives `payableUntil` (at least 1 s). WayForPay does not sign `orderTimeout`, so a payer can
+extend it in the browser: the deadline is enforced by billing at `/pay` and by the default
+provider timeout, and is **not cryptographically binding at the provider**. A determined
+payer can still pay late, so callers must handle a settlement after `payableUntil`. The public read returns `payableUntil` and
+`startsAt`; the page shows a closed state once `payableUntil` has passed and, while
+`startsAt` is ahead, the line "Your paid period starts {date}".
+
+`lockMethod` (optional, default `false`): locks the payer to `method`, which is then
+required (400 without it). The page hides the method picker (`methodLocked: true` on the
+public read) and `/pay` with another method is **400** `method_locked`, exactly like a
+`/prolong` link. A lapsed unbounded link cloned on re-issue stays locked; a re-mint at a
+live subscription's terms keeps the lock too, and when that subscription pays by another
+method the replacement is refused (**409**) rather than unlocked.
 
 Response: session ID, payment link URL, expiry.
 

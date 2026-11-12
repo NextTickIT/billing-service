@@ -17,6 +17,8 @@ import {
  */
 const errorKeyFor = (e: unknown): string => {
   if (e instanceof CheckoutApiError) {
+    // The offer itself has closed: asking for a new link would not help, so say so.
+    if (e.code === 'checkout_closed') return 'checkout.closed';
     if (e.status === 404) return 'checkout.errors.notFound';
     if (e.status === 409 || e.status === 410) return 'checkout.errors.unusable';
     if (e.status === 422) return 'checkout.errors.rejected';

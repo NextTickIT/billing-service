@@ -51,6 +51,7 @@ const unusedSubs: PaymentRepo = {
 };
 const unusedCheckout: CheckoutRepo = {
   findById: () => Effect.die('unused'),
+  everSentToProvider: () => Effect.die('unused'),
   findByIdempotencyKey: () => Effect.die('unused'),
   reissueLapsed: () => Effect.die('unexpected reissueLapsed'),
   insert: () => Effect.die('unused'),

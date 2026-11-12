@@ -36,6 +36,9 @@ const session = (over: Partial<CheckoutSession> = {}): CheckoutSession => ({
   renewal: null,
   origin: null,
   renewalOf: null,
+  startsAt: null,
+  payableUntil: null,
+  lockMethod: false,
   options: null,
   idempotencyKey: 'sp:1',
   email: 'buyer@example.com',
@@ -53,6 +56,7 @@ const repoWith = (
   const minted: NewCheckoutSession[] = [];
   const repo = {
     findById: () => Effect.succeed(Option.fromNullable(found)),
+    everSentToProvider: die,
     findByIdempotencyKey: die,
     // Mirrors the real method: hand back the user's live session on these terms when
     // there is one, otherwise take the clone.

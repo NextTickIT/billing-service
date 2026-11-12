@@ -153,6 +153,12 @@ export type MatchResult =
        * `checkout` match carries the session's; a `recurring` match carries the payment's
        * own (the last one declared), so a renewal reports intent rather than dropping it. */
       readonly metadata?: Record<string, unknown> | null | undefined;
+      /** A `checkout` match only: the session's `startsAt`, where a subscription this
+       * charge creates begins. Null or absent anchors at the payment. */
+      readonly startsAt?: Date | null;
+      /** `checkout` / `card_change` only: the session that settles this charge, reported
+       * on the success events. */
+      readonly checkoutSessionId?: string;
     }
   | { readonly matched: false };
 

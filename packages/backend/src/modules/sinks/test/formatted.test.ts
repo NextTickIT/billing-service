@@ -160,6 +160,10 @@ const NOT_RENDERED: ReadonlyMap<string, string> = new Map([
   ['externalRef', 'provider order reference'],
   ['orderReference', 'the refunded provider order reference'],
   ['originalEventId', 'opaque id of the refunded success event'],
+  [
+    'checkoutSessionId',
+    'opaque id of the checkout session that settled the charge',
+  ],
   ['from', 'an external user id, not prose'],
   ['to', 'an external user id, not prose'],
   ['checkoutUrl', 'a link, used as-is'],

@@ -16,6 +16,7 @@ kind (`checkout` → initial, `recurring` → renewal); see 22.
 | `initial_payment_succeeded` | first checkout payment approved (match kind `checkout`) | external_user_id, amount, currency, method, period, source, charge_kind |
 | `recurring_payment_succeeded` | a renewal charge approved (match kind `recurring`), incl. an operator-bound quarantine | external_user_id, amount, currency, method, period, source, charge_kind |
 | `one_time_purchase_succeeded` | a one-time (non-recurring) checkout approved — a single buy, never renewed (match kind `checkout`, session `recurring = false`) | external_user_id, amount, currency, method, period, source, charge_kind |
+| `subscription_migrated` | a checkout created with `reportAs: "renewal"` (origin `migration`) settled — whether it created the payment or stacked onto a live one. Published **in addition** to that charge's success event, right after it, with the **same payload** and its own id `evt_<idemKey>:migrated`. Scheduler renewals never emit it. Not a money kind for the CRM sink (the success event carries the money) | same as the success events |
 | `initial_payment_failed` | first checkout payment **declined** for a known session — no retry ladder; the customer re-initiates checkout | external_user_id, amount, currency, method, period, reason, source |
 | `charge_retry_failed` | failed intermediate **recurring** charge attempt | external_user_id, attempt number, next retry date, provider reason, amount, currency, method (the payment's terms the retry charges again) |
 | `renewal_failed` | final failure of the **recurring** retry cycle (day 7) | external_user_id, reason |
@@ -37,6 +38,20 @@ the old end, which is every on-time scheduled renewal. A charge stacked onto tim
 running keeps the earlier start of the whole coverage: a renewal paid early, or a prolong
 checkout. That charge's own slice is [the previous success event's `periodEnd`,
 `periodEnd`]. The anchors come from `stackAnchors` (`payment/domain.ts`).
+
+A checkout created with `startsAt` (docs/06) that **creates** a payment anchors it at
+`max(paidAt, startsAt)`, so `periodStart` is that instant and `periodEnd` /
+`nextPaymentDate` run a full period (× cycles, + promo bonus) from it. A charge that stacks
+onto a live payment ignores `startsAt`.
+
+**`checkoutSessionId`** (`checkout_session_id` on the CRM wire, optional) on the success
+events (`initial_`/`recurring_`/`one_time_purchase_succeeded`, `subscription_migrated`) is
+the id of the checkout session that settled the charge: the session actually paid, so a
+re-issued link reports its replacement's id, not the lapsed one. Present whenever a
+checkout or card-change session settled the charge (`chargeKind: checkout`); absent for a
+`scheduled` renewal and for an operator bind of a quarantined charge (no session settled
+it, even when its reference makes `chargeKind` `checkout`). Additive; existing consumers
+ignore it.
 
 **`nextAmount`** (`next_amount` on the CRM wire) on the success events is what the next
 scheduled charge takes by itself, in minor units of the event's `currency`: the payment's

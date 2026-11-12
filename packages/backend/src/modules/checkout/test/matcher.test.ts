@@ -29,6 +29,9 @@ const session: CheckoutSession = {
   renewal: null,
   origin: null,
   renewalOf: null,
+  startsAt: null,
+  payableUntil: null,
+  lockMethod: false,
   options: null,
   idempotencyKey: null,
   email: '',
@@ -40,6 +43,7 @@ const session: CheckoutSession = {
 const repoWith = (found: CheckoutSession | null): CheckoutRepo => ({
   findById: () =>
     Effect.succeed(found === null ? Option.none() : Option.some(found)),
+  everSentToProvider: () => Effect.succeed(false),
   findByIdempotencyKey: () => Effect.succeed(Option.none()),
   reissueLapsed: () => Effect.die('unexpected reissueLapsed'),
   insert: () => Effect.succeed(true),
@@ -282,4 +286,42 @@ it.effect('routine quarantines log no marker', () =>
       expect(run.logs).toEqual([]);
     }
   }),
+);
+
+/** A repo over several sessions, found by id like the real one. */
+const repoOf = (rows: readonly CheckoutSession[]): CheckoutRepo => ({
+  ...repoWith(null),
+  findById: (id) =>
+    Effect.succeed(Option.fromNullable(rows.find((row) => row.id === id))),
+});
+
+it.effect(
+  'the match names the session that settles it, and carries its startsAt',
+  () =>
+    Effect.gen(function* () {
+      const startsAt = new Date('2026-12-01T00:00:00Z');
+
+      const result = yield* makeCheckoutMatcher(
+        repoWith({ ...session, startsAt }),
+        noLiveSub,
+      )(event({}));
+
+      expect(result).toMatchObject({ checkoutSessionId: 'chk_1', startsAt });
+    }),
+);
+
+it.effect(
+  "a re-issued link's payment names the replacement session, not the lapsed one",
+  () =>
+    Effect.gen(function* () {
+      const lapsed = { ...session, id: 'chk_old', status: 0 };
+      const replacement = { ...session, id: 'chk_new' };
+
+      const result = yield* makeCheckoutMatcher(
+        repoOf([lapsed, replacement]),
+        noLiveSub,
+      )(event({ externalRef: 'chk_new' }));
+
+      expect(result).toMatchObject({ checkoutSessionId: 'chk_new' });
+    }),
 );

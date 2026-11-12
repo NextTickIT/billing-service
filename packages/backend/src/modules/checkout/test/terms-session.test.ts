@@ -62,6 +62,9 @@ it('prolongSession is a recurring checkout at the sub terms, method-locked by or
     renewalOf: 'sub_1',
     options: null,
     metadata: null,
+    startsAt: null,
+    payableUntil: null,
+    lockMethod: false,
     idempotencyKey: 'idem-1',
     expiresAt: EXPIRES,
   });
@@ -133,6 +136,7 @@ const cardChangeSession = (
 
 const repoWith = (session: CheckoutSession): CheckoutRepo => ({
   findById: () => Effect.succeed(Option.some(session)),
+  everSentToProvider: () => Effect.die('unused'),
   findByIdempotencyKey: () => Effect.die('unused'),
   reissueLapsed: () => Effect.die('unused'),
   insert: () => Effect.die('unused'),

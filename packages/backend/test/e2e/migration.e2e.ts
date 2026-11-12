@@ -256,8 +256,8 @@ const assertMigratedIn = async (
   );
   assert.equal(
     await eventsOf(http, contact),
-    `payment_created:${row},recurring_payment_succeeded:${row}`,
-    `${contact}: payment_created then recurring_payment_succeeded`,
+    `payment_created:${row},recurring_payment_succeeded:${row},subscription_migrated:${row}`,
+    `${contact}: payment_created, recurring_payment_succeeded, then subscription_migrated`,
   );
   assert.equal(
     await scalar(
@@ -315,7 +315,7 @@ const r3Card = async (http: Http) => {
 };
 
 const r3Scenario: Scenario = {
-  name: 'migration (R3): the worked example, option 1 paid by WhitePay and by card for a contact with no row → 5000/P1M until paidAt+P3M+P7D; payment_created then recurring_payment_succeeded (P3M)',
+  name: 'migration (R3): the worked example, option 1 paid by WhitePay and by card for a contact with no row → 5000/P1M until paidAt+P3M+P7D; payment_created, recurring_payment_succeeded (P3M), subscription_migrated',
   run: async ({ baseUrl, query }) => {
     const http = await httpContext(baseUrl, query, 'r3-svc');
     await withWhitePayApp(async (url) => {
@@ -454,8 +454,8 @@ const r6SettlesOnPastDue = async (http: Http, sub: Payment) => {
   );
   assert.equal(
     await eventsOf(http, sub.externalUserId),
-    `recurring_payment_succeeded:${sub.id}`,
-    'R6: a stack and recurring_payment_succeeded, no payment_created',
+    `recurring_payment_succeeded:${sub.id},subscription_migrated:${sub.id}`,
+    'R6: a stack, recurring_payment_succeeded and subscription_migrated, no payment_created',
   );
 };
 
@@ -494,8 +494,8 @@ const r7SettlesAfterDeath = async (http: Http, sub: Payment) => {
   );
   assert.equal(
     await eventsOf(http, contact),
-    `payment_created:${fresh},recurring_payment_succeeded:${fresh}`,
-    'R7: payment_created then recurring_payment_succeeded',
+    `payment_created:${fresh},recurring_payment_succeeded:${fresh},subscription_migrated:${fresh}`,
+    'R7: payment_created, recurring_payment_succeeded, then subscription_migrated',
   );
 };
 
@@ -661,4 +661,37 @@ const r11Guard: MigrationScenario = {
   },
 };
 
-export const migrationGuardScenarios: readonly MigrationScenario[] = [r11Guard];
+/** A Created, never-claimed row from before 0027 (the old release left exactly this
+ * after a real hand-out) reads as sent once 0027 has run. */
+const preUpgradeRowSent: MigrationScenario = {
+  name: 'migration (0027): a pre-existing Created, unclaimed row is backfilled as sent at its createdAt',
+  run: async ({ dbConfig, psql }) => {
+    await Effect.runPromise(
+      runMigrationsWith(
+        dbConfig,
+        Effect.map(fromFileSystem(migrationsDir), (ms) =>
+          ms.filter(([id]) => id <= 26),
+        ),
+      ),
+    );
+    psql(
+      `INSERT INTO checkout_sessions (id, "externalUserId", amount, currency, period, method, "expiresAt")
+       VALUES ('chk_pre27', 'sp:pre27', 30000, 0, 'P1M', 0, '2030-01-01T00:00:00Z')`,
+    );
+
+    await Effect.runPromise(runMigrations(dbConfig));
+
+    assert.equal(
+      psql(
+        `SELECT status || '|' || ("claimedAt" IS NULL)::text || '|' || ("firstSentToProviderAt" = "createdAt")::text FROM checkout_sessions WHERE id = 'chk_pre27'`,
+      ).trim(),
+      '0|true|true',
+      'Created and unclaimed, yet stamped as sent at its createdAt',
+    );
+  },
+};
+
+export const migrationGuardScenarios: readonly MigrationScenario[] = [
+  r11Guard,
+  preUpgradeRowSent,
+];

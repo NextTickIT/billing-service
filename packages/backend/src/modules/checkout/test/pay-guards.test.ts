@@ -46,6 +46,9 @@ const session = (over: Partial<CheckoutSession> = {}): CheckoutSession => ({
   renewal: null,
   origin: 'prolong',
   renewalOf: 'pay_live',
+  startsAt: null,
+  payableUntil: null,
+  lockMethod: false,
   options: null,
   idempotencyKey: null,
   email: '',
@@ -108,6 +111,7 @@ const repoWith = (
         if (ok) writes.claimed.push({ id, method });
         return ok;
       }),
+    everSentToProvider: die,
     findByIdempotencyKey: die,
     insert: die,
     completeIfOpen: die,

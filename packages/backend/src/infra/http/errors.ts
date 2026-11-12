@@ -78,6 +78,25 @@ export class OptionUnavailable extends Data.TaggedError('OptionUnavailable')<{
 }
 
 /**
+ * The offer this checkout carries has closed (`payableUntil` has passed): no payment, no
+ * re-issue. 410, not 409 — the link is gone for good, not in a state a retry or a new link
+ * for the same offer could fix. `code` is what the page branches on.
+ */
+export class CheckoutClosed extends Data.TaggedError('CheckoutClosed')<{
+  readonly payableUntil: Date;
+}> {
+  toHttp(): HttpReply {
+    return {
+      status: 410,
+      body: {
+        error: 'this checkout is closed',
+        code: 'checkout_closed',
+      },
+    };
+  }
+}
+
+/**
  * The buyer picked a method this checkout does not take: a `/prolong` session is locked
  * to the subscription's current method. 400, not 409 — the request is wrong, not the
  * state — and nothing was written. `method` is the one the page must switch to (it can

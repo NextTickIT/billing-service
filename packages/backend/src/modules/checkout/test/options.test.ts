@@ -45,6 +45,9 @@ const base: CheckoutSession = {
   renewal: null,
   origin: null,
   renewalOf: null,
+  startsAt: null,
+  payableUntil: null,
+  lockMethod: false,
   options: null,
   metadata: null,
   idempotencyKey: null,
@@ -191,6 +194,7 @@ describe('cycle choices', () => {
 const repoWith = (found: CheckoutSession): CheckoutRepo => ({
   findById: (id) =>
     Effect.succeed(id === found.id ? Option.some(found) : Option.none()),
+  everSentToProvider: () => Effect.succeed(false),
   findByIdempotencyKey: () => Effect.succeed(Option.none()),
   reissueLapsed: () => Effect.die('unexpected reissueLapsed'),
   insert: () => Effect.succeed(true),

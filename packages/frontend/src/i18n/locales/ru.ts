@@ -41,6 +41,7 @@ export default {
     methodCrypto: 'Крипто',
     pay: 'Оплатить',
     expired: 'Ссылка на оплату истекла.',
+    closed: 'Это предложение закрыто, оплатить его уже нельзя.',
     pastDue:
       'Срок действия этой ссылки истёк {date}. Если оплата ещё нужна, мы отправим новое сообщение.',
     completed: 'Оплата выполнена.',
@@ -79,6 +80,7 @@ export default {
     typeSubscription: 'Подписка',
     typeOneTime: 'Разовый платёж',
     linkValidUntil: 'Ссылка на оплату действительна до {date}',
+    startsAt: 'Оплаченный период начнётся {date}',
     redirecting: 'Перенаправление на проверку карты…',
     legalNote: 'Оплачивая, вы принимаете:',
     legalOffer: 'Оферта',
@@ -171,6 +173,7 @@ export default {
     events: {
       initial_payment_succeeded: 'Первый платёж успешен',
       recurring_payment_succeeded: 'Повторный платёж успешен',
+      subscription_migrated: 'Подписка перенесена',
       initial_payment_failed: 'Первый платёж не удался',
       recurring_payment_failed: 'Повторный платёж не удался',
       charge_retry_failed: 'Повтор списания не удался',

@@ -4,7 +4,6 @@ import { isNonZeroPeriod, isValidPeriod, RecurringPeriod } from '@/period.js';
 import {
   CurrencySchema,
   Metadata,
-  PaymentMethod,
   PaymentMethodSchema,
 } from '@/schemas/payment.js';
 
@@ -193,9 +192,24 @@ export const CheckoutSession = Schema.Struct({
   // them; null offers the flat terms alone. Caller options or manual-renewal cycles,
   // never both.
   options: Schema.NullOr(Schema.Array(StoredCheckoutOption)),
+  // When the paid period begins, if later than the payment itself: a fresh subscription
+  // created by this checkout is anchored here instead of at the payment time, so time the
+  // buyer already holds elsewhere is not paid twice. Recurring only; ignored when the
+  // payment stacks onto a live subscription. Null anchors at the payment, as always.
+  startsAt: Schema.NullOr(Schema.Date),
+  // When this offer closes. A session that has one is a bounded offer: its `expiresAt` is
+  // this instant, it is never re-issued, `/pay` refuses (410) from then on, and the
+  // provider order is not allowed to outlive it. Null: the usual TTL and re-issue rules.
+  payableUntil: Schema.NullOr(Schema.Date),
+  // The payer cannot switch away from `method` on this checkout, like a `/prolong` link.
+  // Set from the create request's `lockMethod`; false on every server-minted session.
+  lockMethod: Schema.Boolean,
 });
 
 export type CheckoutSession = Schema.Schema.Type<typeof CheckoutSession>;
+
+/** The furthest ahead a create request may set `startsAt` or `payableUntil`. */
+export const MAX_CHECKOUT_HORIZON_DAYS = 62;
 
 /** The terms a checkout charges and stores, as the flat fields hold them at rest. */
 export type CheckoutTerms = Pick<
@@ -368,7 +382,8 @@ const brokenOption = (
 
 /** POST /api/checkout-sessions body (docs/06): the external system's intent. `method`
  * is the default payment method preselected on the checkout page; optional on the wire
- * and defaulted to Card (PaymentMethod.Card) when the caller omits it. `recurring`
+ * and defaulted to Card (PaymentMethod.Card) when the caller omits it (`lockMethod`
+ * fixes it). `recurring`
  * defaults to true (a subscription) — a caller opts a one-time payment in with `false`.
  * `period` (ISO-8601 duration) is the renewal cadence: required for a recurring checkout,
  * omitted for a one-time purchase (it never renews). `successUrl`/`failureUrl` are
@@ -381,9 +396,9 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
   Schema.extend(
     Schema.Struct({
       period: Schema.optional(Schema.String),
-      method: Schema.optionalWith(PaymentMethodSchema, {
-        default: () => PaymentMethod.Card,
-      }),
+      // Card when absent (the route applies the default, so `lockMethod` can tell an
+      // explicit method from none).
+      method: Schema.optional(PaymentMethodSchema),
       recurring: Schema.optionalWith(Schema.Boolean, { default: () => true }),
       successUrl: Schema.optional(RedirectUrl),
       failureUrl: Schema.optional(RedirectUrl),
@@ -411,6 +426,16 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       // 'migration'), for a payer who already subscribed elsewhere; recurring checkouts
       // only. `initial` exists because SendPulse cannot leave a body property out.
       reportAs: Schema.optional(Schema.Literal('initial', 'renewal')),
+      // ISO-8601 instant the paid period starts at (recurring only; from now up to
+      // MAX_CHECKOUT_HORIZON_DAYS ahead). Bounds depend on the clock, so the route checks
+      // them (422), not this schema.
+      startsAt: Schema.optional(Schema.Date),
+      // ISO-8601 instant the offer closes at (after now, at most MAX_CHECKOUT_HORIZON_DAYS
+      // ahead; checked by the route). It replaces the link's TTL and turns re-issue off.
+      payableUntil: Schema.optional(Schema.Date),
+      // Lock the payer to `method` (required with it): the page hides the picker and `/pay`
+      // refuses any other method, as on a `/prolong` link.
+      lockMethod: Schema.optional(Schema.Boolean),
     }),
   ),
   Schema.filter((v) => brokenRule(v, v.recurring) ?? true),
@@ -431,6 +456,12 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
     v.reportAs !== 'renewal' || v.recurring
       ? true
       : 'reportAs: "renewal" is only allowed on a recurring checkout',
+  ),
+  // Locking to the default nobody chose would be a guess; the caller names the method.
+  Schema.filter((v) =>
+    v.lockMethod !== true || v.method !== undefined
+      ? true
+      : 'lockMethod requires method',
   ),
 );
 
@@ -544,7 +575,8 @@ export type CheckoutOptionPublic = Schema.Schema.Type<
 >;
 
 /**
- * GET /api/checkout-sessions/:id response (public, BFF-proxied, AC-9):
+ * GET /api/checkout-sessions/:id response (public, BFF-proxied, AC-9; a service caller
+ * may read the same body with its Bearer token):
  * amount/currency/period/recurring/status/kind/method/expiresAt only — no
  * externalUserId so subscriber data does not appear on the public checkout page. `kind`
  * lets the checkout page tell a 0-amount card-change (verify widget) from a priced
@@ -557,7 +589,8 @@ export type CheckoutOptionPublic = Schema.Schema.Type<
  * (the page extends an existing subscription) stand in for `origin`, which is never
  * exposed; neither is `renewalOf`. `options` lists what the payer may pick (one entry,
  * the flat terms, when the session offers no choice) and `defaultOption` is the index of
- * the flat terms among them.
+ * the flat terms among them. `startsAt` tells the payer when the paid period begins;
+ * `payableUntil` lets the page show a closed offer before the buyer presses Pay.
  */
 export const CheckoutSessionPublic = CheckoutSession.pipe(
   Schema.pick(
@@ -572,11 +605,16 @@ export const CheckoutSessionPublic = CheckoutSession.pipe(
     'failureUrl',
     'expiresAt',
     'renewal',
+    'startsAt',
+    'payableUntil',
   ),
   Schema.extend(
     Schema.Struct({
       methodLocked: Schema.Boolean,
       prolong: Schema.Boolean,
+      // Whether this session's order was ever handed to a provider (claimed for payment),
+      // so a caller deciding whether to replace a link knows a payment may still land.
+      everSentToProvider: Schema.Boolean,
       options: Schema.Array(CheckoutOptionPublic),
       defaultOption: Schema.Int,
     }),
