@@ -11,10 +11,11 @@ import { Effect } from 'effect';
  * cannot switch method; NOT NULL DEFAULT false, which is what every existing row means.
  * `firstSentToProviderAt`: when the session was first claimed for payment (its order handed
  * to a provider); stamped once, never cleared, so a later release cannot hide that a
- * payment may still land. Existing rows are backfilled conservatively: any row that may
- * have reached a provider (Pending, Completed, Expired, or carrying `claimedAt`) counts as
- * sent, at its `claimedAt` or else its `createdAt`; only a Created row never claimed stays
- * NULL. Status numbers are 1 Pending, 2 Completed, 3 Expired.
+ * payment may still land. EVERY row that exists when this runs is backfilled as sent, at
+ * its `claimedAt` or else its `createdAt`: the old release cleared `claimedAt` and reset the
+ * status after a real hand-out, so pre-upgrade history cannot tell a handed-out row from an
+ * untouched one. Rows written by an old-version process after this backfill are not
+ * covered, so it must run with no old API or worker still writing (docs/06).
  *
  * The previous image keeps inserting valid rows during a rolling deploy: it omits all
  * four, and they take NULL / false. Each ADD COLUMN is catalog-only (no table rewrite):
@@ -32,7 +33,6 @@ export default Effect.flatMap(SqlClient.SqlClient, (sql) =>
         UPDATE checkout_sessions
         SET "firstSentToProviderAt" = COALESCE("claimedAt", "createdAt")
         WHERE "firstSentToProviderAt" IS NULL
-          AND (status IN (1, 2, 3) OR "claimedAt" IS NOT NULL)
       `,
     ],
     { discard: true },

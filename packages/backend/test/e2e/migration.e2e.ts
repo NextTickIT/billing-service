@@ -661,4 +661,37 @@ const r11Guard: MigrationScenario = {
   },
 };
 
-export const migrationGuardScenarios: readonly MigrationScenario[] = [r11Guard];
+/** A Created, never-claimed row from before 0027 (the old release left exactly this
+ * after a real hand-out) reads as sent once 0027 has run. */
+const preUpgradeRowSent: MigrationScenario = {
+  name: 'migration (0027): a pre-existing Created, unclaimed row is backfilled as sent at its createdAt',
+  run: async ({ dbConfig, psql }) => {
+    await Effect.runPromise(
+      runMigrationsWith(
+        dbConfig,
+        Effect.map(fromFileSystem(migrationsDir), (ms) =>
+          ms.filter(([id]) => id <= 26),
+        ),
+      ),
+    );
+    psql(
+      `INSERT INTO checkout_sessions (id, "externalUserId", amount, currency, period, method, "expiresAt")
+       VALUES ('chk_pre27', 'sp:pre27', 30000, 0, 'P1M', 0, '2030-01-01T00:00:00Z')`,
+    );
+
+    await Effect.runPromise(runMigrations(dbConfig));
+
+    assert.equal(
+      psql(
+        `SELECT status || '|' || ("claimedAt" IS NULL)::text || '|' || ("firstSentToProviderAt" = "createdAt")::text FROM checkout_sessions WHERE id = 'chk_pre27'`,
+      ).trim(),
+      '0|true|true',
+      'Created and unclaimed, yet stamped as sent at its createdAt',
+    );
+  },
+};
+
+export const migrationGuardScenarios: readonly MigrationScenario[] = [
+  r11Guard,
+  preUpgradeRowSent,
+];

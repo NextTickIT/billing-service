@@ -16,6 +16,10 @@ Public and support HTTP surface. Authentication requirements are noted per secti
   `methodLocked`, and `everSentToProvider` (true once the session was claimed for payment — its order handed to
   a provider: the first claim stamps `firstSentToProviderAt`, which no release ever
   clears — or while it is Pending or Completed; false only for a session never claimed). Never `externalUserId` or `origin`.
+  Deploy note (migration 0027): every row existing when it runs is backfilled as sent,
+  since pre-upgrade history cannot tell a released hand-out from an untouched link. It must
+  run with no old-version API or worker still writing (the standard full-path deploy
+  replaces them first); rows an old process writes after the backfill are not covered.
 - `GET /checkout/:sessionId` (auth: none — public checkout page on `bill.nexttick.it`, unguessable session ID)
 
 ### `POST /api/checkout-sessions`
