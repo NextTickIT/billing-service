@@ -6,6 +6,7 @@ import {
   type NewCheckoutSession,
   type Payment,
   PaymentMethod,
+  PaymentStatus,
 } from '@billing-service/shared';
 import { Effect, Either, Option, Schema } from 'effect';
 import { describe, expect, test } from 'vitest';
@@ -418,5 +419,74 @@ describe('the idempotent create replay', () => {
     );
 
     expect(Either.getOrThrow(result).sessionId).toBe('chk_old');
+  });
+});
+
+describe('a lapsed caller link re-minted while the contact is PastDue', () => {
+  const pastDue = (method: PaymentMethod): Payment => ({
+    id: 'pay_live',
+    externalUserId: 'sp:1',
+    amount: 7000,
+    currency: 1,
+    method,
+    period: 'P1M',
+    status: PaymentStatus.PastDue,
+    recurring: true,
+    currentPeriodStart: new Date(NOW - 40 * DAY),
+    currentPeriodEnd: new Date(NOW - 10 * DAY),
+    nextPaymentDate: new Date(NOW - 10 * DAY),
+    recurringTokenRef: null,
+    firstFailureAt: new Date(NOW - 10 * DAY),
+    retryAttempt: 2,
+    cancelRequestedAt: null,
+    metadata: null,
+    createdAt: new Date(NOW - 90 * DAY),
+    updatedAt: new Date(NOW - 10 * DAY),
+  });
+
+  const lapsedLocked = session({
+    lockMethod: true,
+    method: PaymentMethod.Crypto,
+    startsAt: new Date(NOW + DAY),
+    expiresAt: new Date(NOW - HOUR),
+  });
+
+  const resolveWith = (repo: CheckoutRepo, sub: Payment, method: number) =>
+    Effect.runSync(
+      resolvePayableSessionId(
+        {
+          sessions: repo,
+          findActiveRecurring: () => Effect.succeed(Option.some(sub)),
+        },
+        'chk_old',
+        { method },
+        NOW,
+        TTL_SECONDS,
+      ).pipe(Effect.either),
+    );
+
+  test('keeps the lock, the method and startsAt when the sub pays the same way', () => {
+    const { repo, writes } = repoWith([lapsedLocked]);
+
+    resolveWith(repo, pastDue(PaymentMethod.Crypto), PaymentMethod.Crypto);
+
+    expect(writes.reissued[0]).toMatchObject({
+      lockMethod: true,
+      method: PaymentMethod.Crypto,
+      startsAt: new Date(NOW + DAY),
+    });
+  });
+
+  test('is refused rather than unlocked when the sub pays another way', () => {
+    const { repo, writes } = repoWith([lapsedLocked]);
+
+    const result = resolveWith(
+      repo,
+      pastDue(PaymentMethod.Card),
+      PaymentMethod.Crypto,
+    );
+
+    expect(leftOf(result)).toMatchObject({ _tag: 'Conflict' });
+    expect(writes.reissued).toEqual([]);
   });
 });

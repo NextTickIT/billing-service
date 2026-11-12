@@ -81,7 +81,8 @@ export interface CheckoutRepo {
    * Release a claim back to `created` after the provider mint failed, so the buyer can
    * retry (or pick another method) instead of the session bricking in `pending`. Only a
    * still-`pending` row is reopened — a callback that completed the session meanwhile is
-   * never reverted.
+   * never reverted. A Pending row was handed out, so the release first records that in
+   * `"firstSentToProviderAt"` (unless already set), in the same statement.
    */
   readonly releasePending: (
     id: string,
@@ -236,7 +237,9 @@ const claimForPayment =
 const releasePending = (sql: SqlClient.SqlClient) => (id: string) =>
   sql`
     UPDATE checkout_sessions
-    SET status = ${CheckoutSessionStatus.Created}, "claimedAt" = NULL
+    SET status = ${CheckoutSessionStatus.Created},
+        "firstSentToProviderAt" = COALESCE("firstSentToProviderAt", "claimedAt", now()),
+        "claimedAt" = NULL
     WHERE id = ${id} AND status = ${CheckoutSessionStatus.Pending}
   `.pipe(Effect.asVoid);
 

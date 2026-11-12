@@ -51,9 +51,10 @@ checkout **creates** begins, if later than the payment. Recurring checkouts only
 `startsAt must be at most 62 days ahead`). On settlement the new payment's
 `currentPeriodStart` is `max(paidAt, startsAt)` and `currentPeriodEnd` /
 `nextPaymentDate` = that + period × cycles (+ promo bonus). A payment that stacks onto the
-contact's live subscription ignores it. A lapsed link re-issued as a clone keeps it; a link
-re-minted at a live subscription's terms drops it (paying it stacks anyway). An
-`Idempotency-Key` replay with a different `startsAt` is **409**.
+contact's live subscription ignores it. Every replacement of a lapsed link (clone or re-mint)
+keeps it. An `Idempotency-Key` replay with a different `startsAt` is **409**. A retry under
+an existing `Idempotency-Key` is replayed before any validation, so an identical retry after
+`startsAt` / `payableUntil` have passed still returns the same session.
 
 `payableUntil` (optional, ISO-8601 instant): makes the checkout a **bounded offer** that
 closes at that instant. `now < payableUntil ≤ now + 62 days`, otherwise **422**
@@ -63,7 +64,10 @@ session's `expiresAt` is `payableUntil` instead of the usual TTL, and a bounded 
 `POST /api/checkout-sessions/:id/pay` answers **410** `{"error":"this checkout is closed","code":"checkout_closed"}`
 and writes nothing. While it is live, a Pending bounded session can be paid again (same
 order reference). The WayForPay order timeout is capped so the provider order never
-outlives `payableUntil` (at least 1 s). The public read returns `payableUntil` and
+outlives `payableUntil` (at least 1 s). WayForPay does not sign `orderTimeout`, so a payer can
+extend it in the browser: the deadline is enforced by billing at `/pay` and by the default
+provider timeout, and is **not cryptographically binding at the provider**. A determined
+payer can still pay late, so callers must handle a settlement after `payableUntil`. The public read returns `payableUntil` and
 `startsAt`; the page shows a closed state once `payableUntil` has passed and, while
 `startsAt` is ahead, the line "Your paid period starts {date}".
 
@@ -71,7 +75,8 @@ outlives `payableUntil` (at least 1 s). The public read returns `payableUntil` a
 required (400 without it). The page hides the method picker (`methodLocked: true` on the
 public read) and `/pay` with another method is **400** `method_locked`, exactly like a
 `/prolong` link. A lapsed unbounded link cloned on re-issue stays locked; a re-mint at a
-live subscription's terms uses that subscription's method and is not locked.
+live subscription's terms keeps the lock too, and when that subscription pays by another
+method the replacement is refused (**409**) rather than unlocked.
 
 Response: session ID, payment link URL, expiry.
 

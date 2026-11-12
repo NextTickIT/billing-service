@@ -123,12 +123,31 @@ const startsAtRefusals = async (http: Http) => {
   assert.equal(replay.status, 409, 'a replay with another startsAt → 409');
 };
 
+/** A retry under the same key after both instants passed replays, it is not a 422. */
+const replayAfterLapse = async (http: Http) => {
+  const request = body('sp:offer-late-retry', {
+    startsAt: new Date(Date.now() + 1500).toISOString(),
+    payableUntil: new Date(Date.now() + 2000).toISOString(),
+  });
+  const first = await sessionIdOf(
+    await createSession(http, request, 'offer-late-retry'),
+    'first create',
+  );
+  await new Promise((resolve) => setTimeout(resolve, 2500));
+  const retry = await sessionIdOf(
+    await createSession(http, request, 'offer-late-retry'),
+    'identical retry after both instants passed',
+  );
+  assert.equal(retry, first, 'the same session');
+};
+
 const startsAtScenario: Scenario = {
   name: 'offer: startsAt anchors a fresh subscription and its success names the session; bounds are 422, a replay moving it 409',
   run: async ({ baseUrl, query }) => {
     const http = await httpContext(baseUrl, query, 'offer-starts-svc');
     await startsLater(http);
     await startsAtRefusals(http);
+    await replayAfterLapse(http);
   },
 };
 
@@ -194,12 +213,30 @@ const lockedMethod = async (http: Http) => {
   );
 };
 
+/** A row claimed before `firstSentToProviderAt` existed, then released: still sent. */
+const releasedPreUpgrade = async (http: Http) => {
+  await insertSessions([plainSession('chk_offer_preupgrade', 'sp:offer-pre')]);
+  await scalar(
+    http,
+    `UPDATE checkout_sessions SET status = ${String(CheckoutSessionStatus.Pending)}, "claimedAt" = now(), "firstSentToProviderAt" = NULL WHERE id = 'chk_offer_preupgrade'`,
+  );
+  await onDb(
+    Effect.flatMap(SqlClient.SqlClient, (sql) =>
+      makeCheckoutRepo(sql).releasePending('chk_offer_preupgrade'),
+    ),
+  );
+  const read = await publicRead(http, 'chk_offer_preupgrade');
+  assert.equal(read['status'], CheckoutSessionStatus.Created);
+  assert.equal(read['everSentToProvider'], true, 'released, still sent');
+};
+
 const boundedScenario: Scenario = {
   name: 'offer: payableUntil sets expiresAt, a lapsed bounded offer is 410 with no new session; lockMethod refuses another method',
   run: async ({ baseUrl, query }) => {
     const http = await httpContext(baseUrl, query, 'offer-bounded-svc');
     await boundedOffer(http);
     await lockedMethod(http);
+    await releasedPreUpgrade(http);
   },
 };
 

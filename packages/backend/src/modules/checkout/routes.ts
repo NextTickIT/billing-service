@@ -191,19 +191,44 @@ export const insertOrReplay = (
     if (inserted || key === null) {
       return created(input.id, input.expiresAt, baseUrl);
     }
+    const replay = yield* replayOf(repo, key, input, baseUrl);
+    return Option.isSome(replay)
+      ? replay.value
+      : yield* Effect.fail(new Conflict({ field: 'idempotency key' }));
+  });
+
+/** What a request must share with the session its Idempotency-Key already names. */
+type ReplayIdentity = Pick<
+  NewCheckoutSession,
+  'externalUserId' | 'origin' | 'startsAt'
+>;
+
+/**
+ * The stored response for an Idempotency-Key that already names a session; None when it
+ * names none. The key alone is not identity: a reused key must never hand one contact
+ * another contact's session, nor turn a /prolong into a plain checkout (or back), nor
+ * start the paid period on a different date than this request asked for (409).
+ */
+const replayOf = (
+  repo: CheckoutRepo,
+  key: string,
+  identity: ReplayIdentity,
+  baseUrl: string,
+) =>
+  Effect.gen(function* () {
     const existing = yield* repo.findByIdempotencyKey(key);
-    // The key alone is not identity: a reused key must never hand one contact another
-    // contact's session, nor turn a /prolong into a plain checkout (or back), nor start
-    // the paid period on a different date than this request asked for.
+    if (Option.isNone(existing)) {
+      return Option.none<SessionCreated>();
+    }
+    const stored = existing.value;
     if (
-      existing._tag === 'None' ||
-      existing.value.externalUserId !== input.externalUserId ||
-      existing.value.origin !== input.origin ||
-      !sameInstant(existing.value.startsAt, input.startsAt)
+      stored.externalUserId !== identity.externalUserId ||
+      stored.origin !== identity.origin ||
+      !sameInstant(stored.startsAt, identity.startsAt)
     ) {
       return yield* Effect.fail(new Conflict({ field: 'idempotency key' }));
     }
-    return created(existing.value.id, existing.value.expiresAt, baseUrl);
+    return Option.some(created(stored.id, stored.expiresAt, baseUrl));
   });
 
 /** The origin a caller-created checkout stores. `reportAs: "renewal"` (a legacy payer
@@ -235,12 +260,42 @@ const offerOf = (
   expiresAt: input.payableUntil ?? new Date(nowMillis + ttlSeconds * 1000),
 });
 
+/**
+ * A caller's create. A retry under an Idempotency-Key that already names a session replays
+ * it BEFORE any validation: the now-relative bounds of `startsAt` / `payableUntil` held
+ * when the session was created, and a retry after they lapsed must still get the same
+ * session back, not a 422. Only a new session is validated.
+ */
 const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
   Effect.gen(function* () {
     yield* serviceActor(request);
+    yield* assertIdempotencyKey(request);
+    const key = idempotencyKeyOf(request);
+    const replay =
+      key === null
+        ? Option.none<SessionCreated>()
+        : yield* replayOf(
+            makeCheckoutRepo(yield* SqlClient.SqlClient),
+            key,
+            {
+              externalUserId: input.externalUserId,
+              origin: callerOrigin(input.reportAs),
+              startsAt: input.startsAt ?? null,
+            },
+            request.server.appConfig.checkoutBaseUrl,
+          );
+    return Option.isSome(replay)
+      ? replay.value
+      : yield* createNewSession(input, request);
+  });
+
+const createNewSession = (
+  input: CreateCheckoutSession,
+  request: FastifyRequest,
+) =>
+  Effect.gen(function* () {
     yield* assertRedirects(input, request);
     yield* assertPromo(input);
-    yield* assertIdempotencyKey(request);
     const nowMillis = yield* Clock.currentTimeMillis;
     yield* assertSchedule(input, nowMillis);
     const sql = yield* SqlClient.SqlClient;
@@ -689,11 +744,12 @@ const remintedIntent = (
   successUrl: session.successUrl,
   failureUrl: session.failureUrl,
   email: session.email,
-  // `startsAt` is not carried (subscriptionTermsSession: null): a re-mint exists because
-  // the contact holds a live sub, and paying onto it stacks from the sub's own end, which
-  // ignores `startsAt`. Nor is a caller's `lockMethod`: the re-mint charges the sub's
-  // method, not the one the caller locked (a prolong re-mint is still locked by origin).
-  // `payableUntil` is null too, since a bounded offer is never re-minted.
+  // Part of the caller's offer, so a replacement keeps them. `startsAt` only matters if
+  // the sub dies before this settles (stacking ignores it); the lock holds because
+  // `replacementIntent` refuses a re-mint whose method would differ. `payableUntil` stays
+  // null: a bounded offer is never re-minted.
+  startsAt: session.startsAt,
+  lockMethod: session.lockMethod,
   // A manual renewal and a prolong (pay-now or on-demand) link keep their cycle choices:
   // they are multiples of whatever the live sub's terms are. A caller's priced options
   // are the stale link's terms, so they go.
@@ -709,11 +765,17 @@ const replacementIntent = (
   session: CheckoutSession,
   live: Option.Option<Payment>,
   expiresAt: Date,
-): Either.Either<NewCheckoutSession, AlreadySubscribed> => {
+): Either.Either<NewCheckoutSession, AlreadySubscribed | Conflict> => {
   if (Option.isNone(live)) {
     return Either.right(clonedIntent(session, expiresAt));
   }
   const sub = live.value;
+  // A re-mint charges the live sub's method; a caller's lock is never silently moved.
+  if (session.lockMethod && sub.method !== session.method) {
+    return Either.left(
+      new Conflict({ field: 'checkout session (locked to another method)' }),
+    );
+  }
   if (ORIGINS_REMINTED.includes(session.origin)) {
     return Either.right(
       remintedIntent(session, sub, session.origin, expiresAt),
