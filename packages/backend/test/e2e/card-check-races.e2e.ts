@@ -99,7 +99,7 @@ const settle = (charge: Charge) =>
   Effect.flatMap(settlementHandler(), (handle) => handle(asPayload(charge)));
 
 /** Wait until at least `n` backends of this database wait on a lock. */
-const awaitWaiters = (n: number) =>
+export const awaitWaiters = (n: number) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     for (let i = 0; i < 500; i += 1) {

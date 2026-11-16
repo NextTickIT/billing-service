@@ -379,7 +379,8 @@ const recordDefer = (sql: SqlClient.SqlClient, record: DeferRecord) =>
 
 /** Refuse, under the payment's lock, an operator defer of a card-check payment whose
  * first charge is due and untaken (`operatorDeferBlocked`). The lock is held to the end of
- * the ledger's transaction, so the date cannot move between this check and the write. */
+ * the transaction `operatorDefer` always opens, so no scheduler charge can start between
+ * this check and the write. */
 const assertNotInFlight = (sql: SqlClient.SqlClient, id: string) =>
   Effect.gen(function* () {
     const target = yield* lockDeferTarget(sql)(id);
@@ -449,11 +450,15 @@ const operatorDefer = (days: number | undefined, request: FastifyRequest) =>
     if (Option.isNone(yield* makePaymentRepo(sql).findById(id))) {
       return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
-    return yield* withIdempotencyKey(
-      'payment.defer',
-      idempotencyKeyOf(request),
-      DeferAccepted,
-    )(applyDefer(sql, actor, id, days));
+    // One transaction whether or not the caller sent a key (the ledger opens none without
+    // one): the guard's row lock must hold through the write, the audit and the notify.
+    return yield* sql.withTransaction(
+      withIdempotencyKey(
+        'payment.defer',
+        idempotencyKeyOf(request),
+        DeferAccepted,
+      )(applyDefer(sql, actor, id, days)),
+    );
   });
 
 /**

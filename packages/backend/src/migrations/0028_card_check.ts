@@ -15,7 +15,8 @@ import { Effect } from 'effect';
  * credits it (the scheduler's approval, a paid checkout, an arrears card change). A
  * handover defer refuses a payment that has it; the success of that order carries the
  * first-charge marker. The `charge_fixations("paymentId")` index serves the per-payment
- * fixation reads.
+ * fixation reads; `messages_receipt_ref` the revival of an order's receipts when the
+ * scheduler's approval commits.
  *
  * Every ADD COLUMN is catalog-only (a constant or NULL default). The previous image keeps
  * writing valid rows during a rolling deploy: it omits all four and they take their
@@ -33,6 +34,7 @@ export default Effect.flatMap(SqlClient.SqlClient, (sql) =>
       sql`ALTER TABLE payments ADD COLUMN IF NOT EXISTS "firstMoneyAt" timestamptz`,
       sql`ALTER TABLE payments ADD COLUMN IF NOT EXISTS "firstMoneyRef" text`,
       sql`CREATE INDEX IF NOT EXISTS charge_fixations_payment_id ON charge_fixations ("paymentId")`,
+      sql`CREATE INDEX IF NOT EXISTS messages_receipt_ref ON messages ((payload->>'externalRef')) WHERE "messageType" = 'payment_event_received'`,
     ],
     { discard: true },
   ),

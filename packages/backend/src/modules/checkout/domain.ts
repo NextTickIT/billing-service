@@ -839,6 +839,9 @@ const settledReport = (
   metadata: settled.metadata,
   // A snapshot recorded before the field existed has none: report it unknown.
   nextAmount: settled.nextAmount ?? null,
+  // The terms the approval charged, not the row's now: a plan change since does not
+  // relabel this charge.
+  charged: { period: settled.period, method: settled.method },
 });
 
 /** The row as it stands: the report of a scheduled charge whose approval recorded no

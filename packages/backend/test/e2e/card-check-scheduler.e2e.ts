@@ -22,6 +22,7 @@ import {
   makeGate,
   type OnWorker,
   openGate,
+  pauseAt,
   runFor,
   withWorker,
 } from '@/modules/charge/test/e2e-harness.js';
@@ -43,6 +44,7 @@ import {
 import {
   activate,
   assertUntouched,
+  awaitWaiters,
   CHARGE_CREATED,
   gatedTick,
   makeDue,
@@ -149,21 +151,50 @@ const receiptMessages = (http: Http, ref: string) =>
     `SELECT count(*) FROM messages WHERE "messageType" = 'payment_event_received' AND "idemKey" LIKE 'w4p:${ref}%'`,
   );
 
-const pollerBeforeApproval = async (http: Http, run: OnWorker) => {
-  const { payment } = await activate(http, run, 'sp:ccs-before');
+/** A card-check payment for `contact`, due, with the scheduler's tick parked at `where`
+ * (inside the CHARGE call, or inside the uncommitted approval). */
+const parkedTick = async (
+  http: Http,
+  run: OnWorker,
+  contact: string,
+  where: 'charge' | 'approval',
+) => {
+  const { payment } = await activate(http, run, contact);
   const { due, ref } = await dueOrder(http, run, payment);
   const gate = await run(makeGate);
-  const ticking = run(gatedTick({ charge: gate }));
+  const ticking = run(gatedTick({ [where]: gate }));
   await run(Deferred.await(gate.reached));
+  return { payment, due, ref, gate, ticking };
+};
+
+const pollerBeforeApproval = async (http: Http, run: OnWorker) => {
+  const { payment, due, ref, gate, ticking } = await parkedTick(
+    http,
+    run,
+    'sp:ccs-before',
+    'charge',
+  );
   await ingest(run, ref);
   await run(drain);
   const beforeApproval = await markersOf(http, 'sp:ccs-before');
 
   await run(openGate(gate));
   await ticking;
+  // A plan and method change after the charge must not relabel it.
+  await http.query(
+    `UPDATE payments SET period = 'P1Y', method = 1 WHERE id = '${payment.id}'`,
+  );
   await retryPass(run);
 
   assert.equal(beforeApproval, '', 'nothing settled before the approval');
+  assert.equal(
+    await scalar(
+      http,
+      `SELECT (payload->>'period') || '|' || (payload->>'method') FROM domain_events WHERE "externalUserId" = 'sp:ccs-before' AND name = 'recurring_payment_succeeded'`,
+    ),
+    'P4W|0',
+    "the approval's period and method, not the row's since",
+  );
   assert.equal(
     await receiptMessages(http, ref),
     '1',
@@ -177,11 +208,12 @@ const pollerBeforeApproval = async (http: Http, run: OnWorker) => {
 };
 
 const pollerDuringApproval = async (http: Http, run: OnWorker) => {
-  const { payment } = await activate(http, run, 'sp:ccs-during');
-  const { due, ref } = await dueOrder(http, run, payment);
-  const gate = await run(makeGate);
-  const ticking = run(gatedTick({ approval: gate }));
-  await run(Deferred.await(gate.reached));
+  const { due, ref, gate, ticking } = await parkedTick(
+    http,
+    run,
+    'sp:ccs-during',
+    'approval',
+  );
   await ingest(run, ref);
   await run(drain);
   const duringApproval = await markersOf(http, 'sp:ccs-during');
@@ -207,6 +239,77 @@ const pollerDuringApproval = async (http: Http, run: OnWorker) => {
   );
 };
 
+const receiptStatus = (http: Http, idemKey: string) =>
+  scalar(
+    http,
+    `SELECT status || '|' || "attemptCount" FROM messages WHERE "idemKey" = '${idemKey}'`,
+  );
+
+/** One worker look at every waiting message, made due first. */
+const oneLook = (run: OnWorker) =>
+  run(
+    Effect.gen(function* () {
+      yield* fastForwardRetries(yield* SqlClient.SqlClient);
+      yield* runFor(0.4);
+    }),
+  );
+
+/** The poller's copy, waiting, and a callback copy of the same order that dead-lettered
+ * while it waited (as on an image before the wait policy). */
+const waitingCopies = async (http: Http, run: OnWorker, ref: string) => {
+  const poller = pollerCopy(ref);
+  await ingest(run, ref);
+  const callback = {
+    ...poller,
+    source: 'wayforpay_callback',
+    idemKey: `w4pcb:${ref}|Approved`,
+  };
+  await run(Effect.flatMap(ChargePipeline, (p) => p.ingest(callback)));
+  await http.query(
+    `UPDATE messages SET status = 'fail', "finishedAt" = now() WHERE "idemKey" = '${callback.idemKey}'`,
+  );
+  return { poller, callback };
+};
+
+const pollerOutlastsBudget = async (http: Http, run: OnWorker) => {
+  const { due, ref, gate, ticking } = await parkedTick(
+    http,
+    run,
+    'sp:ccs-long',
+    'approval',
+  );
+  const { poller, callback } = await waitingCopies(http, run, ref);
+  for (let look = 0; look < 7; look += 1) {
+    await oneLook(run);
+  }
+  const waiting = await receiptStatus(http, poller.idemKey);
+
+  await run(openGate(gate));
+  await ticking;
+  await run(runFor(1.5));
+
+  assert.equal(
+    waiting,
+    'retry|7',
+    'seven waits, past the 5-attempt budget, still waiting',
+  );
+  assert.equal(
+    await receiptStatus(http, poller.idemKey),
+    'success|8',
+    'revived by the approval',
+  );
+  assert.equal(
+    (await receiptStatus(http, callback.idemKey)).split('|')[0],
+    'success',
+    'the dead-lettered copy was revived too, and closed',
+  );
+  await assertSettledOnce(
+    http,
+    'sp:ccs-long',
+    due.currentPeriodEnd.getTime() + P4W,
+  );
+};
+
 const pollerRaces: Scenario = {
   name: "card check scheduler: the poller's receipt copy before and during the approval settles once, marked, with the approval's coverage",
   run: async ({ baseUrl, query }) => {
@@ -216,6 +319,7 @@ const pollerRaces: Scenario = {
         await run(registerWithDefers);
         await pollerBeforeApproval(on, run);
         await pollerDuringApproval(on, run);
+        await pollerOutlastsBudget(on, run);
       }),
     );
   },
@@ -252,6 +356,86 @@ const operatorDuringCharge = async (http: Http, run: OnWorker) => {
   );
 };
 
+/** An operator defer with NO Idempotency-Key (the ledger then opens no transaction). */
+const keylessOperatorDefer = (http: Http, cookie: string, id: string) =>
+  http.bff(
+    new Request(`${http.baseUrl}/api/payment/${id}/defer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ days: 3 }),
+    }),
+  );
+
+const BARRIER_LOCK = 4242;
+
+/**
+ * Park every defer write after its guard and before it touches the row, on an advisory
+ * lock the scenario holds: a statement-level BEFORE trigger runs before the UPDATE locks
+ * any row, so the only row lock left is whatever the guard's transaction still holds.
+ */
+const parkDeferWrites = (http: Http) =>
+  http.query(`
+    CREATE OR REPLACE FUNCTION e2e_park_defer() RETURNS trigger AS $$
+    BEGIN
+      IF current_query() LIKE '%"deferRevision" = "deferRevision" + 1%' THEN
+        PERFORM pg_advisory_xact_lock(${String(BARRIER_LOCK)});
+      END IF;
+      RETURN NULL;
+    END $$ LANGUAGE plpgsql;
+    CREATE TRIGGER e2e_park_defer BEFORE UPDATE ON payments
+      FOR EACH STATEMENT EXECUTE FUNCTION e2e_park_defer();
+  `);
+
+/** Hold the barrier lock until the gate opens. */
+const holdBarrier = async (run: OnWorker) => {
+  const gate = await run(makeGate);
+  const holder = run(
+    Effect.flatMap(SqlClient.SqlClient, (sql) =>
+      sql.withTransaction(
+        Effect.andThen(
+          sql`SELECT pg_advisory_xact_lock(${BARRIER_LOCK})`,
+          pauseAt(gate),
+        ),
+      ),
+    ),
+  );
+  await run(Deferred.await(gate.reached));
+  return { gate, holder };
+};
+
+const keylessAcrossDue = async (http: Http, run: OnWorker) => {
+  const cookie = await operatorCookie(http);
+  const { payment } = await activate(http, run, 'sp:ccs-keyless');
+  await http.query(
+    `UPDATE payments SET "nextPaymentDate" = now() + interval '2 seconds', "currentPeriodEnd" = now() + interval '2 seconds' WHERE id = '${payment.id}'`,
+  );
+  await parkDeferWrites(http);
+  const { gate, holder } = await holdBarrier(run);
+  // Not due yet: the guard passes, then the write parks on the barrier.
+  const deferring = keylessOperatorDefer(http, cookie, payment.id);
+  await run(awaitWaiters(1));
+  await run(Effect.sleep('2500 millis'));
+  // Now due. The deferring transaction still holds the row its guard locked, so the
+  // tick passes it over (its due read skips locked rows) and charges nothing.
+  await run(gatedTick({}));
+
+  await run(openGate(gate));
+
+  await holder;
+  const res = await deferring;
+  // After the defer commits the row is no longer due.
+  await run(gatedTick({}));
+  assert.equal(res.status, 202, 'the operator defer applied');
+  assert.equal(
+    await scalar(
+      http,
+      `SELECT count(*) FROM idempotency_keys WHERE scope = 'scheduler.advance' AND "idemKey" LIKE 'sub_${payment.id}%'`,
+    ),
+    '0',
+    'the scheduler found the moved date and charged nothing',
+  );
+};
+
 const operatorScenario: Scenario = {
   name: 'card check scheduler: during a held CHARGE an operator defer and then a handover defer are both refused',
   run: async ({ baseUrl, query }) => {
@@ -260,6 +444,7 @@ const operatorScenario: Scenario = {
       withWorker(loadConfig(), async (run) => {
         await run(registerWithDefers);
         await operatorDuringCharge(on, run);
+        await keylessAcrossDue(on, run);
       }),
     );
   },

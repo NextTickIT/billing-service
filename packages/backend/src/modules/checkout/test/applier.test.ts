@@ -292,6 +292,7 @@ it.effect(
           nextPaymentDate: new Date('2026-03-04T00:00:00Z'),
           metadata: { planCode: 'half_year' },
           nextAmount: 45000,
+          charged: { period: 'P1M', method: 0 },
         });
       }),
     ),
@@ -753,6 +754,7 @@ it.effect(
         nextPaymentDate: credited.nextPaymentDate,
         metadata: null,
         nextAmount: 30000,
+        charged: { period: 'P1M', method: 0 },
       });
     }),
 );

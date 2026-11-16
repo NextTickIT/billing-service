@@ -97,6 +97,16 @@ const settlingSession = (match: Match) =>
     ? {}
     : { checkoutSessionId: match.checkoutSessionId };
 
+/** The method and period a charge was taken at: what its source recorded, else the
+ * match's. */
+const termsCharged = (match: Match, prolongation: Prolongation) =>
+  prolongation.charged === undefined
+    ? { method: match.method, ...purchased(match) }
+    : {
+        method: prolongation.charged.method,
+        period: prolongation.charged.period,
+      };
+
 /** Shared success payload for the initial/recurring variants (docs/07). `nextPaymentDate`
  * is the next scheduled charge (null for a one-time purchase) and `nextAmount` what it
  * autocharges (null when it will not); `periodStart`/`periodEnd`
@@ -111,8 +121,7 @@ const succeededPayload = (
 ) => ({
   amount: event.amount,
   currency: event.currency,
-  method: match.method,
-  ...purchased(match),
+  ...termsCharged(match, prolongation),
   source: event.source,
   chargeKind: chargeKindOf(match.kind),
   nextPaymentDate: prolongation.nextPaymentDate?.toISOString() ?? null,

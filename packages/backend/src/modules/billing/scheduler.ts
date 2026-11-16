@@ -10,6 +10,7 @@ import {
   readIdempotentResponse,
   withIdempotencyKey,
 } from '@/infra/db/idempotency.js';
+import { reviveReceipts } from '@/infra/queue/store.js';
 
 import {
   type ApprovalLookup,
@@ -108,7 +109,11 @@ export const ledgerClaimAdvance =
       SCHEDULER_ADVANCE,
       orderReference,
       LedgerApproval,
-    )(effect).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    )(
+      // A receipt copy of this order that took the queue key first is waiting for this
+      // very commit: make it due in the same transaction.
+      Effect.tap(effect, () => reviveReceipts(sql)(orderReference)),
+    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
 
 /**
  * The approval the scheduler recorded for `orderReference`, once its transaction has

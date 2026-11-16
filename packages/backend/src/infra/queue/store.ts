@@ -37,6 +37,8 @@ export interface ClaimedMessage {
   readonly payload: unknown;
   /** Attempt number for this claim (post-increment): 1 on the first try. */
   readonly attemptCount: number;
+  /** When the message was enqueued (bounds a waiting message). */
+  readonly createdAt: Date;
 }
 
 export interface CompleteInput {
@@ -114,13 +116,14 @@ export const claimBatch =
             "attemptCount" = m."attemptCount" + 1
         FROM claimed
         WHERE m.id = claimed.id
-        RETURNING m.id, m."messageType", m."idemKey", m.payload, m."attemptCount"
+        RETURNING m.id, m."messageType", m."idemKey", m.payload, m."attemptCount",
+                  m."createdAt"
       ),
       logged AS (
         INSERT INTO message_status_events ("messageId", status)
         SELECT id, 'in_progress' FROM upd
       )
-      SELECT id, "messageType", "idemKey", payload, "attemptCount"
+      SELECT id, "messageType", "idemKey", payload, "attemptCount", "createdAt"
       FROM upd
       ORDER BY id
     `;
@@ -161,6 +164,32 @@ export const complete =
       WHERE id = ${input.messageId}
     `.pipe(Effect.asVoid);
   };
+
+/**
+ * Make the receipts of one provider order (`payment_event_received` messages naming it)
+ * due now: those waiting in `retry`, and any that dead-lettered (`fail`) — the commit
+ * they were waiting for has just happened. Logged like every status change, in the same
+ * statement; meant to run inside the transaction that made the commit, so the revival
+ * commits with it.
+ */
+export const reviveReceipts =
+  (sql: SqlClient.SqlClient) =>
+  (externalRef: string): Effect.Effect<number, SqlError.SqlError> =>
+    sql<{ readonly id: string }>`
+      WITH upd AS (
+        UPDATE messages
+        SET status = 'retry', "retryAt" = now(), "finishedAt" = NULL
+        WHERE "messageType" = 'payment_event_received'
+          AND payload->>'externalRef' = ${externalRef}
+          AND status IN ('retry', 'fail')
+        RETURNING id
+      ),
+      logged AS (
+        INSERT INTO message_status_events ("messageId", status)
+        SELECT id, 'retry' FROM upd
+      )
+      SELECT id FROM upd
+    `.pipe(Effect.map((rows) => rows.length));
 
 /**
  * Requeue messages whose worker died mid-flight: `in_progress` past the

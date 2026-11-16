@@ -133,6 +133,10 @@ export const decideOutcome = (
     readonly failed: boolean;
     readonly attemptCount: number;
     readonly permanent?: boolean;
+    /** The handler is waiting on another commit (`isWaitingFailure`): see `waitOutcome`. */
+    readonly waiting?: boolean;
+    /** When the message was enqueued; bounds a wait. */
+    readonly createdAtMillis?: number;
   },
   nowMillis: number,
   config: RetryConfig,
@@ -141,6 +145,9 @@ export const decideOutcome = (
 ): Outcome => {
   if (!params.failed) {
     return { status: 'success', retryAt: null, finished: true };
+  }
+  if (params.waiting === true && params.permanent !== true) {
+    return waitOutcome(params.attemptCount, params.createdAtMillis, nowMillis);
   }
   if (params.permanent === true || params.attemptCount >= config.maxAttempts) {
     return { status: 'fail', retryAt: null, finished: true };
@@ -153,6 +160,49 @@ export const decideOutcome = (
     finished: false,
   };
 };
+
+/** How long a waiting message keeps waiting, from its enqueue, before it dead-letters. */
+export const WAIT_HORIZON_MILLIS = 48 * 60 * 60 * 1000;
+
+/** The longest step between two looks at a waiting message. */
+export const WAIT_MAX_STEP_MILLIS = 5 * 60 * 1000;
+
+const WAIT_FIRST_STEP_MILLIS = 1_000;
+
+/**
+ * A waiting failure is not a fault: the handler needs another transaction's commit first
+ * (a scheduled charge's receipt waits for its approval). It retries with a doubling step
+ * capped at WAIT_MAX_STEP_MILLIS, and its attempts never count toward `maxAttempts`; only
+ * a wait past WAIT_HORIZON_MILLIS from enqueue dead-letters, so it is still seen. (The
+ * commit it waits for also revives it at once: `reviveReceipts`.)
+ */
+const waitOutcome = (
+  attemptCount: number,
+  createdAtMillis: number | undefined,
+  nowMillis: number,
+): Outcome => {
+  if (nowMillis - (createdAtMillis ?? nowMillis) >= WAIT_HORIZON_MILLIS) {
+    return { status: 'fail', retryAt: null, finished: true };
+  }
+  const step = Math.min(
+    WAIT_FIRST_STEP_MILLIS * 2 ** Math.min(Math.max(attemptCount - 1, 0), 20),
+    WAIT_MAX_STEP_MILLIS,
+  );
+  return {
+    status: 'retry',
+    retryAt: new Date(nowMillis + step),
+    finished: false,
+  };
+};
+
+/**
+ * Did the handler say it is waiting on another commit rather than failing? Structural
+ * (`waiting: true` on the failure value), like `permanent`.
+ */
+export const isWaitingFailure = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  (error as { readonly waiting?: unknown }).waiting === true;
 
 /**
  * Did the handler declare this failure permanent? Structural (`permanent: true` on the

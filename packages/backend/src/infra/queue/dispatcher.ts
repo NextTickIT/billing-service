@@ -11,6 +11,7 @@ import {
   decideOutcome,
   describeError,
   isPermanentFailure,
+  isWaitingFailure,
   type RetryConfig,
 } from '@/infra/queue/policy.js';
 import type { TaskHandler } from '@/infra/task-registry.js';
@@ -63,7 +64,13 @@ const processOne = (
     const failure = squashed === null ? null : describeError(squashed);
     const permanent = isPermanentFailure(squashed);
     const outcome = decideOutcome(
-      { failed, attemptCount: message.attemptCount, permanent },
+      {
+        failed,
+        attemptCount: message.attemptCount,
+        permanent,
+        waiting: isWaitingFailure(squashed),
+        createdAtMillis: message.createdAt.getTime(),
+      },
       nowMillis,
       retryConfigFor(options, message.messageType),
       yield* Random.next,

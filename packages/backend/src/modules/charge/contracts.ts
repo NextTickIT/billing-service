@@ -96,7 +96,11 @@ export type ApprovalLookup = (
  */
 export class SettlementPending extends Data.TaggedError('SettlementPending')<{
   readonly orderReference: string;
-}> {}
+}> {
+  /** A wait, not a fault: the queue retries it without spending its failure budget
+   * (`isWaitingFailure`), and the approval's commit revives it (`reviveReceipts`). */
+  readonly waiting = true;
+}
 
 /**
  * A normalized incoming charge. `idemKey` is the source's dedup key (e.g.
@@ -247,6 +251,8 @@ export interface SettledCharge {
   > | null; /** What the next renewal autocharges after this charge; null when it will not autocharge
    * (no token: crypto or one-time) or there is no next charge. */
   readonly nextAmount: number | null;
+  /** See `Prolongation.charged`. */
+  readonly charged?: ChargedTerms;
 }
 
 /**
@@ -262,6 +268,15 @@ export interface Prolongation {
   readonly nextAmount: number | null;
   /** This charge is the first money of a payment a card check created. */
   readonly cardCheckFirstCharge?: boolean;
+  /** The period and method this charge was taken at, when the source recorded them (a
+   * scheduled charge's approval); the success reports them over the match's. */
+  readonly charged?: ChargedTerms;
+}
+
+/** The terms a scheduled charge was taken at, as its approval recorded them. */
+export interface ChargedTerms {
+  readonly period: string;
+  readonly method: number;
 }
 
 /**

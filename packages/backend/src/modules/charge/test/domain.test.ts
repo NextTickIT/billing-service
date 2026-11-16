@@ -562,6 +562,32 @@ it.effect(
     }),
 );
 
+it('recurringPaymentSucceeded reports the terms the approval charged over the match', () => {
+  const event = recurringPaymentSucceeded(
+    decodedCharge('k5'),
+    {
+      matched: true,
+      kind: 'recurring',
+      subscriptionId: 'sub_9',
+      externalUserId: 'sp:9',
+      // The row's terms now, after a plan and method change.
+      period: 'P1Y',
+      method: 1,
+    },
+    'sub_9',
+    {
+      nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+      periodStart: new Date('2026-01-01T00:00:00Z'),
+      periodEnd: new Date('2026-02-01T00:00:00Z'),
+      metadata: null,
+      nextAmount: 30000,
+      charged: { period: 'P4W', method: 0 },
+    },
+  );
+
+  expect(event.payload).toMatchObject({ period: 'P4W', method: 0 });
+});
+
 it('recurringPaymentSucceeded carries the docs/07 required payload fields', () => {
   const event = recurringPaymentSucceeded(
     decodedCharge('k4'),
