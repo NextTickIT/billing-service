@@ -184,10 +184,14 @@ const reissueLapsed =
         // would mint another payable order. Reset it to Created in the same transaction
         // so the caller's claim still wins; the buyer gets the SAME orderReference back.
         // `paymentId IS NULL` keeps card-change sessions out: those belong to their own
-        // endpoint and must never be handed to a plain checkout.
+        // endpoint and must never be handed to a plain checkout; a card check is never
+        // re-issued, so it is never handed back either. The outer WHERE re-checks the
+        // status on the row it locked: the subquery's snapshot predates a close or a
+        // settlement it waited for, and resetting such a row would reopen it.
         const live = yield* sql<{ readonly id: string }>`
           UPDATE checkout_sessions SET status = ${CheckoutSessionStatus.Created}
-          WHERE id = (
+          WHERE status IN (${CheckoutSessionStatus.Created}, ${CheckoutSessionStatus.Pending})
+            AND id = (
             SELECT id FROM checkout_sessions
             WHERE "externalUserId" = ${input.externalUserId}
               AND status IN (${CheckoutSessionStatus.Created}, ${CheckoutSessionStatus.Pending})
@@ -206,7 +210,7 @@ const reissueLapsed =
               AND "startsAt" IS NOT DISTINCT FROM ${input.startsAt}
               AND "payableUntil" IS NOT DISTINCT FROM ${input.payableUntil}
               AND "lockMethod" = ${input.lockMethod}
-              AND "firstCharge" = ${firstChargeOf(input)}
+              AND "firstCharge" = 'now'
               AND ((origin IS DISTINCT FROM 'prolong' AND NOT "lockMethod")
                 OR method = ${input.method ?? null})
             ORDER BY "createdAt" DESC

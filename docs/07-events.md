@@ -34,9 +34,11 @@ kind (`checkout` → initial, `recurring` → renewal); see 22.
 | `unknown_payment_quarantined` | incoming charge went to quarantine | quarantine record reference |
 
 `payment_created` for a card check carries the plan's `amount`/`currency` and
-`first_charge: "card_check"` (no money moved). The first money success of such a payment
-(scheduled, `/prolong` or manual renewal) adds `card_check_first_charge: true` to its
-success payload. The CRM wire shape of each is pinned by
+`first_charge: "card_check"` (no money moved). The success of the order that first credited such a
+payment a period (scheduled, `/prolong`, manual renewal or an arrears card change) adds
+`card_check_first_charge: true` to its success payload; the crediting transaction records
+that order (`payments."firstMoneyRef"`), so exactly one success carries it. A small
+card-change charge credits no period (`period_end` null) and is never marked. The CRM wire shape of each is pinned by
 `packages/shared/test/fixtures/wire/*.json` (checked against the builders by
 `sinks/test/wire-fixtures.test.ts`); the CRM sink delivers the three card-check kinds and a
 handover `payment_deferred` only on `validated`, retrying `unregistered`.

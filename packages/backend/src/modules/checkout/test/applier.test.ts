@@ -43,6 +43,7 @@ const unusedSubs: PaymentRepo = {
   cancelUpstream: () => Effect.die('unused'),
   defer: () => Effect.die('unused'),
   deferCharge: () => Effect.die('unused'),
+  markFirstMoney: () => Effect.void,
   updateToken: () => Effect.die('unused'),
   setMethod: () => Effect.die('unused'),
   clearToken: () => Effect.die('unused'),

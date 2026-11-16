@@ -73,6 +73,12 @@ export interface ApplyPaymentParams {
    * Absent means `now`.
    */
   readonly firstCharge?: FirstCharge;
+  /**
+   * The provider order whose money this charge is. When it credits the payment a period,
+   * the payment's first such order is recorded (`markFirstMoney`). Absent for a charge that
+   * moved no money (a card check).
+   */
+  readonly moneyRef?: string;
 }
 
 export interface ApplyPaymentResult {
@@ -318,50 +324,73 @@ export const createOrExtend =
   (
     params: ApplyPaymentParams,
   ): Effect.Effect<ApplyPaymentResult, SqlError.SqlError> =>
-    Effect.gen(function* () {
-      const anchors = periodAnchors(params);
-      // A one-time payment never extends and never collapses into the user's recurring
-      // payment — always a new record, with no per-user cap.
-      if (!params.recurring) {
-        return yield* insertNew(repo)(params, anchors);
-      }
-      const existing = yield* repo.findActiveRecurringByExternalUser(
-        params.externalUserId,
-      );
-      const locked = Option.isSome(existing)
-        ? yield* repo.lockById(existing.value.id)
-        : Option.none<Payment>();
-      if (Option.isSome(locked) && isLive(locked.value)) {
-        const row = locked.value;
-        // `/pay` refuses an intro link on a live sub, but links claimed before the sub
-        // existed still settle here: re-check under the lock, write nothing. A card check
-        // on a live sub is refused the same way.
-        if (mustNotStack(params)) {
-          return refusedOnLive(row, params);
-        }
-        // The promo is dropped here: a live contact paying a promo link stacks the paid
-        // period only, never free time.
-        const stacked = stackAnchors(
-          row,
-          params.period,
-          params.paidAt,
-          params.cycles,
-        );
-        const terms = {
-          amount: params.renewal?.amount ?? params.amount,
-          ...tokenRule(params.source, params.recurringTokenRef, row),
-        };
-        yield* repo.extend(row.id, {
-          ...terms,
-          currency: params.currency,
-          period: params.renewal?.period ?? params.period,
-          ...stacked,
-          metadata: params.metadata,
-        });
-        return prolongedResult(row, stacked, params.metadata, terms);
-      }
+    applyOnce(repo, params).pipe(
+      Effect.tap((result) => recordFirstMoney(repo, params, result)),
+    );
+
+/**
+ * A charge that wrote a period records the payment's first money in the same
+ * transaction. A refusal wrote nothing, and a card check (refused or not) moved no money.
+ */
+const recordFirstMoney = (
+  repo: PaymentRepo,
+  params: ApplyPaymentParams,
+  result: ApplyPaymentResult,
+): Effect.Effect<void, SqlError.SqlError> =>
+  params.moneyRef === undefined ||
+  params.firstCharge === 'card_check' ||
+  result.introOnLive === true
+    ? Effect.void
+    : repo.markFirstMoney(result.subscriptionId, params.moneyRef);
+
+const applyOnce = (
+  repo: PaymentRepo,
+  params: ApplyPaymentParams,
+): Effect.Effect<ApplyPaymentResult, SqlError.SqlError> =>
+  Effect.gen(function* () {
+    const anchors = periodAnchors(params);
+    // A one-time payment never extends and never collapses into the user's recurring
+    // payment — always a new record, with no per-user cap.
+    if (!params.recurring) {
       return yield* insertNew(repo)(params, anchors);
-    });
+    }
+    const existing = yield* repo.findActiveRecurringByExternalUser(
+      params.externalUserId,
+    );
+    const locked = Option.isSome(existing)
+      ? yield* repo.lockById(existing.value.id)
+      : Option.none<Payment>();
+    if (Option.isSome(locked) && isLive(locked.value)) {
+      const row = locked.value;
+      // `/pay` refuses an intro link on a live sub, but links claimed before the sub
+      // existed still settle here: re-check under the lock, write nothing. A card check
+      // on a live sub is refused the same way.
+      if (mustNotStack(params)) {
+        return refusedOnLive(row, params);
+      }
+      // The promo is dropped here: a live contact paying a promo link stacks the paid
+      // period only, never free time.
+      const stacked = stackAnchors(
+        row,
+        params.period,
+        params.paidAt,
+        params.cycles,
+      );
+      const terms = {
+        amount: params.renewal?.amount ?? params.amount,
+        ...tokenRule(params.source, params.recurringTokenRef, row),
+      };
+      yield* repo.extend(row.id, {
+        ...terms,
+        currency: params.currency,
+        period: params.renewal?.period ?? params.period,
+        ...stacked,
+        metadata: params.metadata,
+      });
+      return prolongedResult(row, stacked, params.metadata, terms);
+    }
+    return yield* insertNew(repo)(params, anchors);
+  });
 
 /** What an advance credited: the anchors it wrote, plus the declaration the row carries
  * and what its next renewal autocharges (an advance rewrites neither), so a succeeded
@@ -376,10 +405,11 @@ export interface AdvancedPeriod extends AdvanceAnchor {
  * change). Locks the row, skips unless `guard` accepts it, then advances by
  * `stackAnchors`, which also resets dunning and sets Active. Runs in the caller's
  * transaction when there is one (as a savepoint), else in its own. Returns what it
- * credited, or None when the row is gone or the guard refused.
+ * credited, or None when the row is gone or the guard refused. The first such credit of
+ * a payment records `moneyRef` as its first money.
  */
 export const advanceLocked =
-  (repo: PaymentRepo) =>
+  (repo: PaymentRepo, moneyRef: string) =>
   (
     id: string,
     period: string,
@@ -394,6 +424,8 @@ export const advanceLocked =
         }
         const anchors = stackAnchors(locked.value, period, at);
         yield* repo.advanceAfterSuccess(id, anchors);
+        // Every advance credits a period for money taken under `moneyRef`.
+        yield* repo.markFirstMoney(id, moneyRef);
         return Option.some({
           ...anchors,
           metadata: locked.value.metadata,
@@ -466,6 +498,11 @@ export const handoverDecision = (
     return refuse('charged', 'the payment has already taken money');
   }
   const current = target.nextPaymentDate.getTime();
+  // Due now: the scheduler may be charging it this very moment (it charges a due row
+  // with no lock held across the provider call), so nothing may move it.
+  if (current <= nowMillis) {
+    return refuse('charge_in_flight', 'the first charge is due');
+  }
   const to = deferTo.getTime();
   if (to <= current) {
     return { kind: 'unchanged' };

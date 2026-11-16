@@ -141,6 +141,7 @@ const recordingRepo = (existing: Payment | null) => {
       Effect.sync(() => {
         written.push(anchor);
       }),
+    markFirstMoney: () => Effect.void,
   } as unknown as PaymentRepo;
   return { repo, written };
 };
@@ -185,7 +186,7 @@ describe('anchor writers keep nextPaymentDate === currentPeriodEnd', () => {
   it('advance after a successful renewal (advanceLocked)', () => {
     const { repo, written } = recordingRepo(liveRow);
     Effect.runSync(
-      advanceLocked(repo)(liveRow.id, 'P1M', d('2026-02-28'), isLive),
+      advanceLocked(repo, 'ord_1')(liveRow.id, 'P1M', d('2026-02-28'), isLive),
     );
     expectInvariant(written);
   });

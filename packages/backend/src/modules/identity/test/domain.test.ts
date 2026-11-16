@@ -37,6 +37,7 @@ const unusedPayments: PaymentRepo = {
   cancelUpstream: die,
   defer: die,
   deferCharge: die,
+  markFirstMoney: () => Effect.void,
   updateToken: die,
   setMethod: die,
   clearToken: die,

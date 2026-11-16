@@ -263,7 +263,7 @@ const makeFakeRepo = () => {
         });
       }),
     // No payment in this fake was created by a card check.
-    isCardCheckFirstCharge: () => Effect.succeed(false),
+    isFirstMoneyCharge: () => Effect.succeed(false),
     getIncomingChargeById: (id) =>
       Effect.sync(() => Option.fromNullable(eventsById.get(id))),
     listOpenQuarantine: () => Effect.succeed([]),

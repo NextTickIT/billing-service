@@ -230,6 +230,7 @@ const recordingRepo = () => {
     cancelUpstream: die,
     defer: die,
     deferCharge: die,
+    markFirstMoney: () => Effect.void,
     updateToken: (_id, token) =>
       Effect.sync(() => {
         calls.updatedToken = token;

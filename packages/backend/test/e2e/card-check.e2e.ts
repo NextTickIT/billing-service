@@ -55,7 +55,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const PLAN = { amount: 5000, currency: 1, period: 'P4W' };
 
 /** A second app over the same database with card checks admitted (plus `extraEnv`). */
-const withCardCheckApp = async (
+export const withCardCheckApp = async (
   http: Http,
   body: (http: Http) => Promise<void>,
   extraEnv: Record<string, string> = {},
@@ -71,7 +71,7 @@ const withCardCheckApp = async (
   });
 };
 
-const cardCheckBody = (contact: string, extra: Json = {}): Json => ({
+export const cardCheckBody = (contact: string, extra: Json = {}): Json => ({
   externalUserId: contact,
   ...PLAN,
   method: PaymentMethod.Card,
@@ -83,7 +83,7 @@ const cardCheckBody = (contact: string, extra: Json = {}): Json => ({
 });
 
 /** The serviceUrl callback a WayForPay verify sends, signed, then a worker pass. */
-const verifyCallback = async (
+export const verifyCallback = async (
   http: Http,
   ref: string,
   over: Record<string, string> = {},
@@ -108,15 +108,17 @@ const verifyCallback = async (
   await drainQueue();
 };
 
-const bearer = (secret: string) => ({ authorization: `Bearer ${secret}` });
+export const bearer = (secret: string) => ({
+  authorization: `Bearer ${secret}`,
+});
 
-const paymentsOf = (http: Http, contact: string) =>
+export const paymentsOf = (http: Http, contact: string) =>
   scalar(
     http,
     `SELECT count(*) FROM payments WHERE "externalUserId" = '${contact}'`,
   );
 
-const statusAndReason = (http: Http, id: string) =>
+export const statusAndReason = (http: Http, id: string) =>
   scalar(
     http,
     `SELECT status || '|' || coalesce("closedReason", '') FROM checkout_sessions WHERE id = '${id}'`,
@@ -218,7 +220,11 @@ const createAndActivate: Scenario = {
 // close
 // ---------------------------------------------------------------------------------
 
-const close = (http: Http, id: string, secret: string | null = http.secret) =>
+export const close = (
+  http: Http,
+  id: string,
+  secret: string | null = http.secret,
+) =>
   postJson(
     `${http.baseUrl}/api/checkout-sessions/${id}/close`,
     {},
@@ -317,7 +323,7 @@ interface Seed {
 }
 
 /** A card-check payment (or a variant of one) whose first charge is due at `next`. */
-const seedPayment = (s: Seed) =>
+export const seedPayment = (s: Seed) =>
   onDb(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -357,6 +363,11 @@ const seedPayment = (s: Seed) =>
           source: 'wayforpay_charge',
           occurredAt: new Date(),
         });
+        // A charge that credited a period records the payment's first money.
+        yield* makePaymentRepo(sql).markFirstMoney(
+          payment.id,
+          `sub_${payment.id}_seed`,
+        );
       }
       return payment;
     }),
@@ -368,7 +379,7 @@ interface DeferCall {
   readonly key?: string | null;
 }
 
-const defer = (http: Http, paymentId: string, call: DeferCall) =>
+export const defer = (http: Http, paymentId: string, call: DeferCall) =>
   postJson(`${http.baseUrl}/api/payment/${paymentId}/defer`, call.body, {
     ...(call.secret === null ? {} : bearer(call.secret ?? http.secret)),
     ...(call.key === null
@@ -376,12 +387,12 @@ const defer = (http: Http, paymentId: string, call: DeferCall) =>
       : { 'idempotency-key': call.key ?? randomUUID() }),
   });
 
-const handover = (deferTo: Date): Json => ({
+export const handover = (deferTo: Date): Json => ({
   reason: 'handover',
   deferTo: deferTo.toISOString(),
 });
 
-const nextOf = (http: Http, id: string) =>
+export const nextOf = (http: Http, id: string) =>
   scalar(
     http,
     `SELECT (extract(epoch FROM "nextPaymentDate") * 1000)::bigint || '|' || (extract(epoch FROM "currentPeriodEnd") * 1000)::bigint || '|' || "deferRevision" FROM payments WHERE id = '${id}'`,
@@ -531,7 +542,7 @@ const handoverShape: Scenario = {
 // operator defer, revisions, ledger
 // ---------------------------------------------------------------------------------
 
-const operatorCookie = async (http: Http): Promise<string> => {
+export const operatorCookie = async (http: Http): Promise<string> => {
   await postJson(
     `${http.baseUrl}/auth/operators`,
     { login: 'cch-op', password: 'cch-pass', role: 1 },
@@ -548,7 +559,12 @@ const operatorCookie = async (http: Http): Promise<string> => {
   return `bss=${match?.[1] ?? ''}`;
 };
 
-const operatorDefer = (http: Http, cookie: string, id: string, body: Json) =>
+export const operatorDefer = (
+  http: Http,
+  cookie: string,
+  id: string,
+  body: Json,
+) =>
   http.bff(
     new Request(`${http.baseUrl}/api/payment/${id}/defer`, {
       method: 'POST',
@@ -561,14 +577,14 @@ const operatorDefer = (http: Http, cookie: string, id: string, body: Json) =>
     }),
   );
 
-const auditRevisions = (http: Http, id: string) =>
+export const auditRevisions = (http: Http, id: string) =>
   scalar(
     http,
     `SELECT string_agg((detail->>'revision') || ':' || coalesce(detail->>'reason', '-'), ',' ORDER BY "occurredAt", id) FROM audit_log WHERE "targetId" = '${id}' AND action = 'defer_payment'`,
   );
 
 /** A worker pass that also runs the `payment_defer` notify, as the worker does. */
-const drainWithDefers = () =>
+export const drainWithDefers = () =>
   onDb(
     Effect.gen(function* () {
       yield* registerHandlers;
@@ -581,7 +597,7 @@ const drainWithDefers = () =>
     }),
   );
 
-const deferredEvents = (http: Http, id: string) =>
+export const deferredEvents = (http: Http, id: string) =>
   scalar(
     http,
     `SELECT string_agg((payload->>'revision') || ':' || coalesce(payload->>'reason', '-'), ',' ORDER BY (payload->>'revision')::int) FROM domain_events WHERE "aggregateId" = '${id}' AND name = 'payment_deferred'`,

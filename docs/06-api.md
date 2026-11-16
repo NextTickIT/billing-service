@@ -89,7 +89,8 @@ forbids `promo`, `options` and `renewal` (400). Admitted only while
 `W4P_CARD_CHECK_ENABLED=true` — otherwise **422** `{"code":"card_check_disabled"}`; the env
 gates admission only, an issued session keeps its mode. `firstCharge` is part of the
 Idempotency-Key identity (a reuse with another mode is 409). `/pay` on a card-check session
-always hands out the Card Verify form. The callback is settled by the card-check dispatch
+always hands out the Card Verify form; a lapsed card-check link is never re-issued (409),
+the caller opens a new attempt. The callback is settled by the card-check dispatch
 only (docs/07 `subscription_card_checked` / `card_check_failed` / `card_check_anomaly`).
 The public read carries `firstCharge` and `closedReason` (status 4 = Closed).
 
@@ -131,7 +132,7 @@ All operator endpoints require authentication (operator/support token) and are a
 - `POST /operator/payment/:id/cancel` — soft-cancel: keeps access to period end, then lapses (docs/23)
 - `POST /operator/payment/:id/reactivate` — reverse a pending cancellation within the grace window (docs/23)
 - `POST /operator/payment/:id/defer` — grant N≤30 free days; extends the paid period (docs/23). Answers `{status, newPeriodEnd, revision}`.
-- `POST /api/payment/:id/defer` with `{"reason":"handover","deferTo":<ISO>}` and an Idempotency-Key — the **handover defer**, on the shared service token (no BFF secret). Only for a card-check payment that is Active and has taken no money; `deferTo` must be after the current next charge (otherwise `{"status":"unchanged"}`, nothing written), at most 30 d past it and at most 62 d from now. Refusals are 422 with `code` `invalid_request` / `not_active` (+ `paymentStatus`) / `not_card_check` / `charged` / `out_of_bounds`; a missing or invalid token is 401; `{days}` with the service token is 401. The checks run inside the idempotency ledger's fresh execution, so a committed request always replays its saved answer.
+- `POST /api/payment/:id/defer` with `{"reason":"handover","deferTo":<ISO>}` and an Idempotency-Key — the **handover defer**, on the shared service token (no BFF secret). Only for a card-check payment that is Active and has taken no money; `deferTo` must be after the current next charge (otherwise `{"status":"unchanged"}`, nothing written), at most 30 d past it and at most 62 d from now. Refusals are 422 with `code` `invalid_request` / `not_active` (+ `paymentStatus`) / `not_card_check` / `charged` (the payment took money that credited a period: `payments."firstMoneyAt"`, set in the crediting transaction, the scheduler's approval included — a small card-change charge does not count) / `charge_in_flight` (the first charge is due, so the scheduler may be charging it now; retry later, the protection is not over) / `out_of_bounds`; a missing or invalid token is 401; `{days}` with the service token is 401. The checks run inside the idempotency ledger's fresh execution, so a committed request always replays its saved answer.
 - `GET /operator/quarantine`
 - `POST /operator/quarantine/:id/bind` — bind an unmatched charge to a Payment (or create one); the charge is then reprocessed normally
 - `GET /operator/deliveries?status=failed` — undelivered outgoing events

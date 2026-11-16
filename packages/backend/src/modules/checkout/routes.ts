@@ -696,8 +696,6 @@ const clonedIntent = (
   startsAt: session.startsAt,
   payableUntil: session.payableUntil,
   lockMethod: session.lockMethod,
-  // The clone is the same offer: a card check stays a card check.
-  firstCharge: firstChargeOf(session),
   // Never copied: the key is unique across live rows, and the clone is a new checkout,
   // not a replay of the caller's original request.
   idempotencyKey: null,
@@ -804,12 +802,6 @@ const replacementIntent = (
     return Either.right(clonedIntent(session, expiresAt));
   }
   const sub = live.value;
-  // A card check is for a payer with no live sub here; a re-mint would drop the mode.
-  if (session.firstCharge === 'card_check') {
-    return Either.left(
-      new AlreadySubscribed({ externalUserId: session.externalUserId }),
-    );
-  }
   // A re-mint charges the live sub's method; a caller's lock is never silently moved.
   if (session.lockMethod && sub.method !== session.method) {
     return Either.left(
@@ -891,6 +883,13 @@ export const effectivePayable = (
     session.expiresAt.getTime() <= nowMillis;
   if (!lapsed && !isStaleRenewal(session, live)) {
     return Either.right({ _tag: 'Stored', session });
+  }
+  // A card check is never re-issued, cloned or re-minted: a second session for one
+  // attempt could be paid after the first was closed. The caller opens a new attempt.
+  if (session.firstCharge === 'card_check') {
+    return Either.left(
+      new Conflict({ field: 'checkout session (card check expired)' }),
+    );
   }
   // A bounded offer is never re-issued, cloned or re-minted: its `expiresAt` is its
   // `payableUntil`, so once it lapses the offer is over.

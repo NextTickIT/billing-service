@@ -159,9 +159,12 @@ const schedulerAdvance = (
   sub: Payment,
 ) =>
   ledgerClaimAdvance(sql)(orderReferenceOf(sub))(
-    advanceLocked(subs)(sub.id, sub.period, new Date(), isLive).pipe(
-      Effect.map(Option.isSome),
-    ),
+    advanceLocked(subs, orderReferenceOf(sub))(
+      sub.id,
+      sub.period,
+      new Date(),
+      isLive,
+    ).pipe(Effect.map(Option.isSome)),
   );
 
 /** Scheduler deps on the scenario DB; anything a scenario does not expect dies loudly. */

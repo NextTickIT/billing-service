@@ -157,3 +157,31 @@ describe('wholeDaysBetween: the days a handover defer reports', () => {
     expect(days).toBe(expected);
   });
 });
+
+describe('handoverDecision: a first charge already due may be in flight', () => {
+  it.each([
+    [
+      'due just now (next = now − 1 ms)',
+      -1,
+      { kind: 'refuse', code: 'charge_in_flight' },
+    ],
+    ['due exactly now', 0, { kind: 'refuse', code: 'charge_in_flight' }],
+    ['due 1 ms from now', 1, { kind: 'defer' }],
+  ])('%s → %o', (_label, offset, expected) => {
+    const dueAt = target({ nextPaymentDate: new Date(NOW + offset) });
+
+    const decision = handoverDecision(dueAt, new Date(NOW + DAY), NOW);
+
+    expect(decision).toMatchObject(expected);
+  });
+
+  it('a charged payment says charged, even when due', () => {
+    const decision = handoverDecision(
+      target({ charged: true, nextPaymentDate: new Date(NOW - DAY) }),
+      new Date(NOW + DAY),
+      NOW,
+    );
+
+    expect(decision).toMatchObject({ code: 'charged' });
+  });
+});

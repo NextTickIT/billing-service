@@ -297,7 +297,7 @@ const recordApproved = (
   deps
     .claimAdvance(orderReference)(
       Effect.gen(function* () {
-        const advanced = yield* advanceLocked(deps.subs)(
+        const advanced = yield* advanceLocked(deps.subs, orderReference)(
           sub.id,
           sub.period,
           now,

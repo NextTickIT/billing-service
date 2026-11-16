@@ -520,9 +520,9 @@ const recordMatchedSuccess = (
     if ('refused' in applied) {
       return yield* quarantineRefused(deps, event, incomingId, applied);
     }
-    // Read before this charge's own fixation lands, or every success would see one.
-    const first = yield* deps.repo.isCardCheckFirstCharge(
+    const first = yield* deps.repo.isFirstMoneyCharge(
       applied.subscriptionId,
+      event.externalRef,
     );
     yield* deps.repo.insertPayment({
       incomingEventId: incomingId,
@@ -627,6 +627,11 @@ const recordCardChange = (
       return yield* quarantineRefused(deps, event, incomingId, applied);
     }
     if (match.amountCharged === true) {
+      // Only an arrears change credits a period and so can be a card check's first money.
+      const first = yield* deps.repo.isFirstMoneyCharge(
+        applied.subscriptionId,
+        event.externalRef,
+      );
       yield* deps.repo.insertPayment({
         incomingEventId: incomingId,
         paymentId: applied.subscriptionId,
@@ -637,12 +642,10 @@ const recordCardChange = (
         occurredAt: event.occurredAt,
       });
       yield* deps.publish(
-        recurringPaymentSucceeded(
-          event,
-          match,
-          applied.subscriptionId,
-          applied,
-        ),
+        recurringPaymentSucceeded(event, match, applied.subscriptionId, {
+          ...applied,
+          ...(first ? { cardCheckFirstCharge: true } : {}),
+        }),
       );
     }
     yield* deps.publish(cardChangeSucceeded(event, match));

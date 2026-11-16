@@ -735,7 +735,7 @@ const applyCardChange =
         // payment still owes. A new arrears session always credits its period, unless the
         // payment was cancelled meanwhile.
         const legacy = match.origin === null || match.origin === undefined;
-        const advanced = yield* advanceLocked(payments)(
+        const advanced = yield* advanceLocked(payments, event.externalRef)(
           paymentId,
           match.period,
           event.occurredAt,
@@ -789,6 +789,7 @@ const applyCheckout =
         metadata: match.metadata,
         startsAt: match.startsAt,
         source: event.source,
+        moneyRef: event.externalRef,
         recurringTokenRef: recToken(event.payload),
         paidAt: event.occurredAt,
       });

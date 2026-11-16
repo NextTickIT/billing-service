@@ -223,6 +223,15 @@ export interface PaymentRepo {
     id: string,
     nextPaymentDate: Date,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /**
+   * Record that the order `ref` is the payment's first money that credited a period: set
+   * `firstMoneyAt`/`firstMoneyRef` once, never overwritten. Called in the crediting
+   * transaction, under the row lock the caller already holds.
+   */
+  readonly markFirstMoney: (
+    id: string,
+    ref: string,
+  ) => Effect.Effect<void, SqlError.SqlError>;
   /** Rewrite only the stored token — a card change must not shift any date. */
   readonly updateToken: (
     id: string,
@@ -546,7 +555,9 @@ const deferredTo = (rows: readonly DeferredRow[]): Option.Option<DeferredTo> =>
   }));
 
 /** What a handover defer decides on, read under the payment's row lock. `charged`: the
- * payment has a charge fixation, i.e. it has taken money. */
+ * payment has taken money that credited a period (`firstMoneyAt`, written in the
+ * crediting transaction — the scheduler's approval included — so a receipt still in the
+ * queue cannot hide it). A small card-change charge credits nothing and does not count. */
 export interface DeferTarget {
   readonly status: PaymentStatus;
   readonly firstCharge: FirstCharge;
@@ -557,17 +568,23 @@ export interface DeferTarget {
 
 /**
  * The handover-defer target under a row lock held to the end of the surrounding
- * transaction (the idempotency ledger's), so the checks and the write see one state.
+ * transaction (the idempotency ledger's). The lock is its own statement and the read a
+ * fresh one after it: a statement that waited for the lock still reads with the snapshot
+ * it started with, so it could miss what the transaction it waited for committed.
  */
 export const lockDeferTarget =
   (sql: SqlClient.SqlClient) =>
   (id: string): Effect.Effect<Option.Option<DeferTarget>, SqlError.SqlError> =>
-    sql<DeferTarget>`
-      SELECT p.status, p."firstCharge", p."nextPaymentDate", p."deferRevision",
-             EXISTS (SELECT 1 FROM charge_fixations f WHERE f."paymentId" = p.id) AS charged
-      FROM payments p WHERE p.id = ${id}
-      FOR UPDATE OF p
-    `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
+    sql`SELECT id FROM payments WHERE id = ${id} FOR UPDATE`.pipe(
+      Effect.andThen(
+        sql<DeferTarget>`
+          SELECT status, "firstCharge", "nextPaymentDate", "deferRevision",
+                 "firstMoneyAt" IS NOT NULL AS charged
+          FROM payments WHERE id = ${id}
+        `,
+      ),
+      Effect.map((rows) => Option.fromNullable(rows[0])),
+    );
 
 /**
  * The handover defer's write: both dates to the absolute `to`, the revision incremented in
@@ -594,6 +611,13 @@ const deferCharge =
       UPDATE payments
       SET "nextPaymentDate" = ${nextPaymentDate}, "updatedAt" = now()
       WHERE id = ${id} AND status = ${PaymentStatus.Active} AND "retryAttempt" = 0
+    `.pipe(Effect.asVoid);
+
+const markFirstMoney =
+  (sql: SqlClient.SqlClient) => (id: string, ref: string) =>
+    sql`
+      UPDATE payments SET "firstMoneyAt" = now(), "firstMoneyRef" = ${ref}
+      WHERE id = ${id} AND "firstMoneyAt" IS NULL
     `.pipe(Effect.asVoid);
 
 const updateToken =
@@ -660,6 +684,7 @@ export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   cancelUpstream: cancelUpstream(sql),
   defer: defer(sql),
   deferCharge: deferCharge(sql),
+  markFirstMoney: markFirstMoney(sql),
   updateToken: updateToken(sql),
   setMethod: setMethod(sql),
   clearToken: clearToken(sql),

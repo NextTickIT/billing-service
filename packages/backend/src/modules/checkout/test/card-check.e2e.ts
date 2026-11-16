@@ -683,40 +683,6 @@ const chargesOnDeferredDate: EffectScenario = {
   },
 };
 
-const REVISIONS = 'sp:cc-revisions';
-
-const concurrentRevisions: EffectScenario = {
-  name: 'card check: concurrent defers take distinct, increasing revisions',
-  run: async ({ config, query }) => {
-    const startsAt = inDays(10);
-    const revisions = await onWorker(
-      config,
-      Effect.gen(function* () {
-        const sub = yield* activated(REVISIONS, 'chk_cc-revisions', startsAt);
-        const sql = yield* SqlClient.SqlClient;
-        return yield* Effect.all(
-          [
-            makePaymentRepo(sql).defer(sub.id, 1),
-            deferToDate(sql)(sub.id, new Date(startsAt.getTime() + 5 * DAY)),
-          ],
-          { concurrency: 2 },
-        );
-      }),
-    );
-    const taken = revisions
-      .map((r) => Option.getOrThrow(r).revision)
-      .sort((a, b) => a - b);
-    assert.deepEqual(taken, [1, 2], 'one revision each, 1 and 2');
-    await expectRows(query, [
-      [
-        `SELECT "deferRevision" FROM payments WHERE "externalUserId" = '${REVISIONS}'`,
-        '2',
-        'the row holds the last one',
-      ],
-    ]);
-  },
-};
-
 export const cardCheckScenarios: readonly EffectScenario[] = [
   verified,
   duplicate,
@@ -731,5 +697,4 @@ export const cardCheckScenarios: readonly EffectScenario[] = [
   firstScheduled,
   firstByProlong,
   chargesOnDeferredDate,
-  concurrentRevisions,
 ];

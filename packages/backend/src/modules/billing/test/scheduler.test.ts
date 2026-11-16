@@ -157,6 +157,7 @@ const makeSubsMock = (
   cancelUpstream: die,
   defer: die,
   deferCharge: deferChargeFake(rows, calls),
+  markFirstMoney: () => Effect.void,
   updateToken: die,
   setMethod: die,
   clearToken: die,

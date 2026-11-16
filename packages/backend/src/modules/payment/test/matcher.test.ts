@@ -51,6 +51,7 @@ const repo = (found: Payment | null): PaymentRepo => ({
   cancelUpstream: die,
   defer: die,
   deferCharge: die,
+  markFirstMoney: () => Effect.void,
   updateToken: die,
   setMethod: die,
   clearToken: die,

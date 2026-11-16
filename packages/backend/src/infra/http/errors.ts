@@ -170,6 +170,7 @@ export type HandoverRefusal =
   | 'not_active'
   | 'not_card_check'
   | 'charged'
+  | 'charge_in_flight'
   | 'out_of_bounds';
 
 /**

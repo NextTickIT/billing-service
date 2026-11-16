@@ -341,6 +341,7 @@ const settlementRepos = (row: Payment | null, writes: Writes) => {
     cancelUpstream: unused,
     defer: unused,
     deferCharge: unused,
+    markFirstMoney: () => Effect.void,
     updateToken: unused,
     setMethod: unused,
     clearToken: unused,
