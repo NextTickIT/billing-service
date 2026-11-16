@@ -5,6 +5,7 @@ import type { DeferTarget } from '@/modules/payment/data-access.js';
 import {
   type ApplyPaymentParams,
   handoverDecision,
+  operatorDeferBlocked,
   periodAnchors,
   wholeDaysBetween,
 } from '@/modules/payment/domain.js';
@@ -183,5 +184,39 @@ describe('handoverDecision: a first charge already due may be in flight', () => 
     );
 
     expect(decision).toMatchObject({ code: 'charged' });
+  });
+});
+
+describe('operatorDeferBlocked: an operator defer of a due, untaken first charge', () => {
+  it.each([
+    [
+      'a due, untaken card check (next = now)',
+      target({ nextPaymentDate: new Date(NOW) }),
+      true,
+    ],
+    [
+      'due a millisecond ago',
+      target({ nextPaymentDate: new Date(NOW - 1) }),
+      true,
+    ],
+    [
+      'not due yet (now + 1 ms)',
+      target({ nextPaymentDate: new Date(NOW + 1) }),
+      false,
+    ],
+    [
+      'due but already charged',
+      target({ nextPaymentDate: new Date(NOW), charged: true }),
+      false,
+    ],
+    [
+      'a full-price payment that is due',
+      target({ nextPaymentDate: new Date(NOW), firstCharge: 'now' }),
+      false,
+    ],
+  ])('%s → %s', (_label, input, expected) => {
+    const blocked = operatorDeferBlocked(input, NOW);
+
+    expect(blocked).toBe(expected);
   });
 });

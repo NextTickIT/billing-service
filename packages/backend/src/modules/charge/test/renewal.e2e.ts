@@ -16,6 +16,8 @@ import { Effect, Either, Exit, Fiber, Option } from 'effect';
 import { claimBatch, reapStale } from '@/infra/queue/store.js';
 import { TaskRegistry } from '@/infra/task-registry.js';
 import migration0021 from '@/migrations/0021_checkout_renewal.js';
+import { settlementOf } from '@/modules/billing/events.js';
+import type { ScheduledApproval } from '@/modules/charge/contracts.js';
 import {
   ledgerClaimAdvance,
   scheduleTick,
@@ -164,7 +166,9 @@ const schedulerAdvance = (
       sub.period,
       new Date(),
       isLive,
-    ).pipe(Effect.map(Option.isSome)),
+    ).pipe(
+      Effect.map((advanced) => ({ settlement: settlementOf(advanced, sub) })),
+    ),
   );
 
 /** Scheduler deps on the scenario DB; anything a scenario does not expect dies loudly. */
@@ -418,7 +422,11 @@ const t16BarrierSchedulerAdvance: EffectScenario = {
         }),
       );
       assert.ok(Exit.isSuccess(out.prolongExit), 'the prolong settled');
-      assert.equal(out.result, true, 'the scheduler advance applied');
+      assert.notEqual(
+        (out.result as ScheduledApproval).settlement,
+        null,
+        'the scheduler advance applied (it recorded a credited window)',
+      );
       assert.equal(
         endMs(out.final),
         BARRIER_END.getTime() + 2 * P4W,
@@ -448,7 +456,11 @@ const t16BarrierRollback: EffectScenario = {
         }),
       );
       assert.ok(Exit.isFailure(out.prolongExit), 'the prolong failed');
-      assert.equal(out.result, true, 'the scheduler advance applied');
+      assert.notEqual(
+        (out.result as ScheduledApproval).settlement,
+        null,
+        'the scheduler advance applied (it recorded a credited window)',
+      );
       assert.equal(
         endMs(out.final),
         BARRIER_END.getTime() + P4W,

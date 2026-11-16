@@ -20,7 +20,7 @@ import { withIdempotencyKey } from '@/infra/db/idempotency.js';
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
 import {
-  HandoverRefused,
+  DeferRefused,
   NotFound,
   Unauthorized,
   UnprocessableEntity,
@@ -48,6 +48,7 @@ import {
 } from '@/modules/payment/data-access.js';
 import {
   handoverDecision,
+  operatorDeferBlocked,
   wholeDaysBetween,
 } from '@/modules/payment/domain.js';
 import { addPeriod, isValidPeriod } from '@/modules/payment/period.js';
@@ -376,6 +377,25 @@ const recordDefer = (sql: SqlClient.SqlClient, record: DeferRecord) =>
     };
   });
 
+/** Refuse, under the payment's lock, an operator defer of a card-check payment whose
+ * first charge is due and untaken (`operatorDeferBlocked`). The lock is held to the end of
+ * the ledger's transaction, so the date cannot move between this check and the write. */
+const assertNotInFlight = (sql: SqlClient.SqlClient, id: string) =>
+  Effect.gen(function* () {
+    const target = yield* lockDeferTarget(sql)(id);
+    if (
+      Option.isSome(target) &&
+      operatorDeferBlocked(target.value, yield* Clock.currentTimeMillis)
+    ) {
+      return yield* Effect.fail(
+        new DeferRefused({
+          code: 'charge_in_flight',
+          reason: 'the first charge is due',
+        }),
+      );
+    }
+  });
+
 /**
  * Apply an operator deferral: check, push the anchor, audit, and enqueue the notify. Runs
  * inside the idempotency ledger's fresh execution (`deferPayment`): a re-send replays the
@@ -395,6 +415,7 @@ const applyDefer = (
       return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
     yield* assertDeferrable(found.value, days);
+    yield* assertNotInFlight(sql, id);
     // The end the relative SQL actually wrote: a prolongation may have moved the anchor
     // since `payment` was read, and the response and event must report the real one.
     const deferred = yield* repo.defer(id, days);
@@ -456,7 +477,7 @@ const applyHandover = (
       yield* Clock.currentTimeMillis,
     );
     if (decision.kind === 'refuse') {
-      return yield* Effect.fail(new HandoverRefused(decision));
+      return yield* Effect.fail(new DeferRefused(decision));
     }
     if (decision.kind === 'unchanged') {
       return {
@@ -468,7 +489,7 @@ const applyHandover = (
     const deferred = yield* deferToDate(sql)(payment.id, deferTo);
     if (Option.isNone(deferred)) {
       return yield* Effect.fail(
-        new HandoverRefused({
+        new DeferRefused({
           code: 'not_active',
           reason: 'only an active payment can be deferred',
           paymentStatus: target.value.status,
@@ -496,7 +517,7 @@ const handoverDefer = (body: DeferRequest, request: FastifyRequest) =>
     const key = idempotencyKeyOf(request);
     if (body.days !== undefined || body.deferTo === undefined || key === null) {
       return yield* Effect.fail(
-        new HandoverRefused({
+        new DeferRefused({
           code: 'invalid_request',
           reason:
             'a handover defer takes deferTo (not days) and an Idempotency-Key',

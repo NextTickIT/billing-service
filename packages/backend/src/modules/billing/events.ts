@@ -10,7 +10,7 @@ import type {
 
 import { Option } from 'effect';
 
-import type { Charge } from '@/modules/charge/contracts.js';
+import type { Charge, Settlement } from '@/modules/charge/contracts.js';
 import type { AdvancedPeriod } from '@/modules/payment/domain.js';
 import type { W4pChargeResponse } from '@/modules/wayforpay/contracts.js';
 
@@ -56,26 +56,31 @@ export const chargeIncomingEvent = (
  * None (the row was gone or no longer live under the lock) carries no snapshot, and the
  * pipeline reads the row as before.
  */
+export const settlementOf = (
+  advanced: Option.Option<AdvancedPeriod>,
+  charged: Pick<Payment, 'period' | 'method'>,
+): Settlement | null =>
+  Option.match(advanced, {
+    onNone: () => null,
+    onSome: (period) => ({
+      period: charged.period,
+      method: charged.method,
+      periodStart: period.currentPeriodStart,
+      periodEnd: period.currentPeriodEnd,
+      nextPaymentDate: period.nextPaymentDate,
+      metadata: period.metadata,
+      nextAmount: period.nextAmount,
+    }),
+  });
+
 export const withSettlement = (
   charge: Charge,
   advanced: Option.Option<AdvancedPeriod>,
   charged: Pick<Payment, 'period' | 'method'>,
-): Charge =>
-  Option.match(advanced, {
-    onNone: () => charge,
-    onSome: (period) => ({
-      ...charge,
-      settlement: {
-        period: charged.period,
-        method: charged.method,
-        periodStart: period.currentPeriodStart,
-        periodEnd: period.currentPeriodEnd,
-        nextPaymentDate: period.nextPaymentDate,
-        metadata: period.metadata,
-        nextAmount: period.nextAmount,
-      },
-    }),
-  });
+): Charge => {
+  const settlement = settlementOf(advanced, charged);
+  return settlement === null ? charge : { ...charge, settlement };
+};
 
 export interface RetryFailure {
   readonly attempt: number;

@@ -164,8 +164,8 @@ export class CardCheckDisabled extends Data.TaggedError('CardCheckDisabled')<{
   }
 }
 
-/** Why a handover defer was refused; `not_active` also names the payment's status. */
-export type HandoverRefusal =
+/** Why a defer was refused; `not_active` also names the payment's status. */
+export type DeferRefusal =
   | 'invalid_request'
   | 'not_active'
   | 'not_card_check'
@@ -174,12 +174,13 @@ export type HandoverRefusal =
   | 'out_of_bounds';
 
 /**
- * A handover defer the payment does not admit (422). `code` is what the caller branches
+ * A defer the payment does not admit (422): a handover defer outside its shape, or any
+ * defer of a card-check payment whose first charge is due and untaken (`charge_in_flight`). `code` is what the caller branches
  * on; `paymentStatus` is the payment's status under lock when the refusal is `not_active`
  * (a Cancelled or RenewalFailed payment has nothing left to protect).
  */
-export class HandoverRefused extends Data.TaggedError('HandoverRefused')<{
-  readonly code: HandoverRefusal;
+export class DeferRefused extends Data.TaggedError('DeferRefused')<{
+  readonly code: DeferRefusal;
   readonly reason: string;
   readonly paymentStatus?: number;
 }> {

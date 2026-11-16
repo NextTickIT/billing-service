@@ -24,6 +24,10 @@ import {
 } from '@/modules/checkout/domain.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import { addPeriod } from '@/modules/payment/period.js';
+import type { ApprovalLookup } from '@/modules/charge/contracts.js';
+
+/** An approval recorded before the ledger kept snapshots: the row is the report. */
+const legacyApproval: ApprovalLookup = () => Effect.succeed(Option.some(true));
 
 const ID = 'chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab';
 const d = (iso: string) => new Date(`${iso}T00:00:00Z`);
@@ -369,10 +373,11 @@ const settle = (session: CheckoutSession, row: Payment | null, event: Charge) =>
       noLiveSub,
     )(event);
     expect(match.matched).toBe(true);
-    const applied = yield* makeCheckoutApplier(payments, checkout)(
-      event,
-      match as Match,
-    );
+    const applied = yield* makeCheckoutApplier(
+      payments,
+      checkout,
+      legacyApproval,
+    )(event, match as Match);
     return { applied, writes, match: match as Match };
   });
 

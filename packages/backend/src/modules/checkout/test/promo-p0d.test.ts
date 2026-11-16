@@ -17,6 +17,10 @@ import {
 } from '@/modules/checkout/domain.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import { addPeriod, isValidPeriod } from '@/modules/payment/period.js';
+import type { ApprovalLookup } from '@/modules/charge/contracts.js';
+
+/** An approval recorded before the ledger kept snapshots: the row is the report. */
+const legacyApproval: ApprovalLookup = () => Effect.succeed(Option.some(true));
 
 /**
  * Local integration test for `promo.additionalFreePeriod: "P0D"` — the "no bonus days"
@@ -149,7 +153,11 @@ const insertedFor = (promo: CheckoutPromo | null) =>
     // The matcher lifted the promo out of the session onto the match.
     expect(match.promoBonus).toBe(promo?.additionalFreePeriod ?? null);
 
-    const result = yield* makeCheckoutApplier(payments, checkout)(event, match);
+    const result = yield* makeCheckoutApplier(
+      payments,
+      checkout,
+      legacyApproval,
+    )(event, match);
     expect(result).toMatchObject({ created: true });
 
     expect(inserted).not.toBeNull();

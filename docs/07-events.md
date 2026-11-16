@@ -38,7 +38,11 @@ kind (`checkout` → initial, `recurring` → renewal); see 22.
 payment a period (scheduled, `/prolong`, manual renewal or an arrears card change) adds
 `card_check_first_charge: true` to its success payload; the crediting transaction records
 that order (`payments."firstMoneyRef"`), so exactly one success carries it. A small
-card-change charge credits no period (`period_end` null) and is never marked. The CRM wire shape of each is pinned by
+card-change charge credits no period (`period_end` null) and is never marked. A copy of a
+scheduled charge's receipt that carries no snapshot (the poller's, which shares the
+scheduler's queue key) waits — retried by the queue — until the scheduler's approval has
+committed, then reports the window that approval recorded in the `scheduler.advance`
+ledger. The CRM wire shape of each is pinned by
 `packages/shared/test/fixtures/wire/*.json` (checked against the builders by
 `sinks/test/wire-fixtures.test.ts`); the CRM sink delivers the three card-check kinds and a
 handover `payment_deferred` only on `validated`, retrying `unregistered`.

@@ -45,6 +45,10 @@ import {
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import { makeCheckoutApplier } from '@/modules/checkout/domain.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
+import type { ApprovalLookup } from '@/modules/charge/contracts.js';
+
+/** An approval recorded before the ledger kept snapshots: the row is the report. */
+const legacyApproval: ApprovalLookup = () => Effect.succeed(Option.some(true));
 
 const cardChangeMatch = (owed: boolean): MatchResult => ({
   matched: true,
@@ -1270,7 +1274,7 @@ it.effect(
       const { writes, sessionStatus, payments, checkout } = recordingRepos();
       const h = harness(
         recurringCheckout({ origin: 'prolong', prolongOf: 'sub_live' }),
-        makeCheckoutApplier(payments, checkout),
+        makeCheckoutApplier(payments, checkout, legacyApproval),
       );
 
       yield* h.run(declined('kf'));
@@ -1377,7 +1381,7 @@ it.effect.each(RAILS)(
           prolongOf: 'sub_live',
           method,
         }),
-        makeCheckoutApplier(payments, checkout),
+        makeCheckoutApplier(payments, checkout, legacyApproval),
       );
 
       yield* h.run({

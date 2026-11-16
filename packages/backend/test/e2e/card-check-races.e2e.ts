@@ -129,7 +129,7 @@ const reached = (run: OnWorker, gate: Gate) =>
   run(Deferred.await(gate.reached));
 
 /** A card-check payment for `contact`, activated through create → verify. */
-const activate = async (
+export const activate = async (
   http: Http,
   run: OnWorker,
   contact: string,
@@ -395,7 +395,7 @@ const prolongLink = (run: OnWorker, sub: Payment, id: string) =>
     ),
   );
 
-const markersOf = (http: Http, contact: string) =>
+export const markersOf = (http: Http, contact: string) =>
   scalar(
     http,
     `SELECT string_agg(coalesce(payload->>'cardCheckFirstCharge', '-'), ',' ORDER BY coalesce(payload->>'cardCheckFirstCharge', '-') DESC) FROM domain_events WHERE "externalUserId" = '${contact}' AND name = 'recurring_payment_succeeded'`,
@@ -468,18 +468,43 @@ const settlementRaces: Scenario = {
 
 /** One real-clock scheduler tick whose WayForPay CHARGE parks at `gate` and then
  * approves. No drain: the receipt stays in the queue. */
-const gatedTick = (gate: Gate) =>
+/** The createdDate the stubbed CHARGE answers with: it keys the receipt, and the poller
+ * derives the same key from the journal row. */
+export const CHARGE_CREATED = '1790000000';
+
+interface TickGates {
+  /** Parks inside the CHARGE call, before the approval starts. */
+  readonly charge?: Gate;
+  /** Parks inside the approval transaction, after it credited the period. */
+  readonly approval?: Gate;
+}
+
+/** A gate that is already open, for a tick that should not park. */
+const parkAt = (gate: Gate | undefined) =>
+  gate === undefined ? Effect.void : pauseAt(gate);
+
+/** One real-clock scheduler tick whose WayForPay CHARGE approves, optionally parking at
+ * the gates. No drain: the receipt stays in the queue. */
+export const gatedTick = (gates: TickGates) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const payments = makePaymentRepo(sql);
     return yield* scheduleTick(
       {
-        subs: makePaymentRepo(sql),
+        subs: {
+          ...payments,
+          markFirstMoney: (id, ref) =>
+            Effect.andThen(
+              payments.markFirstMoney(id, ref),
+              parkAt(gates.approval),
+            ),
+        },
         client: {
           charge: () =>
-            pauseAt(gate).pipe(
+            parkAt(gates.charge).pipe(
               Effect.as({
                 transactionStatus: 'Approved',
-                createdDate: String(Math.floor(Date.now() / 1000)),
+                createdDate: CHARGE_CREATED,
               }),
             ),
         },
@@ -503,18 +528,22 @@ const gatedTick = (gate: Gate) =>
   });
 
 /** Time passes: the first charge of `paymentId` is now due (a minute ago). */
-const makeDue = (http: Http, paymentId: string) =>
+export const makeDue = (http: Http, paymentId: string) =>
   http.query(
     `UPDATE payments SET "nextPaymentDate" = now() - interval '1 minute', "currentPeriodEnd" = now() - interval '1 minute' WHERE id = '${paymentId}'`,
   );
 
-const refusalOf = async (res: Response) => [
+export const refusalOf = async (res: Response) => [
   res.status,
   ((await res.json()) as Json)['code'],
 ];
 
 /** Nothing a refused handover could have written: dates, revision, audit, notify. */
-const assertUntouched = async (http: Http, id: string, before: string) => {
+export const assertUntouched = async (
+  http: Http,
+  id: string,
+  before: string,
+) => {
   assert.equal(await nextOf(http, id), before, 'dates and revision unchanged');
   assert.equal(before.split('|')[2], '0', 'revision 0');
   assert.equal(await auditRevisions(http, id), '', 'no audit');
@@ -532,7 +561,7 @@ const schedulerGap = async (http: Http, run: OnWorker) => {
   const { payment } = await activate(http, run, 'sp:ccr-gap');
   const to = { body: handover(new Date(Date.now() + 5 * DAY)) };
   const [gate] = await Promise.all([run(makeGate), makeDue(http, payment.id)]);
-  const ticking = run(gatedTick(gate));
+  const ticking = run(gatedTick({ charge: gate }));
   await reached(run, gate);
 
   const inFlight = await refusalOf(await defer(http, payment.id, to));
@@ -596,10 +625,7 @@ const cardChangeThenPlan = async (http: Http, run: OnWorker) => {
     body: handover(new Date(payment.nextPaymentDate.getTime() + DAY)),
   });
   await makeDue(http, payment.id);
-  const gate = await run(makeGate);
-  await run(openGate(gate));
-
-  await run(gatedTick(gate));
+  await run(gatedTick({}));
   await run(drain);
 
   assert.equal(between.status, 202, 'the handover is still allowed after it');
@@ -614,7 +640,7 @@ const cardChangeThenPlan = async (http: Http, run: OnWorker) => {
 };
 
 /** The worker handlers plus the `payment_defer` notify, as the worker registers them. */
-const registerWithDefers = Effect.gen(function* () {
+export const registerWithDefers = Effect.gen(function* () {
   yield* registerHandlers;
   const registry = yield* TaskRegistry;
   yield* registry.register(PAYMENT_DEFER, deferNotify((yield* Outbox).publish));

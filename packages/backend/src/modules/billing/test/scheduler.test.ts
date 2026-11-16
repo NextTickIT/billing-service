@@ -8,7 +8,7 @@ import {
 import { Effect, Fiber, Logger, Option, TestClock } from 'effect';
 import { describe, expect } from 'vitest';
 
-import type { Charge } from '@/modules/charge/contracts.js';
+import type { Charge, LedgerApproval } from '@/modules/charge/contracts.js';
 import type {
   AdvanceAnchor,
   RetryState,
@@ -168,7 +168,7 @@ const makeSubsMock = (
 interface LedgerCalls {
   advanced: { id: string; anchor: AdvanceAnchor } | null;
   advances: { id: string; anchor: AdvanceAnchor }[];
-  claims: Map<string, boolean>;
+  claims: Map<string, LedgerApproval>;
 }
 
 /** Undo what a failed tx 2 wrote: the rows and the advances it recorded. */
@@ -279,7 +279,7 @@ const makeCalls = () => ({
   manualCheckout: [] as { sub: Payment; now: Date }[],
   charged: [] as { orderReference: string; amount: number }[],
   cancelledUpstream: [] as Payment[],
-  claims: new Map<string, boolean>(),
+  claims: new Map<string, LedgerApproval>(),
 });
 
 const makeDeps = (sub: Payment, options: DepsOptions = {}) => {

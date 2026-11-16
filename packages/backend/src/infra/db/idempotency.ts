@@ -74,6 +74,30 @@ const replayOrRun = <A, I, E, R>(
   });
 
 /**
+ * The response committed under `(scope, key)`, decoded; None while no committed claim
+ * holds one. A plain read: an uncommitted claim is invisible to it.
+ */
+export const readIdempotentResponse = <A, I>(
+  scope: string,
+  key: string,
+  schema: Schema.Schema<A, I>,
+): Effect.Effect<Option.Option<A>, SqlError.SqlError, SqlClient.SqlClient> =>
+  Effect.flatMap(SqlClient.SqlClient, (sql) =>
+    findResponse(sql, scope, key).pipe(
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.succeed(Option.none<A>()),
+          onSome: (raw) =>
+            Schema.decodeUnknown(schema)(raw).pipe(
+              Effect.orDie,
+              Effect.map(Option.some),
+            ),
+        }),
+      ),
+    ),
+  );
+
+/**
  * Run `effect` under idempotency `(scope, key)`, or replay the recorded response. A null
  * key (the caller sent no `Idempotency-Key`) opts out — the effect runs directly, exactly
  * as before. `schema` is the endpoint's output schema; the response is stored in its

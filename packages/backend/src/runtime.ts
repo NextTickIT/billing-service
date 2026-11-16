@@ -19,6 +19,7 @@ import {
   makeCheckoutApplier,
   makeCheckoutMatcher,
 } from '@/modules/checkout/domain.js';
+import { ledgerApproval } from '@/modules/billing/scheduler.js';
 import { makeRecurringMatcher } from '@/modules/payment/matcher.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import { WayForPayLive } from '@/modules/wayforpay/client.js';
@@ -123,7 +124,12 @@ export const makeWorkerLayer = (config: AppConfig) => {
         ),
         makeRecurringMatcher(makePaymentRepo(sql)),
       ]),
-    (sql) => makeCheckoutApplier(makePaymentRepo(sql), makeCheckoutRepo(sql)),
+    (sql) =>
+      makeCheckoutApplier(
+        makePaymentRepo(sql),
+        makeCheckoutRepo(sql),
+        ledgerApproval(sql),
+      ),
     // Ahead of both: a card-check session's charges are settled by its dispatch alone.
     makeCardCheckStep,
   );

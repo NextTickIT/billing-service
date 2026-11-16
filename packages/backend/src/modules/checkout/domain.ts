@@ -26,12 +26,15 @@ import { Data, Effect, Option } from 'effect';
 
 import {
   type AppliedCharge,
+  type ApprovalLookup,
   type Charge,
   type ChargeApplier,
   type ChargeMatcher,
   type Match,
   type RefusedCharge,
   type SettledCharge,
+  type Settlement,
+  SettlementPending,
   settlementAnomaly,
 } from '@/modules/charge/contracts.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
@@ -822,15 +825,89 @@ const applyCheckout =
       ),
     );
 
+/** What a scheduled charge reports: the window its approval credited. */
+const settledReport = (
+  subscriptionId: string,
+  settled: Settlement,
+): SettledCharge => ({
+  subscriptionId,
+  created: false,
+  prolonged: false,
+  periodStart: settled.periodStart,
+  periodEnd: settled.periodEnd,
+  nextPaymentDate: settled.nextPaymentDate,
+  metadata: settled.metadata,
+  // A snapshot recorded before the field existed has none: report it unknown.
+  nextAmount: settled.nextAmount ?? null,
+});
+
+/** The row as it stands: the report of a scheduled charge whose approval recorded no
+ * window (it credited none, or it predates the snapshot in the ledger). */
+const rowReport = (payments: PaymentRepo, subscriptionId: string) =>
+  Effect.map(payments.findById(subscriptionId), (option) => {
+    const found = Option.getOrNull(option);
+    return {
+      subscriptionId,
+      created: false,
+      prolonged: false,
+      nextPaymentDate: found?.nextPaymentDate ?? null,
+      periodStart: found?.currentPeriodStart ?? null,
+      periodEnd: found?.currentPeriodEnd ?? null,
+      metadata: found?.metadata ?? null,
+      nextAmount: found === null ? null : autochargeAmount(found),
+    };
+  });
+
+/**
+ * A scheduled charge (a `recurring` match). The scheduler credited it before enqueuing
+ * its own copy and said what it credited (`event.settlement`); the row may have moved on
+ * since (a defer, the next renewal), and the event reports what THIS charge bought. A copy
+ * without that snapshot — the poller's, which shares the scheduler's queue key and can win
+ * it — reports what the approval recorded in the ledger, and waits for that record
+ * (`SettlementPending`, retried by the queue) while the approval has not committed:
+ * settling before it would report a period nobody credited.
+ */
+const applyScheduled = (
+  payments: PaymentRepo,
+  approvalOf: ApprovalLookup,
+  event: Charge,
+  subscriptionId: string,
+): Effect.Effect<AppliedCharge, SqlError.SqlError | SettlementPending> => {
+  if (event.settlement !== undefined) {
+    return Effect.succeed(settledReport(subscriptionId, event.settlement));
+  }
+  return Effect.flatMap(
+    approvalOf(event.externalRef),
+    (
+      approval,
+    ): Effect.Effect<AppliedCharge, SqlError.SqlError | SettlementPending> => {
+      if (Option.isNone(approval)) {
+        return Effect.fail(
+          new SettlementPending({ orderReference: event.externalRef }),
+        );
+      }
+      const recorded = approval.value;
+      return typeof recorded !== 'boolean' && recorded.settlement !== null
+        ? Effect.succeed(settledReport(subscriptionId, recorded.settlement))
+        : rowReport(payments, subscriptionId);
+    },
+  );
+};
+
 /**
  * Checkout applier (FR-003): claim the session, then create or extend the user's
  * payment (storing the card token). A `recurring` match already has its payment — the
- * scheduler advances it (M6) — so the applier just reports it. A `card_change` match
- * re-tokenizes an existing payment. Opens no transaction of its own (only a savepoint,
- * `applyCheckout`): the pipeline's settlement transaction holds every write and lock.
+ * scheduler advanced it — so the applier reports what that charge credited
+ * (`applyScheduled`). A `card_change` match re-tokenizes an existing payment. Opens no
+ * transaction of its own (only a savepoint, `applyCheckout`): the pipeline's settlement
+ * transaction holds every write and lock.
  */
 export const makeCheckoutApplier =
-  (payments: PaymentRepo, checkout: CheckoutRepo): ChargeApplier =>
+  (
+    payments: PaymentRepo,
+    checkout: CheckoutRepo,
+    approvalOf: ApprovalLookup,
+  ): ChargeApplier =>
   (event, match: Match) => {
     if (match.kind === 'card_change' && match.subscriptionId !== null) {
       // applyCardChange records the rail from the event SOURCE (WayForPay → card,
@@ -842,44 +919,7 @@ export const makeCheckoutApplier =
       );
     }
     if (match.kind === 'recurring' && match.subscriptionId !== null) {
-      const subscriptionId = match.subscriptionId;
-      const settled = event.settlement;
-      if (settled !== undefined) {
-        // The scheduler credited this charge before enqueuing it and said what it
-        // credited. The row may have moved on since (a defer, the next renewal); the
-        // event reports what THIS charge bought. (Its period and method reach the event
-        // through the match, which the recurring matcher took from the same snapshot.)
-        return Effect.succeed({
-          subscriptionId,
-          created: false,
-          prolonged: false,
-          periodStart: settled.periodStart,
-          periodEnd: settled.periodEnd,
-          nextPaymentDate: settled.nextPaymentDate,
-          metadata: settled.metadata,
-          // A snapshot queued before the field existed has none: report it unknown.
-          nextAmount: settled.nextAmount ?? null,
-        });
-      }
-      // No snapshot (the poller saw the charge first, or the message predates the field):
-      // the scheduler advanced the row before the event re-entered the pipeline, so the
-      // row is the closest record of the prolongation — and its stored metadata is the
-      // last intent the buyer declared, which a renewal must report rather than nothing.
-      return Effect.gen(function* () {
-        const found = Option.getOrNull(
-          yield* payments.findById(subscriptionId),
-        );
-        return {
-          subscriptionId,
-          created: false,
-          prolonged: false,
-          nextPaymentDate: found?.nextPaymentDate ?? null,
-          periodStart: found?.currentPeriodStart ?? null,
-          periodEnd: found?.currentPeriodEnd ?? null,
-          metadata: found?.metadata ?? null,
-          nextAmount: found === null ? null : autochargeAmount(found),
-        };
-      });
+      return applyScheduled(payments, approvalOf, event, match.subscriptionId);
     }
     return applyCheckout(payments, checkout)(event, match);
   };

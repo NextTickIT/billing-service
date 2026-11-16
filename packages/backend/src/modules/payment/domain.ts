@@ -10,7 +10,7 @@ import {
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
-import type { HandoverRefusal } from '@/infra/http/errors.js';
+import type { DeferRefusal } from '@/infra/http/errors.js';
 import type {
   AdvanceAnchor,
   DeferTarget,
@@ -457,7 +457,7 @@ export const HANDOVER_MAX_STEP_DAYS = 30;
 export type HandoverDecision =
   | {
       readonly kind: 'refuse';
-      readonly code: HandoverRefusal;
+      readonly code: DeferRefusal;
       readonly reason: string;
       readonly paymentStatus?: number;
     }
@@ -465,7 +465,7 @@ export type HandoverDecision =
   | { readonly kind: 'defer' };
 
 const refuse = (
-  code: HandoverRefusal,
+  code: DeferRefusal,
   reason: string,
 ): Extract<HandoverDecision, { readonly kind: 'refuse' }> => ({
   kind: 'refuse',
@@ -515,6 +515,20 @@ export const handoverDecision = (
   }
   return { kind: 'defer' };
 };
+
+/**
+ * An operator defer of a card-check payment whose first charge is due and has taken no
+ * money: refused, since the scheduler may be charging it right now, and a date moved
+ * under that charge would also open the handover defer (which reads the due date) while
+ * the charge is still in flight. Every other payment defers as before.
+ */
+export const operatorDeferBlocked = (
+  target: DeferTarget,
+  nowMillis: number,
+): boolean =>
+  target.firstCharge === 'card_check' &&
+  !target.charged &&
+  target.nextPaymentDate.getTime() <= nowMillis;
 
 /** The whole days a handover defer moved the date, for display only. */
 export const wholeDaysBetween = (from: Date, to: Date): number =>

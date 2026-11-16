@@ -26,6 +26,7 @@ import {
   type MatchKind,
   type RefusedCharge,
   type SettledCharge,
+  type SettlementPending,
   settlementAnomaly,
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
@@ -773,7 +774,9 @@ const process = (deps: HandleDeps, event: Charge) =>
 /** The `payment_event_received` handler: decode the queue payload, then process. */
 export const handleChargeEvent =
   (deps: HandleDeps) =>
-  (payload: unknown): Effect.Effect<void, SqlError.SqlError> =>
+  (
+    payload: unknown,
+  ): Effect.Effect<void, SqlError.SqlError | SettlementPending> =>
     Schema.decodeUnknown(Charge)(payload).pipe(
       Effect.flatMap((event) => process(deps, event)),
       Effect.catchTag('ParseError', (error) =>
@@ -933,7 +936,7 @@ export interface ChargePipelineService {
   readonly ingest: (event: Charge) => Effect.Effect<void, SqlError.SqlError>;
   readonly handleFromPayload: (
     payload: unknown,
-  ) => Effect.Effect<void, SqlError.SqlError>;
+  ) => Effect.Effect<void, SqlError.SqlError | SettlementPending>;
   readonly rebindFromPayload: (
     payload: unknown,
   ) => Effect.Effect<void, SqlError.SqlError>;

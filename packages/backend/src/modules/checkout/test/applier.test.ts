@@ -8,6 +8,10 @@ import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import type { Charge, Match } from '@/modules/charge/contracts.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import { addPeriod } from '@/modules/payment/period.js';
+import type { ApprovalLookup } from '@/modules/charge/contracts.js';
+
+/** An approval recorded before the ledger kept snapshots: the row is the report. */
+const legacyApproval: ApprovalLookup = () => Effect.succeed(Option.some(true));
 
 const event: Charge = {
   source: 'wayforpay_callback',
@@ -101,7 +105,11 @@ it.effect(
         method: 0,
       };
 
-      const result = yield* makeCheckoutApplier(subs, checkout)(event, match);
+      const result = yield* makeCheckoutApplier(
+        subs,
+        checkout,
+        legacyApproval,
+      )(event, match);
 
       expect(result).toEqual({
         subscriptionId: 'sub_1',
@@ -158,7 +166,11 @@ it.effect(
         recurring: false,
       };
 
-      const result = yield* makeCheckoutApplier(subs, checkout)(event, match);
+      const result = yield* makeCheckoutApplier(
+        subs,
+        checkout,
+        legacyApproval,
+      )(event, match);
 
       // The applier still surfaces the paid-through anchor; the one-time event builder is
       // what nulls it (a one-time never renews) — the applier result itself carries it.
@@ -208,7 +220,11 @@ it.effect(
       ...unusedSubs,
       findById: () => Effect.succeed(Option.some(recurringPayment)),
     };
-    return makeCheckoutApplier(subs, unusedCheckout)(event, {
+    return makeCheckoutApplier(
+      subs,
+      unusedCheckout,
+      legacyApproval,
+    )(event, {
       matched: true,
       kind: 'recurring',
       subscriptionId: 'sub_x',
@@ -240,7 +256,11 @@ it.effect(
     // The next charge date differs from the window's end on purpose, so a mix-up of the two
     // shows. `unusedSubs` dies on any read: what the scheduler credited is the whole answer, and
     // the row — possibly moved on by a defer since — is never consulted.
-    makeCheckoutApplier(unusedSubs, unusedCheckout)(
+    makeCheckoutApplier(
+      unusedSubs,
+      unusedCheckout,
+      legacyApproval,
+    )(
       {
         ...event,
         settlement: {
@@ -280,7 +300,11 @@ it.effect(
 it.effect(
   'a settlement queued before it carried a next amount reports the amount as unknown',
   () =>
-    makeCheckoutApplier(unusedSubs, unusedCheckout)(
+    makeCheckoutApplier(
+      unusedSubs,
+      unusedCheckout,
+      legacyApproval,
+    )(
       {
         ...event,
         settlement: {
@@ -376,7 +400,7 @@ it.effect(
           }),
       };
       const owedEvent: Charge = { ...event, payload: { recToken: 'newtok' } };
-      const applier = makeCheckoutApplier(subs, checkout);
+      const applier = makeCheckoutApplier(subs, checkout, legacyApproval);
 
       const first = yield* applier(owedEvent, owedCardChange);
       const second = yield* applier(
@@ -431,10 +455,11 @@ it.effect(
         completeIfOpen: () => Effect.succeed(false),
       };
 
-      const result = yield* makeCheckoutApplier(unusedSubs, checkout)(
-        event,
-        checkoutMatch(),
-      );
+      const result = yield* makeCheckoutApplier(
+        unusedSubs,
+        checkout,
+        legacyApproval,
+      )(event, checkoutMatch());
 
       expect(result).toEqual({
         refused: 'already_applied',
@@ -484,10 +509,11 @@ it.effect.each([
         completeIfOpen: () => Effect.succeed(true),
       };
 
-      const result = yield* makeCheckoutApplier(subs, checkout)(
-        event,
-        checkoutMatch({ origin, renewalOf: 'sub_dead' }),
-      );
+      const result = yield* makeCheckoutApplier(
+        subs,
+        checkout,
+        legacyApproval,
+      )(event, checkoutMatch({ origin, renewalOf: 'sub_dead' }));
 
       expect(result).toMatchObject({
         subscriptionId: 'sub_fresh',
@@ -525,7 +551,10 @@ const cardChangeRepo = (status: PaymentStatus) => {
     ...unusedCheckout,
     completeIfOpen: () => Effect.succeed(true),
   };
-  return { applier: makeCheckoutApplier(subs, checkout), advances };
+  return {
+    applier: makeCheckoutApplier(subs, checkout, legacyApproval),
+    advances,
+  };
 };
 
 it.effect(
@@ -636,7 +665,11 @@ it.effect(
           }),
       };
 
-      const result = yield* makeCheckoutApplier(subs, checkout)(
+      const result = yield* makeCheckoutApplier(
+        subs,
+        checkout,
+        legacyApproval,
+      )(
         event,
         checkoutMatch({
           amount: 1000,
@@ -651,5 +684,103 @@ it.effect(
       // The claim ran inside the savepoint that was then rolled back.
       expect(claimed).toBe(1);
       expect(savepoint.counts).toEqual({ opened: 1, rolledBack: 1 });
+    }),
+);
+
+const scheduledMatch: Match = {
+  matched: true,
+  kind: 'recurring',
+  subscriptionId: 'sub_x',
+  externalUserId: 'sp:1',
+  period: 'P1M',
+  method: 0,
+};
+
+const credited = {
+  period: 'P1M',
+  method: 0,
+  periodStart: new Date('2026-02-01T00:00:00Z'),
+  periodEnd: new Date('2026-03-01T00:00:00Z'),
+  nextPaymentDate: new Date('2026-03-01T00:00:00Z'),
+  metadata: null,
+  nextAmount: 30000,
+};
+
+const approvalOf =
+  (
+    recorded: Option.Option<boolean | { settlement: typeof credited | null }>,
+  ): ApprovalLookup =>
+  () =>
+    Effect.succeed(recorded);
+
+it.effect(
+  'a scheduled receipt without a snapshot waits while the approval has not committed',
+  () =>
+    Effect.gen(function* () {
+      const applier = makeCheckoutApplier(
+        unusedSubs,
+        unusedCheckout,
+        approvalOf(Option.none()),
+      );
+
+      const result = yield* Effect.either(applier(event, scheduledMatch));
+
+      expect(result).toMatchObject({
+        _tag: 'Left',
+        left: { _tag: 'SettlementPending', orderReference: event.externalRef },
+      });
+    }),
+);
+
+it.effect(
+  'a scheduled receipt without a snapshot reports what the committed approval credited, not the row',
+  () =>
+    Effect.gen(function* () {
+      const applier = makeCheckoutApplier(
+        unusedSubs,
+        unusedCheckout,
+        approvalOf(Option.some({ settlement: credited })),
+      );
+
+      const result = yield* applier(event, scheduledMatch);
+
+      expect(result).toEqual({
+        subscriptionId: 'sub_x',
+        created: false,
+        prolonged: false,
+        periodStart: credited.periodStart,
+        periodEnd: credited.periodEnd,
+        nextPaymentDate: credited.nextPaymentDate,
+        metadata: null,
+        nextAmount: 30000,
+      });
+    }),
+);
+
+it.effect.each([
+  ['an approval that credited nothing', { settlement: null }],
+  ['an approval recorded before snapshots', true],
+] as const)(
+  '%s: the receipt reports the row; a vanished row reports nothing',
+  ([, recorded]) =>
+    Effect.gen(function* () {
+      const applier = makeCheckoutApplier(
+        { ...unusedSubs, findById: () => Effect.succeed(Option.none()) },
+        unusedCheckout,
+        approvalOf(Option.some(recorded)),
+      );
+
+      const result = yield* applier(event, scheduledMatch);
+
+      expect(result).toEqual({
+        subscriptionId: 'sub_x',
+        created: false,
+        prolonged: false,
+        nextPaymentDate: null,
+        periodStart: null,
+        periodEnd: null,
+        metadata: null,
+        nextAmount: null,
+      });
     }),
 );

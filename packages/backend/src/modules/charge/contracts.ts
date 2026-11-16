@@ -8,7 +8,7 @@ import {
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
 } from '@billing-service/shared';
-import { Effect, Schema } from 'effect';
+import { Data, Effect, type Option, Schema } from 'effect';
 
 /**
  * Charge-pipeline contracts (FR-007). Every source normalizes its event into a
@@ -62,6 +62,41 @@ export const Settlement = Schema.Struct({
   // Optional: a message queued before the field existed decodes without it.
   nextAmount: Schema.optional(Schema.NullOr(Schema.Int)),
 });
+
+export type Settlement = Schema.Schema.Type<typeof Settlement>;
+
+/**
+ * What the scheduler's approval transaction recorded for one order, in the
+ * `scheduler.advance` ledger: the period it credited, or null when it credited none (the
+ * row was no longer live). It commits with the advance and the receipt it enqueues, so a
+ * copy of the same charge that arrives without a snapshot (the poller's, whose queue key
+ * the scheduler shares) reports exactly what the approval credited. A ledger row written
+ * before this shape existed holds a bare boolean.
+ */
+export const ScheduledApproval = Schema.Struct({
+  settlement: Schema.NullOr(Settlement),
+});
+
+export type ScheduledApproval = Schema.Schema.Type<typeof ScheduledApproval>;
+
+export const LedgerApproval = Schema.Union(Schema.Boolean, ScheduledApproval);
+
+export type LedgerApproval = Schema.Schema.Type<typeof LedgerApproval>;
+
+/** The scheduler's recorded approval of a scheduled order, if it has committed. */
+export type ApprovalLookup = (
+  orderReference: string,
+) => Effect.Effect<Option.Option<LedgerApproval>, SqlError.SqlError>;
+
+/**
+ * A scheduled charge whose approval has not committed yet: its receipt (a copy that
+ * carries no snapshot) is not settled now but retried by the queue until the approval's
+ * evidence exists — settling it earlier would report a period the approval has not
+ * credited, and lose the first-charge marker.
+ */
+export class SettlementPending extends Data.TaggedError('SettlementPending')<{
+  readonly orderReference: string;
+}> {}
 
 /**
  * A normalized incoming charge. `idemKey` is the source's dedup key (e.g.
@@ -252,7 +287,7 @@ export type AppliedCharge = SettledCharge | RefusedCharge;
 export type ChargeApplier = (
   event: Charge,
   match: Match,
-) => Effect.Effect<AppliedCharge, SqlError.SqlError>;
+) => Effect.Effect<AppliedCharge, SqlError.SqlError | SettlementPending>;
 
 /** What the card-check dispatch may do to the charge it owns: publish its events, and
  * close the charge as matched (always its last write). */
