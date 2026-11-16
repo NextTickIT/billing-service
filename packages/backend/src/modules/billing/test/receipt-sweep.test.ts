@@ -8,21 +8,35 @@ import {
 } from '@/modules/billing/receipt-sweep.js';
 import { ReceiptUndecodable } from '@/modules/charge/contracts.js';
 
+const NOW = 1_790_000_000_000;
+const MINUTE = 60_000;
+
 const order = (over: Partial<UnsettledOrder> = {}): UnsettledOrder => ({
   ref: 'sub_1_1',
   revivable: 1,
   live: 0,
   revivals: 0,
+  waitingSince: null,
   ...over,
 });
 
 describe('sweepAction: what the sweep does with an approved, unsettled order', () => {
   it.each([
-    ['a receipt a worker still holds', order({ live: 1 }), 'wait'],
+    ['a receipt a worker holds, first seen', order({ live: 1 }), 'defer'],
     [
-      'a worker still holds one, even past the revival limit',
+      'held just under the stale bound',
+      order({ live: 1, waitingSince: new Date(NOW - 60 * MINUTE + 1) }),
+      'defer',
+    ],
+    [
+      'held exactly the stale bound',
+      order({ live: 1, waitingSince: new Date(NOW - 60 * MINUTE) }),
+      'alert',
+    ],
+    [
+      'held, even past the revival limit, is deferred not revived',
       order({ live: 1, revivals: RECEIPT_SWEEP_MAX_REVIVALS }),
-      'wait',
+      'defer',
     ],
     ['a revivable receipt, never revived', order(), 'revive'],
     [
@@ -37,7 +51,7 @@ describe('sweepAction: what the sweep does with an approved, unsettled order', (
     ],
     ['no receipt at all', order({ revivable: 0 }), 'alert'],
   ])('%s → %s', (_label, input, expected) => {
-    expect(sweepAction(input)).toBe(expected);
+    expect(sweepAction(input, NOW)).toBe(expected);
   });
 });
 

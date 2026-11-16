@@ -788,7 +788,110 @@ const sweepEscalationScenario: Scenario = {
   },
 };
 
+/** 101 old orders whose receipts sit pending (no worker runs), then a newer one whose
+ * receipt dead-lettered and a newer one with none. */
+const seedCrowd = (http: Http) =>
+  http.query(`
+    INSERT INTO idempotency_keys (scope, "idemKey", response, "createdAt")
+    SELECT 'scheduler.advance', 'sub_stale_' || g, '{"settlement": {"period": "P4W"}}'::jsonb,
+           now() - interval '2 days' - g * interval '1 minute'
+    FROM generate_series(1, 101) g;
+    INSERT INTO messages ("messageType", "idemKey", payload, status)
+    SELECT 'payment_event_received', 'stale:' || g,
+           jsonb_build_object('externalRef', 'sub_stale_' || g), 'pending'
+    FROM generate_series(1, 101) g;
+    INSERT INTO idempotency_keys (scope, "idemKey", response, "createdAt") VALUES
+      ('scheduler.advance', 'sub_failed', '{"settlement": {"period": "P4W"}}', now() - interval '1 day'),
+      ('scheduler.advance', 'sub_missing', '{"settlement": {"period": "P4W"}}', now() - interval '1 day');
+    INSERT INTO messages ("messageType", "idemKey", payload, status, "attemptCount")
+    VALUES ('payment_event_received', 'failed:1', '{"externalRef": "sub_failed"}', 'fail', 5);
+  `);
+
+/** A pass with its pages counted. */
+const passPages = async (run: OnWorker) => {
+  const logs = captureLogs();
+  await run(sweep(0).pipe(Effect.provide(logs.layer)));
+  return alertsIn(logs.lines);
+};
+
+/** An hour and more later, every deferred order is due for another look. */
+const anHourLater = (http: Http) =>
+  http.query(`
+    UPDATE idempotency_keys
+    SET response = response || jsonb_build_object(
+      'waitingSince', (now() - interval '2 hours')::text,
+      'nextCheckAt', (now() - interval '1 second')::text)
+    WHERE scope = 'receipt-sweep' AND response ? 'waitingSince'
+  `);
+
+const crowdedSweep = async (http: Http, run: OnWorker) => {
+  await seedCrowd(http);
+  const first = await passPages(run);
+  const second = await passPages(run);
+  const failed = await receiptStatus(http, 'failed:1');
+  await anHourLater(http);
+  const later = [
+    await passPages(run),
+    await passPages(run),
+    await passPages(run),
+  ];
+
+  assert.deepEqual(
+    [first, second, failed.split('|')[0]],
+    [0, 1, 'retry'],
+    'pass 1 defers the old live orders; pass 2 revives the failed one and pages the missing one',
+  );
+  assert.deepEqual(
+    later,
+    [100, 2, 0],
+    'stale live orders page once each (the revived one, still unsettled, too), then never again',
+  );
+};
+
+const concurrentPage = async (http: Http, run: OnWorker) => {
+  await http.query(
+    `INSERT INTO idempotency_keys (scope, "idemKey", response) VALUES ('scheduler.advance', 'sub_race', '{"settlement": {"period": "P4W"}}')`,
+  );
+  const gate = await run(makeGate);
+  const holder = run(
+    Effect.flatMap(SqlClient.SqlClient, (sql) =>
+      sql.withTransaction(
+        Effect.andThen(
+          sql`INSERT INTO idempotency_keys (scope, "idemKey", response) VALUES ('receipt-sweep', 'sub_race', '{"revivals": 0}')`,
+          pauseAt(gate),
+        ),
+      ),
+    ),
+  );
+  await run(Deferred.await(gate.reached));
+  const logs = captureLogs();
+  const passes = run(
+    Effect.all([sweep(0), sweep(0)], { concurrency: 2 }).pipe(
+      Effect.provide(logs.layer),
+    ),
+  );
+  await run(awaitWaiters(2));
+
+  await run(openGate(gate));
+
+  await holder;
+  await passes;
+  assert.equal(alertsIn(logs.lines), 1, 'two passes at once, one page');
+};
+
+const sweepCrowdScenario: Scenario = {
+  name: 'card check scheduler: live receipts never hold a sweep batch; stale ones page once; two passes at once page once',
+  run: async ({ baseUrl, query }) => {
+    const http = await httpContext(baseUrl, query, 'ccs-crowd');
+    await withWorker(loadConfig(), async (run) => {
+      await crowdedSweep(http, run);
+      await concurrentPage(http, run);
+    });
+  },
+};
+
 export const cardCheckSchedulerScenarios: readonly Scenario[] = [
+  sweepCrowdScenario,
   sweepEscalationScenario,
   transientScenario,
   sweepScenario,
