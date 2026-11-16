@@ -23,12 +23,23 @@ kind (`checkout` → initial, `recurring` → renewal); see 22.
 | `payment_created` | new gateway Payment record appeared | external_user_id, amount, currency, method, period |
 | `payment_cancelled` | Payment soft-cancelled by an operator (access runs to period end) | external_user_id, reason |
 | `payment_reactivated` | a pending cancellation reversed within the grace window (docs/23) | external_user_id |
-| `payment_deferred` | operator granted N free days; the paid period was extended (docs/23) | external_user_id, new_period_end, days |
+| `payment_deferred` | operator granted N free days; the paid period was extended (docs/23). Also the **handover** defer (`reason: "handover"`): a card-check payment's first charge moved while the payer is still paid elsewhere — it grants no access | external_user_id, new_period_end, days, revision (the payment's defer revision this defer set, incremented in the date-moving UPDATE; order defers by it, never by delivery); reason optional (`handover`) |
 | `external_user_id_changed` | a service rename remapped a user's opaque id (docs/31) — emitted ONLY when the rename opts in (`refireEvents`); `external_user_id` is the NEW id | external_user_id (new), from, to, movedPayments, movedSessions |
 | `card_change_succeeded` | a SendPulse-initiated card change tokenized/collected the new card (docs/23) | external_user_id, method |
 | `card_change_failed` | a card-change attempt was declined/errored (docs/23) | external_user_id, reason |
 | `payment_refunded` | the provider refunded an order that settled a payment; one per order, the callback and poller copies collapse on the id `evt_refund:<orderReference>` (docs/34) | external_user_id (of the reversed charge), amount, currency, source, order_reference, original_event_id; reason optional |
+| `subscription_card_checked` | a card check (`firstCharge: "card_check"`) verified the card: the payment exists (Active, token on file), its first plan-price charge is the scheduled one at `next_payment_date` (= the session's `startsAt`). Published after `payment_created`; never with a success event | the success payload with amount 0, `next_amount` = plan price in `currency` (the plan's), period_start/period_end null, checkout_session_id, charge_kind `checkout`; aggregate = the payment |
+| `card_check_failed` | a card check did not activate: `late` (verify at ≥ startsAt − 24 h or ≥ payableUntil) or `on_live` (a live subscription exists) close the session; `declined` leaves it open | external_user_id, reason, checkout_session_id, metadata; aggregate = the session |
+| `card_check_anomaly` | a callback for an open card-check session that is neither a verified card nor a decline; nothing written | external_user_id, status, reason_code (raw provider values, null when absent), token_present, checkout_session_id, metadata; aggregate = the session |
 | `unknown_payment_quarantined` | incoming charge went to quarantine | quarantine record reference |
+
+`payment_created` for a card check carries the plan's `amount`/`currency` and
+`first_charge: "card_check"` (no money moved). The first money success of such a payment
+(scheduled, `/prolong` or manual renewal) adds `card_check_first_charge: true` to its
+success payload. The CRM wire shape of each is pinned by
+`packages/shared/test/fixtures/wire/*.json` (checked against the builders by
+`sinks/test/wire-fixtures.test.ts`); the CRM sink delivers the three card-check kinds and a
+handover `payment_deferred` only on `validated`, retrying `unregistered`.
 
 **`periodStart` / `periodEnd`** on the success events give the payment's paid-through
 coverage after the charge, not always the slice this charge bought. `periodEnd` is the new

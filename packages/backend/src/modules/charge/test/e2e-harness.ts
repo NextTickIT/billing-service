@@ -33,6 +33,7 @@ import {
   type ChargeRepo,
 } from '@/modules/charge/data-access.js';
 import { ChargePipeline, handleChargeEvent } from '@/modules/charge/domain.js';
+import { makeCardCheckStep } from '@/modules/checkout/card-check.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
   makeCardChangeMatcher,
@@ -380,6 +381,7 @@ export const settlementHandler = (seams: SettlementSeams = {}) =>
           makeCheckoutRepo(sql),
         ),
       publish: seams.publish ?? outbox.publish,
+      cardCheck: makeCardCheckStep(sql),
     });
   });
 

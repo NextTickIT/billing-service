@@ -81,6 +81,8 @@ export default {
     typeOneTime: 'One-time payment',
     linkValidUntil: 'Payment link valid until {date}',
     startsAt: 'Your paid period starts {date}',
+    cardCheck:
+      'Card verification only, nothing is charged now. First charge {amount} on {date}',
     redirecting: 'Redirecting to card verification…',
     legalNote: 'By paying, you accept:',
     legalOffer: 'Offer',

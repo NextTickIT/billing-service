@@ -8,6 +8,7 @@ import {
   postJson,
   signCallback,
 } from './http-harness.js';
+import { cardCheckHttpScenarios } from './card-check.e2e.js';
 import { migrationScenarios } from './migration.e2e.js';
 import { offerScenarios } from './offer.e2e.js';
 import { optionsScenarios } from './options.e2e.js';
@@ -429,4 +430,5 @@ export const edgeScenarios: readonly Scenario[] = [
   ...migrationScenarios,
   ...offerScenarios,
   ...payNowScenarios,
+  ...cardCheckHttpScenarios,
 ];

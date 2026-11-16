@@ -34,6 +34,8 @@ const single: CheckoutSessionPublic = {
   renewal: null,
   startsAt: null,
   payableUntil: null,
+  firstCharge: 'now',
+  closedReason: null,
   methodLocked: false,
   prolong: false,
   everSentToProvider: false,
@@ -354,6 +356,39 @@ describe('startsAt', () => {
       'en',
     );
     expect(html).not.toContain('Your paid period starts');
+  });
+});
+
+describe('a card check', () => {
+  const startsAt = new Date('2099-01-01T00:00:00Z');
+
+  it.each([
+    ['ru', 'Только проверка карты, сейчас ничего не списывается'],
+    ['uk', 'Лише перевірка картки, зараз нічого не списується'],
+    ['en', 'Card verification only, nothing is charged now'],
+  ])('says nothing is charged now (%s)', async (locale, expected) => {
+    const html = await render(
+      { ...single, firstCharge: 'card_check', startsAt },
+      locale,
+    );
+
+    expect(html).toContain(expected);
+  });
+
+  it('names the first charge and its date instead of the paid-period start', async () => {
+    const html = await render(
+      { ...single, firstCharge: 'card_check', startsAt },
+      'en',
+    );
+
+    expect(html).toContain('First charge $50 on');
+    expect(html).not.toContain('Your paid period starts');
+  });
+
+  it('a full-price checkout says nothing about a card check', async () => {
+    const html = await render({ ...single, startsAt }, 'en');
+
+    expect(html).not.toContain('Card verification only');
   });
 });
 

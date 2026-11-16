@@ -4,6 +4,7 @@ import {
   CHARGE_STATUSES,
   type CheckoutOrigin,
   type CheckoutRenewal,
+  type DomainEvent,
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
 } from '@billing-service/shared';
@@ -224,6 +225,8 @@ export interface Prolongation {
   readonly periodEnd: Date | null;
   readonly metadata: Record<string, unknown> | null;
   readonly nextAmount: number | null;
+  /** This charge is the first money of a payment a card check created. */
+  readonly cardCheckFirstCharge?: boolean;
 }
 
 /**
@@ -250,3 +253,24 @@ export type ChargeApplier = (
   event: Charge,
   match: Match,
 ) => Effect.Effect<AppliedCharge, SqlError.SqlError>;
+
+/** What the card-check dispatch may do to the charge it owns: publish its events, and
+ * close the charge as matched (always its last write). */
+export interface CardCheckSettle {
+  readonly publish: (
+    event: DomainEvent,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly markMatched: Effect.Effect<void, SqlError.SqlError>;
+}
+
+/**
+ * The card-check dispatch, run inside the settlement transaction ahead of the refund
+ * branch and the matchers. It owns every charge whose reference names a card-check
+ * session: it settles it and returns true. Any other charge it leaves alone (false), and
+ * the pipeline goes on as before. A plain function composed at the runtime root, like the
+ * matcher and applier.
+ */
+export type CardCheckStep = (
+  event: Charge,
+  settle: CardCheckSettle,
+) => Effect.Effect<boolean, SqlError.SqlError>;

@@ -107,9 +107,46 @@ const MONEY_KINDS: ReadonlySet<StoredEvent['name']> = new Set([
   'payment_refunded',
 ]);
 
-/** Is a stored `schema_status` a delivery, for this kind? */
-const accepts = (name: StoredEvent['name'], status: SchemaStatus): boolean =>
-  MONEY_KINDS.has(name) ? status === 'validated' : status !== 'rejected';
+/**
+ * The card-check facts the CRM acts on (activate a migration, close an attempt, open a
+ * case), and the handover defer it keys its handover date on. Like the money kinds, only
+ * `validated` counts. Unlike them, `unregistered` is retried: it means the CRM image
+ * predates these kinds, and the fact must reach it once it is upgraded.
+ */
+const CARD_CHECK_KINDS: ReadonlySet<StoredEvent['name']> = new Set([
+  'subscription_card_checked',
+  'card_check_failed',
+  'card_check_anomaly',
+]);
+
+const isHandoverDefer = (event: StoredEvent): boolean =>
+  event.name === 'payment_deferred' && event.payload['reason'] === 'handover';
+
+/** A kind that waits for an upgraded CRM rather than dead-lettering as `unregistered`. */
+const awaitsRegistration = (event: StoredEvent): boolean =>
+  CARD_CHECK_KINDS.has(event.name) || isHandoverDefer(event);
+
+/** Is a stored `schema_status` a delivery, for this event? */
+const accepts = (event: StoredEvent, status: SchemaStatus): boolean =>
+  MONEY_KINDS.has(event.name) || awaitsRegistration(event)
+    ? status === 'validated'
+    : status !== 'rejected';
+
+/** A 2xx the CRM stored as something other than a delivery: how it is retried. */
+const refusedAck = (
+  event: StoredEvent,
+  ack: { readonly event_id: string; readonly schema_status: SchemaStatus },
+): Effect.Effect<void, CrmFail> => {
+  const message = `crm stored ${event.name} as ${ack.schema_status} (event ${ack.event_id})`;
+  if (!awaitsRegistration(event)) {
+    return failWith('never', message);
+  }
+  return ack.schema_status === 'unregistered'
+    ? failWith('queue', message)
+    : Effect.logError(`CRM_REJECTED ${message}`).pipe(
+        Effect.andThen(failWith('never', message)),
+      );
+};
 
 /**
  * A non-2xx status → how it is retried. A 401 is a token the operator has not fixed yet,
@@ -137,12 +174,7 @@ const judgeAck = (
     // event; asking again is safe because the CRM dedupes on `id`.
     onLeft: () => failWith('queue', 'crm 2xx with an unreadable body'),
     onRight: (ack) =>
-      accepts(event.name, ack.schema_status)
-        ? Effect.void
-        : failWith(
-            'never',
-            `crm stored ${event.name} as ${ack.schema_status} (event ${ack.event_id})`,
-          ),
+      accepts(event, ack.schema_status) ? Effect.void : refusedAck(event, ack),
   });
 
 /**

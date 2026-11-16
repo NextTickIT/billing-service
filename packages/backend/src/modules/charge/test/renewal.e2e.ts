@@ -476,7 +476,7 @@ const t17DeferRacesProlong: EffectScenario = {
       assert.equal(endMs(out.final), expected, 'end = old + P4W + 3 days');
       assert.equal(out.final.nextPaymentDate.getTime(), expected);
       assert.equal(
-        Option.getOrNull(out.result)?.getTime(),
+        Option.getOrNull(out.result)?.newPeriodEnd.getTime(),
         expected,
         'defer reports the end it actually wrote',
       );
@@ -798,7 +798,10 @@ const t22DeferAcrossDst: EffectScenario = {
       const out = await run(driveDeferAcrossDst);
       const expected = computeDeferral(out.sub, 3).newPeriodEnd.getTime();
       assert.equal(expected, endMs(out.sub) + 72 * HOUR);
-      assert.equal(Option.getOrNull(out.deferred)?.getTime(), expected);
+      assert.equal(
+        Option.getOrNull(out.deferred)?.newPeriodEnd.getTime(),
+        expected,
+      );
       assert.equal(endMs(out.final), expected, 'currentPeriodEnd = old + 72h');
       assert.equal(out.final.nextPaymentDate.getTime(), expected);
     }),

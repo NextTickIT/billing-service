@@ -1,4 +1,4 @@
-import { it } from '@effect/vitest';
+import { describe, it } from '@effect/vitest';
 import { type Payment, PaymentStatus } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
@@ -671,3 +671,40 @@ it.effect('advanceLocked on a token-less row promises no amount', () =>
     );
   }),
 );
+
+describe('createOrExtend: a card check', () => {
+  const cardCheck = {
+    ...params,
+    firstCharge: 'card_check' as const,
+    startsAt: new Date('2026-02-01T00:00:00Z'),
+  };
+
+  it.effect(
+    'never stacks onto a live payment: nothing written, refused on_live',
+    () =>
+      Effect.gen(function* () {
+        const fake = makeFakeRepo(activePayment);
+
+        const result = yield* createOrExtend(fake.repo)(cardCheck);
+
+        expect(result).toMatchObject({
+          subscriptionId: 'sub_1',
+          cardCheckOnLive: true,
+        });
+        expect(result.introOnLive).toBeUndefined();
+        expect(fake.getExtended()).toBeNull();
+        expect(fake.getInserted()).toBeNull();
+      }),
+  );
+
+  it.effect('with no live payment creates one stored as card_check', () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo(null);
+
+      const result = yield* createOrExtend(fake.repo)(cardCheck);
+
+      expect(result.created).toBe(true);
+      expect(fake.getInserted()).toMatchObject({ firstCharge: 'card_check' });
+    }),
+  );
+});

@@ -29,6 +29,7 @@ import {
   settlementAnomaly,
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
+  type CardCheckStep,
   type ChargeApplier,
   type ChargeMatcher,
   type Prolongation,
@@ -120,6 +121,9 @@ const succeededPayload = (
   recurring: match.recurring ?? true,
   metadata: prolongation.metadata,
   ...settlingSession(match),
+  ...(prolongation.cardCheckFirstCharge === true
+    ? { cardCheckFirstCharge: true as const }
+    : {}),
 });
 
 /** initial_payment_succeeded — a first checkout payment (match kind 'checkout'). */
@@ -472,6 +476,10 @@ interface HandleDeps {
   readonly publish: (
     event: DomainEvent,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /** The card-check dispatch; the worker always wires it. Without it a card-check
+   * callback matches nothing (the checkout matcher refuses those sessions) and is
+   * quarantined, never settled as paid. */
+  readonly cardCheck?: CardCheckStep;
 }
 
 /** Quarantine an unmatched charge (FR-009): the operator binds or refunds it. */
@@ -512,6 +520,10 @@ const recordMatchedSuccess = (
     if ('refused' in applied) {
       return yield* quarantineRefused(deps, event, incomingId, applied);
     }
+    // Read before this charge's own fixation lands, or every success would see one.
+    const first = yield* deps.repo.isCardCheckFirstCharge(
+      applied.subscriptionId,
+    );
     yield* deps.repo.insertPayment({
       incomingEventId: incomingId,
       paymentId: applied.subscriptionId,
@@ -538,7 +550,12 @@ const recordMatchedSuccess = (
         ),
       );
     }
-    yield* deps.publish(paymentSucceeded(event, match, applied));
+    yield* deps.publish(
+      paymentSucceeded(event, match, {
+        ...applied,
+        ...(first ? { cardCheckFirstCharge: true } : {}),
+      }),
+    );
     const migrated = subscriptionMigrated(event, match, applied);
     if (migrated !== null) {
       yield* deps.publish(migrated);
@@ -666,6 +683,40 @@ const recordRefund = (
     return stored ? ('duplicate' as const) : ('emitted' as const);
   });
 
+/** Hand the charge to the card-check dispatch; true when it owned (and settled) it. */
+const settledAsCardCheck = (
+  deps: HandleDeps,
+  event: Charge,
+  incomingId: string,
+): Effect.Effect<boolean, SqlError.SqlError> =>
+  deps.cardCheck === undefined
+    ? Effect.succeed(false)
+    : deps.cardCheck(event, {
+        publish: deps.publish,
+        markMatched: deps.repo.setMatchResult(incomingId, 'matched'),
+      });
+
+/**
+ * The steps ahead of the matchers; true when one of them settled the charge. A card-check
+ * session's charges are its dispatch's alone, refunds included: no other path may settle a
+ * verify (it moved no money) or report on it. A refund is matched to no payment (docs/34).
+ */
+const settledBeforeMatch = (
+  deps: HandleDeps,
+  event: Charge,
+  incomingId: string,
+): Effect.Effect<boolean, SqlError.SqlError> =>
+  Effect.gen(function* () {
+    if (yield* settledAsCardCheck(deps, event, incomingId)) {
+      return true;
+    }
+    if (event.status === 'refunded') {
+      yield* recordRefund(deps, event, incomingId);
+      return true;
+    }
+    return false;
+  });
+
 /**
  * Settle one incoming charge, atomically: everything after the raw upsert runs in ONE
  * transaction (claim, subscription write, fixation, events, match result), with the
@@ -685,8 +736,7 @@ const process = (deps: HandleDeps, event: Charge) =>
         if ((yield* deps.repo.lockMatchResult(incomingId)) === 'matched') {
           return;
         }
-        if (event.status === 'refunded') {
-          yield* recordRefund(deps, event, incomingId);
+        if (yield* settledBeforeMatch(deps, event, incomingId)) {
           return;
         }
         const match = yield* deps.matcher(event);
@@ -904,6 +954,7 @@ export class ChargePipeline extends Context.Tag('PaymentPipeline')<
 export const makeChargePipelineLayer = (
   makeMatcher: (sql: SqlClient.SqlClient) => ChargeMatcher,
   makeApplier: (sql: SqlClient.SqlClient) => ChargeApplier,
+  makeCardCheck: (sql: SqlClient.SqlClient) => CardCheckStep,
 ) =>
   Layer.effect(
     ChargePipeline,
@@ -917,6 +968,7 @@ export const makeChargePipelineLayer = (
         matcher: makeMatcher(sql),
         applier: makeApplier(sql),
         publish: outbox.publish,
+        cardCheck: makeCardCheck(sql),
       };
       return {
         ingest: ingest({ enqueue: queue.enqueue }),

@@ -2,6 +2,7 @@ import { SqlClient } from '@effect/sql';
 import type { SqlError, Statement } from '@effect/sql';
 import {
   type CreatePayment,
+  type FirstCharge,
   Payment,
   PaymentStatus,
 } from '@billing-service/shared';
@@ -34,6 +35,12 @@ export interface RetryState {
   readonly firstFailureAt: Date;
   readonly retryAttempt: number;
   readonly nextPaymentDate: Date;
+}
+
+/** What a defer wrote: the new paid-through end and the defer revision it set. */
+export interface DeferredTo {
+  readonly newPeriodEnd: Date;
+  readonly revision: number;
 }
 
 /** Anchor pair written on a successful charge advance. */
@@ -197,13 +204,13 @@ export interface PaymentRepo {
   /**
    * Deferral: push the paid-through anchor of an active payment by `days` whole UTC days
    * and re-derive the next date from it. Relative in SQL, so it needs no lock and never
-   * erases time another writer added. Returns the new `currentPeriodEnd`, or None when
-   * the payment is not active.
+   * erases time another writer added. Returns the new `currentPeriodEnd` and the defer
+   * revision the same statement set, or None when the payment is not active.
    */
   readonly defer: (
     id: string,
     days: number,
-  ) => Effect.Effect<Option.Option<Date>, SqlError.SqlError>;
+  ) => Effect.Effect<Option.Option<DeferredTo>, SqlError.SqlError>;
   /**
    * The near-due pay-now guard's deferral (B9): move only `nextPaymentDate` of an Active,
    * ladder-free payment to `nextPaymentDate`. This is the one writer that sets an Active,
@@ -307,13 +314,14 @@ const insert = (sql: SqlClient.SqlClient) => (input: CreatePayment) =>
     INSERT INTO payments
       ("externalUserId", amount, currency, method, period, status, recurring,
        "currentPeriodStart", "currentPeriodEnd", "nextPaymentDate",
-       "recurringTokenRef", "firstFailureAt", "retryAttempt", metadata)
+       "recurringTokenRef", "firstFailureAt", "retryAttempt", metadata, "firstCharge")
     VALUES
       (${input.externalUserId}, ${input.amount}, ${input.currency}, ${input.method},
        ${input.period}, ${input.status}, ${input.recurring}, ${input.currentPeriodStart},
        ${input.currentPeriodEnd}, ${input.nextPaymentDate},
        ${input.recurringTokenRef}, ${input.firstFailureAt}, ${input.retryAttempt},
-       ${input.metadata == null ? null : JSON.stringify(input.metadata)}::jsonb)
+       ${input.metadata == null ? null : JSON.stringify(input.metadata)}::jsonb,
+       ${input.firstCharge ?? 'now'})
     RETURNING ${sql.unsafe(COLUMNS)}
   `.pipe(Effect.flatMap(requireRow));
 
@@ -516,18 +524,68 @@ const cancelUpstream = (sql: SqlClient.SqlClient) => (id: string, now: Date) =>
 // same old anchor as the new end. `hours => 24 * days` is UTC-day arithmetic, matching
 // `computeDeferral`; `days =>` would follow the session time zone across DST.
 const defer = (sql: SqlClient.SqlClient) => (id: string, days: number) =>
-  sql<{ readonly currentPeriodEnd: Date }>`
+  sql<DeferredRow>`
     UPDATE payments
     SET "currentPeriodEnd" = "currentPeriodEnd" + make_interval(hours => 24 * ${days}::int),
         "nextPaymentDate" = "currentPeriodEnd" + make_interval(hours => 24 * ${days}::int),
+        "deferRevision" = "deferRevision" + 1,
         "updatedAt" = now()
     WHERE id = ${id} AND status = ${PaymentStatus.Active}
-    RETURNING "currentPeriodEnd"
-  `.pipe(
-    Effect.map((rows) =>
-      Option.map(Option.fromNullable(rows[0]), (row) => row.currentPeriodEnd),
-    ),
-  );
+    RETURNING "currentPeriodEnd", "deferRevision"
+  `.pipe(Effect.map(deferredTo));
+
+interface DeferredRow {
+  readonly currentPeriodEnd: Date;
+  readonly deferRevision: number;
+}
+
+const deferredTo = (rows: readonly DeferredRow[]): Option.Option<DeferredTo> =>
+  Option.map(Option.fromNullable(rows[0]), (row) => ({
+    newPeriodEnd: row.currentPeriodEnd,
+    revision: row.deferRevision,
+  }));
+
+/** What a handover defer decides on, read under the payment's row lock. `charged`: the
+ * payment has a charge fixation, i.e. it has taken money. */
+export interface DeferTarget {
+  readonly status: PaymentStatus;
+  readonly firstCharge: FirstCharge;
+  readonly nextPaymentDate: Date;
+  readonly deferRevision: number;
+  readonly charged: boolean;
+}
+
+/**
+ * The handover-defer target under a row lock held to the end of the surrounding
+ * transaction (the idempotency ledger's), so the checks and the write see one state.
+ */
+export const lockDeferTarget =
+  (sql: SqlClient.SqlClient) =>
+  (id: string): Effect.Effect<Option.Option<DeferTarget>, SqlError.SqlError> =>
+    sql<DeferTarget>`
+      SELECT p.status, p."firstCharge", p."nextPaymentDate", p."deferRevision",
+             EXISTS (SELECT 1 FROM charge_fixations f WHERE f."paymentId" = p.id) AS charged
+      FROM payments p WHERE p.id = ${id}
+      FOR UPDATE OF p
+    `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
+
+/**
+ * The handover defer's write: both dates to the absolute `to`, the revision incremented in
+ * the same statement. Guarded on Active; None when the row is not.
+ */
+export const deferToDate =
+  (sql: SqlClient.SqlClient) =>
+  (
+    id: string,
+    to: Date,
+  ): Effect.Effect<Option.Option<DeferredTo>, SqlError.SqlError> =>
+    sql<DeferredRow>`
+      UPDATE payments
+      SET "currentPeriodEnd" = ${to}, "nextPaymentDate" = ${to},
+          "deferRevision" = "deferRevision" + 1, "updatedAt" = now()
+      WHERE id = ${id} AND status = ${PaymentStatus.Active}
+      RETURNING "currentPeriodEnd", "deferRevision"
+    `.pipe(Effect.map(deferredTo));
 
 // Only the next date moves: the anchor, the ladder fields, amount and period stay put.
 const deferCharge =

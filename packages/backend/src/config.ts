@@ -67,6 +67,12 @@ export interface WayForPayConfig {
    */
   readonly cardVerifyEnabled: boolean;
   /**
+   * Admission of `firstCharge: 'card_check'` checkouts (`W4P_CARD_CHECK_ENABLED`). Gates
+   * the create only: a session already issued keeps its mode, and its `/pay` hands out the
+   * verify form whatever this or `cardVerifyEnabled` says. Off: such a create is a 422.
+   */
+  readonly cardCheckEnabled: boolean;
+  /**
    * Fallback for an ACTIVE card change when `cardVerifyEnabled` is false: re-tokenize
    * via a minimal tokenizing Purchase of this many MINOR units instead of a 0-amount
    * Card Verify. 0 attempts a free charge; 1 = 0.01 UAH. The card-change applier
@@ -374,6 +380,7 @@ const loadWayForPayConfig = (): WayForPayConfig => ({
   merchantDomainName: process.env['W4P_DOMAIN_NAME'] ?? '',
   rateLimitRps: positiveNumber(process.env['W4P_RATE_LIMIT_RPS'], 2),
   cardVerifyEnabled: process.env['W4P_CARD_VERIFY_ENABLED'] === 'true',
+  cardCheckEnabled: process.env['W4P_CARD_CHECK_ENABLED'] === 'true',
   cardChangeChargeMinor: Number(
     process.env['W4P_CARD_CHANGE_CHARGE_MINOR'] ?? '0',
   ),

@@ -119,6 +119,14 @@ export interface ChargeRepo {
   readonly insertPayment: (
     input: NewPayment,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /**
+   * Whether a success about to be fixed to `paymentId` is the first money of a payment a
+   * card check created: the payment is `card_check` and has no fixation yet. Read under the
+   * payment's row lock, so two successes settling at once cannot both be first.
+   */
+  readonly isCardCheckFirstCharge: (
+    paymentId: string,
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
   readonly upsertQuarantine: (
     incomingEventId: string,
   ) => Effect.Effect<string, SqlError.SqlError>;
@@ -238,6 +246,16 @@ const insertPayment = (sql: SqlClient.SqlClient) => (input: NewPayment) =>
     ON CONFLICT ("incomingEventId") DO NOTHING
   `.pipe(Effect.asVoid);
 
+const isCardCheckFirstCharge =
+  (sql: SqlClient.SqlClient) => (paymentId: string) =>
+    sql<{ readonly first: boolean }>`
+      SELECT (p."firstCharge" = 'card_check' AND NOT EXISTS (
+                SELECT 1 FROM charge_fixations f WHERE f."paymentId" = p.id
+              )) AS first
+      FROM payments p WHERE p.id = ${paymentId}
+      FOR UPDATE OF p
+    `.pipe(Effect.map((rows) => rows[0]?.first === true));
+
 const upsertQuarantine =
   (sql: SqlClient.SqlClient) => (incomingEventId: string) =>
     sql<{ readonly id: string }>`
@@ -354,6 +372,7 @@ export const makeChargeRepo = (sql: SqlClient.SqlClient): ChargeRepo => ({
   orderSettledByAnotherCopy: orderSettledByAnotherCopy(sql),
   findSettledOriginal: findSettledOriginal(sql),
   insertPayment: insertPayment(sql),
+  isCardCheckFirstCharge: isCardCheckFirstCharge(sql),
   upsertQuarantine: upsertQuarantine(sql),
   getIncomingChargeById: getIncomingChargeById(sql),
   listOpenQuarantine: listOpenQuarantine(sql),

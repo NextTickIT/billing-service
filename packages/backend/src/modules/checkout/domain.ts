@@ -513,6 +513,12 @@ const sessionOfRef = (repo: CheckoutRepo, ref: string) =>
     );
   });
 
+/** A session whose callback settles as a paid checkout: neither a card change nor a
+ * card check. */
+const isPaidCheckout = (session: CheckoutSession): boolean =>
+  session.kind === CheckoutSessionKind.Checkout &&
+  session.firstCharge !== 'card_check';
+
 /**
  * Checkout matcher: an incoming event whose `externalRef` names a known checkout
  * session and one of its options (`parseCheckoutRef`) resolves to a `checkout` match.
@@ -538,11 +544,10 @@ export const makeCheckoutMatcher =
       }
       const found = yield* sessionOfRef(repo, event.externalRef);
       // A card-change session is handled by its own matcher/applier — never as a
-      // first checkout (which would create-or-extend a second payment).
-      if (
-        Option.isNone(found) ||
-        found.value.session.kind !== CheckoutSessionKind.Checkout
-      ) {
+      // first checkout (which would create-or-extend a second payment). A card-check
+      // session belongs to the card-check dispatch alone: it charges nothing, so no
+      // callback for it may ever settle as a paid checkout.
+      if (Option.isNone(found) || !isPaidCheckout(found.value.session)) {
         return { matched: false };
       }
       const { session, chosen } = found.value;

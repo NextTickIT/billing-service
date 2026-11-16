@@ -169,6 +169,12 @@ const NOT_RENDERED: ReadonlyMap<string, string> = new Map([
   ['checkoutUrl', 'a link, used as-is'],
   ['metadata', "the caller's opaque object; we promise to echo it unchanged"],
   ['renewal', 'an object of renewal terms; the flow reads its fields'],
+  ['firstCharge', 'now vs card_check, branched on rather than shown'],
+  ['cardCheckFirstCharge', 'a flag the CRM keys coverage on, never shown'],
+  ['revision', 'a defer counter consumers order by, never shown'],
+  ['status', "the provider's raw status on a card-check anomaly, internal"],
+  ['reasonCode', "the provider's raw code on a card-check anomaly, internal"],
+  ['tokenPresent', 'a card-check anomaly flag, internal'],
 ]);
 
 // Without this, a walk that silently returned nothing would make the check below pass
