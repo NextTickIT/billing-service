@@ -16,7 +16,8 @@ import { Effect } from 'effect';
  * handover defer refuses a payment that has it; the success of that order carries the
  * first-charge marker. The `charge_fixations("paymentId")` index serves the per-payment
  * fixation reads; `messages_receipt_ref` the revival of an order's receipts when the
- * scheduler's approval commits.
+ * scheduler's approval commits. `messages."failureCount"`: the ordinary failures of a
+ * message, apart from its attempts, so a wait never spends the retry budget.
  *
  * Every ADD COLUMN is catalog-only (a constant or NULL default). The previous image keeps
  * writing valid rows during a rolling deploy: it omits all four and they take their
@@ -35,6 +36,10 @@ export default Effect.flatMap(SqlClient.SqlClient, (sql) =>
       sql`ALTER TABLE payments ADD COLUMN IF NOT EXISTS "firstMoneyRef" text`,
       sql`CREATE INDEX IF NOT EXISTS charge_fixations_payment_id ON charge_fixations ("paymentId")`,
       sql`CREATE INDEX IF NOT EXISTS messages_receipt_ref ON messages ((payload->>'externalRef')) WHERE "messageType" = 'payment_event_received'`,
+      sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS "failureCount" int NOT NULL DEFAULT 0`,
+      // A message retrying when this runs failed on every attempt so far (waiting did not
+      // exist): its budget carries on where it was.
+      sql`UPDATE messages SET "failureCount" = "attemptCount" WHERE status = 'retry' AND "failureCount" = 0`,
     ],
     { discard: true },
   ),

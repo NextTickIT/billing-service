@@ -11,6 +11,7 @@ import {
   decideOutcome,
   describeError,
   isPermanentFailure,
+  countedAttempts,
   isWaitingFailure,
   type RetryConfig,
 } from '@/infra/queue/policy.js';
@@ -63,12 +64,14 @@ const processOne = (
     const squashed = Exit.isFailure(exit) ? Cause.squash(exit.cause) : null;
     const failure = squashed === null ? null : describeError(squashed);
     const permanent = isPermanentFailure(squashed);
+    const waiting = isWaitingFailure(squashed);
+    const countsAsFailure = failed && !waiting;
     const outcome = decideOutcome(
       {
         failed,
-        attemptCount: message.attemptCount,
+        attemptCount: countedAttempts(message, { failed, waiting }),
         permanent,
-        waiting: isWaitingFailure(squashed),
+        waiting,
         createdAtMillis: message.createdAt.getTime(),
       },
       nowMillis,
@@ -84,6 +87,7 @@ const processOne = (
       result: null,
       error: failure,
       outcome,
+      countsAsFailure,
     });
     // A dead letter is work that will NEVER be retried again: for a `deliver_event` that
     // means a domain event reached no sink, and until now the only trace was a row in a

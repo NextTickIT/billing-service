@@ -15,15 +15,21 @@ import {
   ledgerClaimAdvance,
   scheduleTick,
 } from '@/modules/billing/scheduler.js';
+import { TaskRegistry } from '@/infra/task-registry.js';
+import { sweepUnsettledReceipts } from '@/modules/billing/receipt-sweep.js';
+import { PAYMENT_EVENT_RECEIVED } from '@/modules/charge/contracts.js';
 import { ChargePipeline } from '@/modules/charge/domain.js';
 import {
   drain,
+  failOncePublishing,
   fastForwardRetries,
+  type Gate,
   makeGate,
   type OnWorker,
   openGate,
   pauseAt,
   runFor,
+  settlementHandler,
   withWorker,
 } from '@/modules/charge/test/e2e-harness.js';
 import { Outbox } from '@/modules/outbox/domain.js';
@@ -547,7 +553,143 @@ const chargeWire: Scenario = {
   },
 };
 
+// ---------------------------------------------------------------------------------
+// a failure after a long wait, and the sweep
+// ---------------------------------------------------------------------------------
+
+/** Settle receipts with a handler whose first `recurring_payment_succeeded` publish fails
+ * (a transient database fault), as the worker would otherwise. */
+const failOnceOnPublish = Effect.gen(function* () {
+  const registry = yield* TaskRegistry;
+  const handle = yield* settlementHandler({
+    publish: failOncePublishing(
+      (yield* Outbox).publish,
+      'recurring_payment_succeeded',
+    ),
+  });
+  yield* registry.register(PAYMENT_EVENT_RECEIVED, handle);
+});
+
+const transientAfterWait = async (http: Http, run: OnWorker) => {
+  const { due, ref, gate, ticking } = await parkedTick(
+    http,
+    run,
+    'sp:ccs-transient',
+    'approval',
+  );
+  const poller = pollerCopy(ref);
+  await ingest(run, ref);
+  for (let look = 0; look < 7; look += 1) {
+    await oneLook(run);
+  }
+  await run(failOnceOnPublish);
+
+  await run(openGate(gate));
+  await ticking;
+  await run(runFor(4));
+
+  assert.equal(
+    await receiptStatus(http, poller.idemKey),
+    'success|9',
+    'seven waits, one transient failure, then settled with no help',
+  );
+  await assertSettledOnce(
+    http,
+    'sp:ccs-transient',
+    due.currentPeriodEnd.getTime() + P4W,
+  );
+};
+
+const transientScenario: Scenario = {
+  name: 'card check scheduler: a long wait leaves the whole retry budget, so a transient failure after the approval still recovers',
+  run: async ({ baseUrl, query }) => {
+    const http = await httpContext(baseUrl, query, 'ccs-transient');
+    await withCardCheckApp(http, (on) =>
+      withWorker(loadConfig(), async (run) => {
+        await run(registerWithDefers);
+        await transientAfterWait(on, run);
+      }),
+    );
+  },
+};
+
+/** Receipts handled by the pipeline, each attempt parking at `gate` after the handler's
+ * result and before the dispatcher records it. */
+const parkAfterHandler = (gate: Gate) =>
+  Effect.gen(function* () {
+    const registry = yield* TaskRegistry;
+    const pipeline = yield* ChargePipeline;
+    yield* registry.register(PAYMENT_EVENT_RECEIVED, (payload) =>
+      pipeline.handleFromPayload(payload).pipe(Effect.ensuring(pauseAt(gate))),
+    );
+  });
+
+const sweep = (graceSeconds: number) =>
+  Effect.flatMap(SqlClient.SqlClient, (sql) =>
+    sweepUnsettledReceipts(sql)(graceSeconds),
+  );
+
+/** The approval commits while an overdue receipt's waiting attempt is still being
+ * recorded: the revival skips it, and it dead-letters at the horizon. */
+const deadLetteredAcrossApproval = async (http: Http, run: OnWorker) => {
+  const { payment } = await activate(http, run, 'sp:ccs-sweep');
+  const { due, ref } = await dueOrder(http, run, payment);
+  const poller = pollerCopy(ref);
+  await ingest(run, ref);
+  await http.query(
+    `UPDATE messages SET "createdAt" = now() - interval '49 hours' WHERE "idemKey" = '${poller.idemKey}'`,
+  );
+  const gate = await run(makeGate);
+  await run(parkAfterHandler(gate));
+  const working = run(runFor(3));
+  await run(Deferred.await(gate.reached));
+  await run(gatedTick({}));
+  await run(openGate(gate));
+  await working;
+  return { due, poller };
+};
+
+const sweepSettles = async (http: Http, run: OnWorker) => {
+  const { due, poller } = await deadLetteredAcrossApproval(http, run);
+  const deadLettered = await receiptStatus(http, poller.idemKey);
+  await run(registerWithDefers);
+
+  const revived = await run(sweep(0));
+  await run(drain);
+  const again = await run(Effect.all([sweep(0), sweep(0)], { concurrency: 2 }));
+  await run(drain);
+
+  assert.equal(deadLettered.split('|')[0], 'fail', 'the receipt dead-lettered');
+  assert.equal(revived, 1, 'the sweep revived it');
+  assert.deepEqual(again, [0, 0], 'a settled order is never swept again');
+  assert.equal(
+    (await receiptStatus(http, poller.idemKey)).split('|')[0],
+    'success',
+    'settled',
+  );
+  await assertSettledOnce(
+    http,
+    'sp:ccs-sweep',
+    due.currentPeriodEnd.getTime() + P4W,
+  );
+};
+
+const sweepScenario: Scenario = {
+  name: 'card check scheduler: a receipt that dead-letters across the approval is settled by the sweep, once, however often it runs',
+  run: async ({ baseUrl, query }) => {
+    const http = await httpContext(baseUrl, query, 'ccs-sweep');
+    await withCardCheckApp(http, (on) =>
+      withWorker(loadConfig(), async (run) => {
+        await run(registerWithDefers);
+        await sweepSettles(on, run);
+      }),
+    );
+  },
+};
+
 export const cardCheckSchedulerScenarios: readonly Scenario[] = [
+  transientScenario,
+  sweepScenario,
   pollerRaces,
   operatorScenario,
   chargeWire,

@@ -220,3 +220,18 @@ describe('operatorDeferBlocked: an operator defer of a due, untaken first charge
     expect(blocked).toBe(expected);
   });
 });
+
+describe('handoverDecision: past a bound', () => {
+  it.each([
+    ['just past the step bound (+30 d + 1 ms)', target(), at(30 * DAY + 1)],
+    [
+      'just past now + 62 d',
+      target({ nextPaymentDate: new Date(NOW + 61 * DAY) }),
+      new Date(NOW + 62 * DAY + 1),
+    ],
+  ])('%s → out_of_bounds', (_label, input, deferTo) => {
+    const decision = handoverDecision(input, deferTo, NOW);
+
+    expect(decision).toMatchObject({ kind: 'refuse', code: 'out_of_bounds' });
+  });
+});

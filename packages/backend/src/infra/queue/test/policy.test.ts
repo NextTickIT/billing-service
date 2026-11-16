@@ -7,6 +7,7 @@ import {
   deliveryRetryConfig,
   describeError,
   isPermanentFailure,
+  countedAttempts,
   isWaitingFailure,
   type RetryConfig,
   scheduledRetryConfig,
@@ -348,10 +349,43 @@ describe('decideOutcome: a waiting failure', () => {
 describe('isWaitingFailure', () => {
   test.each([
     [{ waiting: true }, true],
+    [undefined, false],
+    ['waiting', false],
     [{ waiting: 'yes' }, false],
     [{}, false],
     [null, false],
   ])('isWaitingFailure(%j) → %s', (error, expected) => {
     expect(isWaitingFailure(error)).toBe(expected);
+  });
+});
+
+describe('countedAttempts: waits never spend the failure budget', () => {
+  test.each([
+    [
+      'an ordinary failure after seven waits is the first failure',
+      { attemptCount: 8, failureCount: 0 },
+      { failed: true, waiting: false },
+      1,
+    ],
+    [
+      'the third ordinary failure',
+      { attemptCount: 9, failureCount: 2 },
+      { failed: true, waiting: false },
+      3,
+    ],
+    [
+      'a success counts the failures before it',
+      { attemptCount: 9, failureCount: 2 },
+      { failed: false, waiting: false },
+      2,
+    ],
+    [
+      'the eighth attempt, a wait, after one failure: seven waits',
+      { attemptCount: 8, failureCount: 1 },
+      { failed: true, waiting: true },
+      7,
+    ],
+  ])('%s', (_label, message, attempt, expected) => {
+    expect(countedAttempts(message, attempt)).toBe(expected);
   });
 });

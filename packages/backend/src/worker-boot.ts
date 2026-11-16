@@ -1,3 +1,8 @@
+import {
+  RECEIPT_GRACE_SECONDS,
+  RECEIPT_SWEEP_INTERVAL_SECONDS,
+  runReceiptSweep,
+} from '@/modules/billing/receipt-sweep.js';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 
@@ -493,6 +498,13 @@ export const bootWorker = (config: AppConfig) =>
     yield* startPoller(config, pipeline.ingest);
     yield* startScheduler(config, pipeline.ingest, outbox.publish);
     yield* startContactsSync(config);
+    // A credited scheduled order whose receipt never settled is re-driven here.
+    yield* Effect.forkDaemon(
+      runReceiptSweep(sql, {
+        intervalSeconds: RECEIPT_SWEEP_INTERVAL_SECONDS,
+        graceSeconds: RECEIPT_GRACE_SECONDS,
+      }),
+    );
     const queue = yield* Queue;
     return yield* queue.run({
       workerId,

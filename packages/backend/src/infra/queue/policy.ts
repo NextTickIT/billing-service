@@ -131,6 +131,8 @@ export interface Outcome {
 export const decideOutcome = (
   params: {
     readonly failed: boolean;
+    /** For an ordinary failure: the ordinary failures so far, this one included. For a
+     * wait: the waits so far. */
     readonly attemptCount: number;
     readonly permanent?: boolean;
     /** The handler is waiting on another commit (`isWaitingFailure`): see `waitOutcome`. */
@@ -172,9 +174,11 @@ const WAIT_FIRST_STEP_MILLIS = 1_000;
 /**
  * A waiting failure is not a fault: the handler needs another transaction's commit first
  * (a scheduled charge's receipt waits for its approval). It retries with a doubling step
- * capped at WAIT_MAX_STEP_MILLIS, and its attempts never count toward `maxAttempts`; only
- * a wait past WAIT_HORIZON_MILLIS from enqueue dead-letters, so it is still seen. (The
- * commit it waits for also revives it at once: `reviveReceipts`.)
+ * capped at WAIT_MAX_STEP_MILLIS; the dispatcher counts it in `attemptCount` but not in
+ * the message's `failureCount`, which alone is held to `maxAttempts`, so a long wait
+ * leaves the whole budget for the failures after it. A wait past WAIT_HORIZON_MILLIS from
+ * enqueue dead-letters, so it is still seen. (The commit it waits for revives it at once,
+ * `reviveReceipts`, and the receipt sweep re-drives any credited order left unsettled.)
  */
 const waitOutcome = (
   attemptCount: number,
@@ -194,6 +198,19 @@ const waitOutcome = (
     finished: false,
   };
 };
+
+/**
+ * The count `decideOutcome` judges an attempt by. An ordinary failure: the message's
+ * ordinary failures, this one included — the budget a wait never spends. A wait: the
+ * waits so far, which only size its next step.
+ */
+export const countedAttempts = (
+  message: { readonly attemptCount: number; readonly failureCount: number },
+  attempt: { readonly failed: boolean; readonly waiting: boolean },
+): number =>
+  attempt.waiting
+    ? message.attemptCount - message.failureCount
+    : message.failureCount + (attempt.failed ? 1 : 0);
 
 /**
  * Did the handler say it is waiting on another commit rather than failing? Structural
