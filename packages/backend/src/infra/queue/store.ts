@@ -190,6 +190,12 @@ export const reviveReceipts =
         WHERE "messageType" = 'payment_event_received'
           AND payload->>'externalRef' = ${externalRef}
           AND status IN ('retry', 'fail')
+          -- A receipt that can never decode stays failed: reviving it only repeats the
+          -- failure. The sweep hands its order to a person instead.
+          AND NOT EXISTS (
+            SELECT 1 FROM attempts a
+            WHERE a."messageId" = messages.id AND a.error->>'code' = 'receipt_undecodable'
+          )
         RETURNING id
       ),
       logged AS (

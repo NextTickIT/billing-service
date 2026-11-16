@@ -26,6 +26,7 @@ import {
   type MatchKind,
   type RefusedCharge,
   type SettledCharge,
+  ReceiptUndecodable,
   type SettlementPending,
   settlementAnomaly,
   PAYMENT_EVENT_RECEIVED,
@@ -785,14 +786,19 @@ export const handleChargeEvent =
   (deps: HandleDeps) =>
   (
     payload: unknown,
-  ): Effect.Effect<void, SqlError.SqlError | SettlementPending> =>
+  ): Effect.Effect<
+    void,
+    SqlError.SqlError | SettlementPending | ReceiptUndecodable
+  > =>
     Schema.decodeUnknown(Charge)(payload).pipe(
-      Effect.flatMap((event) => process(deps, event)),
       Effect.catchTag('ParseError', (error) =>
-        Effect.die(
-          `invalid ${PAYMENT_EVENT_RECEIVED} payload: ${error.message}`,
+        Effect.fail(
+          new ReceiptUndecodable({
+            message: `invalid ${PAYMENT_EVENT_RECEIVED} payload: ${error.message}`,
+          }),
         ),
       ),
+      Effect.flatMap((event) => process(deps, event)),
     );
 
 /**
@@ -945,7 +951,10 @@ export interface ChargePipelineService {
   readonly ingest: (event: Charge) => Effect.Effect<void, SqlError.SqlError>;
   readonly handleFromPayload: (
     payload: unknown,
-  ) => Effect.Effect<void, SqlError.SqlError | SettlementPending>;
+  ) => Effect.Effect<
+    void,
+    SqlError.SqlError | SettlementPending | ReceiptUndecodable
+  >;
   readonly rebindFromPayload: (
     payload: unknown,
   ) => Effect.Effect<void, SqlError.SqlError>;

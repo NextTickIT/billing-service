@@ -37,6 +37,9 @@ export default Effect.flatMap(SqlClient.SqlClient, (sql) =>
       sql`CREATE INDEX IF NOT EXISTS charge_fixations_payment_id ON charge_fixations ("paymentId")`,
       sql`CREATE INDEX IF NOT EXISTS messages_receipt_ref ON messages ((payload->>'externalRef')) WHERE "messageType" = 'payment_event_received'`,
       sql`ALTER TABLE messages ADD COLUMN IF NOT EXISTS "failureCount" int NOT NULL DEFAULT 0`,
+      // The receipt sweep's selection: approvals oldest first, and their charges by order.
+      sql`CREATE INDEX IF NOT EXISTS idempotency_keys_advance_created ON idempotency_keys ("createdAt") WHERE scope = 'scheduler.advance'`,
+      sql`CREATE INDEX IF NOT EXISTS charges_external_ref ON charges ("externalRef")`,
       // A message retrying when this runs failed on every attempt so far (waiting did not
       // exist): its budget carries on where it was.
       sql`UPDATE messages SET "failureCount" = "attemptCount" WHERE status = 'retry' AND "failureCount" = 0`,

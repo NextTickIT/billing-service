@@ -103,6 +103,18 @@ export class SettlementPending extends Data.TaggedError('SettlementPending')<{
 }
 
 /**
+ * A receipt whose payload is not a charge: no retry can change that, so it dead-letters on
+ * its first attempt (`permanent`) and is never revived (`code`, recorded on the attempt,
+ * is what `reviveReceipts` and the receipt sweep recognise).
+ */
+export class ReceiptUndecodable extends Data.TaggedError('ReceiptUndecodable')<{
+  readonly message: string;
+}> {
+  readonly permanent = true;
+  readonly code = 'receipt_undecodable';
+}
+
+/**
  * A normalized incoming charge. `idemKey` is the source's dedup key (e.g.
  * `w4p:{orderReference}|{type}|{createdDate}`); `externalRef` is what matching
  * keys on (the provider orderReference). This shape is also the `payment_event_

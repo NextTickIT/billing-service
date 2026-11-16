@@ -15,11 +15,13 @@ import {
   ledgerClaimAdvance,
   scheduleTick,
 } from '@/modules/billing/scheduler.js';
+import { enqueue } from '@/infra/queue/store.js';
 import { TaskRegistry } from '@/infra/task-registry.js';
 import { sweepUnsettledReceipts } from '@/modules/billing/receipt-sweep.js';
 import { PAYMENT_EVENT_RECEIVED } from '@/modules/charge/contracts.js';
 import { ChargePipeline } from '@/modules/charge/domain.js';
 import {
+  captureLogs,
   drain,
   failOncePublishing,
   fastForwardRetries,
@@ -28,6 +30,7 @@ import {
   type OnWorker,
   openGate,
   pauseAt,
+  recordApproval,
   runFor,
   settlementHandler,
   withWorker,
@@ -631,8 +634,12 @@ const sweep = (graceSeconds: number) =>
 
 /** The approval commits while an overdue receipt's waiting attempt is still being
  * recorded: the revival skips it, and it dead-letters at the horizon. */
-const deadLetteredAcrossApproval = async (http: Http, run: OnWorker) => {
-  const { payment } = await activate(http, run, 'sp:ccs-sweep');
+const deadLetteredAcrossApproval = async (
+  http: Http,
+  run: OnWorker,
+  contact = 'sp:ccs-sweep',
+) => {
+  const { payment } = await activate(http, run, contact);
   const { due, ref } = await dueOrder(http, run, payment);
   const poller = pollerCopy(ref);
   await ingest(run, ref);
@@ -687,7 +694,102 @@ const sweepScenario: Scenario = {
   },
 };
 
+/** Age an order's approval past any window the sweep might once have had. */
+const ageApproval = (http: Http, ref: string) =>
+  http.query(
+    `UPDATE idempotency_keys SET "createdAt" = now() - interval '8 days' WHERE scope = 'scheduler.advance' AND "idemKey" = '${ref}'`,
+  );
+
+const alertsIn = (lines: readonly string[]) =>
+  lines.filter((line) => line.includes('SETTLEMENT_ANOMALY receipt sweep'))
+    .length;
+
+/** Two sweep passes with their log lines captured. */
+const sweepTwiceLogged = (run: OnWorker) => {
+  const logs = captureLogs();
+  return run(
+    Effect.all([sweep(0), sweep(0)]).pipe(Effect.provide(logs.layer)),
+  ).then((revived) => ({ revived, alerts: alertsIn(logs.lines) }));
+};
+
+const oldDeadLetterSettles = async (http: Http, run: OnWorker) => {
+  const { due, poller } = await deadLetteredAcrossApproval(
+    http,
+    run,
+    'sp:ccs-old',
+  );
+  await ageApproval(http, poller.externalRef);
+  await run(registerWithDefers);
+
+  const revived = await run(sweep(0));
+  await run(drain);
+
+  assert.equal(revived, 1, 'an eight-day-old approval is still swept');
+  await assertSettledOnce(
+    http,
+    'sp:ccs-old',
+    due.currentPeriodEnd.getTime() + P4W,
+  );
+};
+
+const oldMissingReceiptAlerts = async (http: Http, run: OnWorker) => {
+  const { payment } = await activate(http, run, 'sp:ccs-lost');
+  const { due, ref } = await dueOrder(http, run, payment);
+  await run(recordApproval(due, ref));
+  await ageApproval(http, ref);
+
+  const { revived, alerts } = await sweepTwiceLogged(run);
+
+  assert.deepEqual(revived, [0, 0], 'nothing to revive');
+  assert.equal(alerts, 1, 'one page for the order, not one per pass');
+};
+
+const undecodableStaysFailed = async (http: Http, run: OnWorker) => {
+  const { payment } = await activate(http, run, 'sp:ccs-bad');
+  const { due, ref } = await dueOrder(http, run, payment);
+  await run(recordApproval(due, ref));
+  await run(
+    Effect.flatMap(SqlClient.SqlClient, (sql) =>
+      enqueue(sql)({
+        messageType: PAYMENT_EVENT_RECEIVED,
+        idemKey: `bad:${ref}`,
+        payload: { externalRef: ref, amount: 'not a number' },
+      }),
+    ),
+  );
+  await run(drain);
+  const deadLettered = await receiptStatus(http, `bad:${ref}`);
+
+  const { revived, alerts } = await sweepTwiceLogged(run);
+
+  assert.equal(deadLettered, 'fail|1', 'dead-lettered on its first attempt');
+  assert.equal(
+    await receiptStatus(http, `bad:${ref}`),
+    'fail|1',
+    'the sweep never revives it',
+  );
+  assert.deepEqual(revived, [0, 0], 'nothing revived');
+  assert.equal(alerts, 1, 'its order is paged once');
+};
+
+const sweepEscalationScenario: Scenario = {
+  name: 'card check scheduler: the sweep has no age limit; a lost or undecodable receipt is paged once and never revived',
+  run: async ({ baseUrl, query }) => {
+    const http = await httpContext(baseUrl, query, 'ccs-escalate');
+    await withCardCheckApp(http, (on) =>
+      withWorker(loadConfig(), async (run) => {
+        await run(registerWithDefers);
+        await oldDeadLetterSettles(on, run);
+        await run(registerWithDefers);
+        await oldMissingReceiptAlerts(on, run);
+        await undecodableStaysFailed(on, run);
+      }),
+    );
+  },
+};
+
 export const cardCheckSchedulerScenarios: readonly Scenario[] = [
+  sweepEscalationScenario,
   transientScenario,
   sweepScenario,
   pollerRaces,
