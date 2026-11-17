@@ -150,6 +150,8 @@ describe('public session and prolong contracts', () => {
       renewal: null,
       startsAt: null,
       payableUntil: null,
+      firstCharge: 'now',
+      closedReason: null,
       methodLocked: true,
       prolong: true,
       everSentToProvider: false,

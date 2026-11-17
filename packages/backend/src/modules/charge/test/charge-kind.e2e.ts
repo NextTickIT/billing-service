@@ -12,6 +12,7 @@ import {
   drain,
   type EffectScenario,
   expectRows,
+  recordApproval,
   registerHandlers,
   seedSub,
   withWorker,
@@ -91,7 +92,8 @@ const bySchedulerCall = Effect.gen(function* () {
 
 const byCallback = Effect.gen(function* () {
   yield* registerHandlers;
-  const { orderReference } = yield* seedDue('sp:kind-cb');
+  const { sub, orderReference } = yield* seedDue('sp:kind-cb');
+  yield* recordApproval(sub, orderReference);
   yield* (yield* ChargePipeline).ingest(
     normalizeCallback({
       orderReference,
@@ -107,7 +109,8 @@ const byCallback = Effect.gen(function* () {
 const byPoller = Effect.gen(function* () {
   yield* registerHandlers;
   const sql = yield* SqlClient.SqlClient;
-  const { orderReference } = yield* seedDue('sp:kind-poll');
+  const { sub, orderReference } = yield* seedDue('sp:kind-poll');
+  yield* recordApproval(sub, orderReference);
   yield* pollTick(
     {
       client: {

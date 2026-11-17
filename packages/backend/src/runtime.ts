@@ -12,12 +12,14 @@ import { AuthRepoLive } from '@/modules/auth/data-access.js';
 import { OutboxLive } from '@/modules/outbox/domain.js';
 import { makeCompositeMatcher } from '@/modules/charge/contracts.js';
 import { makeChargePipelineLayer } from '@/modules/charge/domain.js';
+import { makeCardCheckStep } from '@/modules/checkout/card-check.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
   makeCardChangeMatcher,
   makeCheckoutApplier,
   makeCheckoutMatcher,
 } from '@/modules/checkout/domain.js';
+import { ledgerApproval } from '@/modules/billing/scheduler.js';
 import { makeRecurringMatcher } from '@/modules/payment/matcher.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import { WayForPayLive } from '@/modules/wayforpay/client.js';
@@ -122,7 +124,14 @@ export const makeWorkerLayer = (config: AppConfig) => {
         ),
         makeRecurringMatcher(makePaymentRepo(sql)),
       ]),
-    (sql) => makeCheckoutApplier(makePaymentRepo(sql), makeCheckoutRepo(sql)),
+    (sql) =>
+      makeCheckoutApplier(
+        makePaymentRepo(sql),
+        makeCheckoutRepo(sql),
+        ledgerApproval(sql),
+      ),
+    // Ahead of both: a card-check session's charges are settled by its dispatch alone.
+    makeCardCheckStep,
   );
   const withQueue = Layer.provideMerge(QueueLive, withSinks);
   const withOutbox = Layer.provideMerge(OutboxLive, withQueue);

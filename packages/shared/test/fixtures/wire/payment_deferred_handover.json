@@ -1,0 +1,17 @@
+{
+  "id": "evt_3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f_deferred_1794823200000",
+  "idempotency_key": "evt_3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f_deferred_1794823200000",
+  "name": "payment_deferred",
+  "occurred_at": "2026-11-16T10:00:00.000Z",
+  "correlation_id": "3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f",
+  "external_user_id": "64f0c0ffee00000000abcd12",
+  "aggregate_id": "3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f",
+  "payload": {
+    "new_period_end": "2026-12-04T00:00:00.000Z",
+    "days": 1,
+    "reason": "handover",
+    "revision": 2,
+    "aggregate_id": "3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f",
+    "correlation_id": "3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f"
+  }
+}

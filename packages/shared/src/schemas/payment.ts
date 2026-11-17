@@ -115,12 +115,28 @@ export type Payment = Schema.Schema.Type<typeof Payment>;
 /** Create params: the server owns `id`, the timestamps, and the cancel flag. `metadata` is
  * optional here — most payments are born without a declaration, and the column stores
  * NULL for them; only a checkout that carried one passes it. */
+/**
+ * How a checkout takes its first money. `now`: the first period is charged at checkout, as
+ * always. `card_check`: the checkout only verifies the card and keeps its token; the first
+ * plan-price charge is the ordinary scheduled one at `startsAt` (a payer migrating in who
+ * is already paid elsewhere until then). Stored on the session and on the payment it
+ * creates; `now` on every row from before the column existed.
+ */
+export const FIRST_CHARGES = ['now', 'card_check'] as const;
+
+export const FirstCharge = Schema.Literal(...FIRST_CHARGES);
+
+export type FirstCharge = Schema.Schema.Type<typeof FirstCharge>;
+
 export const CreatePayment = Payment.pipe(
   Schema.omit('id', 'createdAt', 'updatedAt', 'cancelRequestedAt', 'metadata'),
   // Optional AND nullable: callers express "none declared" either by omitting the field
-  // or by passing null, and both store NULL.
+  // or by passing null, and both store NULL. `firstCharge` absent stores `now`.
   Schema.extend(
-    Schema.Struct({ metadata: Schema.optional(Schema.NullOr(Metadata)) }),
+    Schema.Struct({
+      metadata: Schema.optional(Schema.NullOr(Metadata)),
+      firstCharge: Schema.optional(FirstCharge),
+    }),
   ),
 );
 
@@ -209,10 +225,45 @@ export type DeferPaymentRequest = Schema.Schema.Type<
   typeof DeferPaymentRequest
 >;
 
-/** POST /api/payment/:id/defer response: the new paid-through date. */
+/**
+ * The handover defer (service token): move the first charge of a card-check payment that
+ * has taken no money yet to the absolute instant `deferTo`. Forward only and bounded; it
+ * grants no access (the payer is still paid elsewhere until then).
+ */
+export const HandoverDeferRequest = Schema.Struct({
+  reason: Schema.Literal('handover'),
+  deferTo: Schema.Date,
+});
+
+export type HandoverDeferRequest = Schema.Schema.Type<
+  typeof HandoverDeferRequest
+>;
+
+/**
+ * POST /api/payment/:id/defer body as the route decodes it: an operator defer (`days`) or
+ * a handover defer (`reason` + `deferTo`). Loose on purpose: which fields may appear
+ * together is the route's rule (a 422), so a mixed body cannot fall through to the other
+ * branch by having its extra key dropped.
+ */
+export const DeferRequest = Schema.Struct({
+  days: Schema.optional(Schema.Int),
+  reason: Schema.optional(Schema.Literal('handover')),
+  deferTo: Schema.optional(Schema.Date),
+});
+
+export type DeferRequest = Schema.Schema.Type<typeof DeferRequest>;
+
+/**
+ * POST /api/payment/:id/defer response. `revision` is the payment's defer revision after
+ * the call: every applied defer increments it in the same UPDATE that moves the date, so
+ * it orders defers where the queue cannot. `unchanged`: a handover defer to a date not
+ * after the current one wrote nothing. `revision` is optional only so a ledger row stored
+ * before it existed still replays.
+ */
 export const DeferAccepted = Schema.Struct({
-  status: Schema.Literal('deferred'),
+  status: Schema.Literal('deferred', 'unchanged'),
   newPeriodEnd: Schema.Date,
+  revision: Schema.optional(Schema.Int.pipe(Schema.nonNegative())),
 });
 
 export type DeferAccepted = Schema.Schema.Type<typeof DeferAccepted>;

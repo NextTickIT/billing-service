@@ -48,13 +48,17 @@ export const ReactivateNotify = Schema.Struct({
 
 export type ReactivateNotify = Schema.Schema.Type<typeof ReactivateNotify>;
 
-/** payment_defer payload: the new paid-through date + the granted day count. */
+/** payment_defer payload: the new paid-through date + the granted day count, the defer
+ * revision the date-moving UPDATE set, and `reason` for a handover defer. `revision` is 0
+ * on a message enqueued before it existed. */
 export const DeferNotify = Schema.Struct({
   paymentId: Schema.String,
   externalUserId: Schema.String,
   newPeriodEnd: Schema.String,
   days: Schema.Int,
   at: Schema.Number,
+  reason: Schema.optional(Schema.Literal('handover')),
+  revision: Schema.optionalWith(Schema.Int, { default: () => 0 }),
 });
 
 export type DeferNotify = Schema.Schema.Type<typeof DeferNotify>;

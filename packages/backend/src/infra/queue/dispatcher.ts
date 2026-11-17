@@ -11,6 +11,8 @@ import {
   decideOutcome,
   describeError,
   isPermanentFailure,
+  countedAttempts,
+  isWaitingFailure,
   type RetryConfig,
 } from '@/infra/queue/policy.js';
 import type { TaskHandler } from '@/infra/task-registry.js';
@@ -62,8 +64,16 @@ const processOne = (
     const squashed = Exit.isFailure(exit) ? Cause.squash(exit.cause) : null;
     const failure = squashed === null ? null : describeError(squashed);
     const permanent = isPermanentFailure(squashed);
+    const waiting = isWaitingFailure(squashed);
+    const countsAsFailure = failed && !waiting;
     const outcome = decideOutcome(
-      { failed, attemptCount: message.attemptCount, permanent },
+      {
+        failed,
+        attemptCount: countedAttempts(message, { failed, waiting }),
+        permanent,
+        waiting,
+        createdAtMillis: message.createdAt.getTime(),
+      },
       nowMillis,
       retryConfigFor(options, message.messageType),
       yield* Random.next,
@@ -77,6 +87,7 @@ const processOne = (
       result: null,
       error: failure,
       outcome,
+      countsAsFailure,
     });
     // A dead letter is work that will NEVER be retried again: for a `deliver_event` that
     // means a domain event reached no sink, and until now the only trace was a row in a

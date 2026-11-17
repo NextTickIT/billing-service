@@ -4,12 +4,14 @@ import { SqlClient, type SqlError } from '@effect/sql';
 import {
   CardChangeRequest,
   checkoutRef,
+  CheckoutSessionClosed,
   type CheckoutOrigin,
   type CheckoutSession,
   CheckoutSessionKind,
   CheckoutSessionPublic,
   CheckoutSessionStatus,
   CreateCheckoutSession,
+  firstChargeOf,
   MethodChangeRequest,
   MethodChangeResult,
   type NewCheckoutSession,
@@ -30,6 +32,7 @@ import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
 import {
   AlreadySubscribed,
+  CardCheckDisabled,
   ChangeUnavailable,
   CheckoutClosed,
   Conflict,
@@ -46,9 +49,10 @@ import {
 import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { PAYMENT_EVENT_RECEIVED } from '@/modules/charge/contracts.js';
-import { authenticateToken } from '@/modules/auth/domain.js';
+import { serviceActor } from '@/modules/auth/service-actor.js';
 import {
   type CheckoutRepo,
+  closeOpenCardCheck,
   makeCheckoutRepo,
 } from '@/modules/checkout/data-access.js';
 import {
@@ -93,14 +97,6 @@ import {
 } from '@/modules/whitepay/errors.js';
 
 const route = makeRoute((app: FastifyInstance) => app.runtime);
-
-/** The external system authenticates with a service token to open a session. */
-const serviceActor = (request: FastifyRequest) => {
-  const presented = extractBearer(request);
-  return presented === null
-    ? Effect.fail(new Unauthorized({ reason: 'missing bearer token' }))
-    : authenticateToken(presented);
-};
 
 const readId = (request: FastifyRequest): string =>
   (request.params as { readonly id: string }).id;
@@ -159,6 +155,19 @@ const assertSchedule = (
     : Effect.fail(new UnprocessableEntity({ reason: broken }));
 };
 
+/** A card check is admitted only while billing's env allows it (422 otherwise); the env
+ * gates admission, never a session already issued. */
+const assertCardCheckAdmitted = (
+  input: CreateCheckoutSession,
+  request: FastifyRequest,
+): Effect.Effect<void, CardCheckDisabled> =>
+  input.firstCharge === 'card_check' &&
+  !request.server.appConfig.wayforpay.cardCheckEnabled
+    ? Effect.fail(
+        new CardCheckDisabled({ externalUserId: input.externalUserId }),
+      )
+    : Effect.void;
+
 const sameInstant = (a: Date | null, b: Date | null): boolean =>
   (a?.getTime() ?? null) === (b?.getTime() ?? null);
 
@@ -200,14 +209,15 @@ export const insertOrReplay = (
 /** What a request must share with the session its Idempotency-Key already names. */
 type ReplayIdentity = Pick<
   NewCheckoutSession,
-  'externalUserId' | 'origin' | 'startsAt'
+  'externalUserId' | 'origin' | 'startsAt' | 'firstCharge'
 >;
 
 /**
  * The stored response for an Idempotency-Key that already names a session; None when it
  * names none. The key alone is not identity: a reused key must never hand one contact
  * another contact's session, nor turn a /prolong into a plain checkout (or back), nor
- * start the paid period on a different date than this request asked for (409).
+ * start the paid period on a different date than this request asked for, nor turn a card
+ * check into a full-price checkout (or back) (409).
  */
 const replayOf = (
   repo: CheckoutRepo,
@@ -224,7 +234,8 @@ const replayOf = (
     if (
       stored.externalUserId !== identity.externalUserId ||
       stored.origin !== identity.origin ||
-      !sameInstant(stored.startsAt, identity.startsAt)
+      !sameInstant(stored.startsAt, identity.startsAt) ||
+      firstChargeOf(stored) !== firstChargeOf(identity)
     ) {
       return yield* Effect.fail(new Conflict({ field: 'idempotency key' }));
     }
@@ -264,9 +275,19 @@ const offerOf = (
  * A caller's create. A retry under an Idempotency-Key that already names a session replays
  * it BEFORE any validation: the now-relative bounds of `startsAt` / `payableUntil` held
  * when the session was created, and a retry after they lapsed must still get the same
- * session back, not a 422. Only a new session is validated.
+ * session back, not a 422. Only a new session is validated. The answer echoes the stored
+ * `firstCharge` (identity guarantees a replay's equals the request's).
  */
 const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
+  Effect.map(createOrReplaySession(input, request), (created) => ({
+    ...created,
+    firstCharge: firstChargeOf(input),
+  }));
+
+const createOrReplaySession = (
+  input: CreateCheckoutSession,
+  request: FastifyRequest,
+) =>
   Effect.gen(function* () {
     yield* serviceActor(request);
     yield* assertIdempotencyKey(request);
@@ -281,6 +302,7 @@ const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
               externalUserId: input.externalUserId,
               origin: callerOrigin(input.reportAs),
               startsAt: input.startsAt ?? null,
+              firstCharge: firstChargeOf(input),
             },
             request.server.appConfig.checkoutBaseUrl,
           );
@@ -296,6 +318,7 @@ const createNewSession = (
   Effect.gen(function* () {
     yield* assertRedirects(input, request);
     yield* assertPromo(input);
+    yield* assertCardCheckAdmitted(input, request);
     const nowMillis = yield* Clock.currentTimeMillis;
     yield* assertSchedule(input, nowMillis);
     const sql = yield* SqlClient.SqlClient;
@@ -339,6 +362,7 @@ const createNewSession = (
         // Where the receipt goes. '' when the caller sent none: no address, no email —
         // and the email sink then fails loudly rather than pretending it delivered.
         email: input.email ?? '',
+        firstCharge: firstChargeOf(input),
       },
       request.server.appConfig.checkoutBaseUrl,
     );
@@ -395,6 +419,7 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
       startsAt,
       payableUntil,
       lockMethod,
+      closedReason,
     } = found.value;
     // `origin` itself is never returned (X11); the page sees only what it acts on.
     const prolong = origin === 'prolong';
@@ -414,14 +439,17 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
       renewal,
       startsAt,
       payableUntil,
+      firstCharge: firstChargeOf(found.value),
+      closedReason: closedReason ?? null,
       methodLocked: prolong || lockMethod,
       prolong,
       everSentToProvider: yield* repo.everSentToProvider(id),
     };
   });
 
-/** Card (WayForPay): a 0-amount card change verifies the card (buildVerify) when verify
- * is enabled; otherwise a signed Purchase form the browser POSTs to the provider.
+/** Card (WayForPay): a card-check session always verifies the card (buildVerify) — it
+ * charges nothing now, whatever the verify flag says; a 0-amount card change verifies when
+ * verify is enabled; otherwise a signed Purchase form the browser POSTs to the provider.
  * `session` is the provider order (`orderFor`): its id is the order reference. */
 const payCard = (
   session: CheckoutSession,
@@ -429,6 +457,9 @@ const payCard = (
 ): Effect.Effect<PayInstruction> =>
   Effect.gen(function* () {
     const config = request.server.appConfig.wayforpay;
+    if (session.firstCharge === 'card_check') {
+      return buildVerify(config, session);
+    }
     if (
       session.kind === CheckoutSessionKind.CardChange &&
       session.amount === 0 &&
@@ -498,7 +529,8 @@ const assertClaimable = (
   }
   if (
     session.status === CheckoutSessionStatus.Completed ||
-    session.status === CheckoutSessionStatus.Expired
+    session.status === CheckoutSessionStatus.Expired ||
+    session.status === CheckoutSessionStatus.Closed
   ) {
     return Effect.fail(
       new Conflict({ field: 'checkout session (completed or expired)' }),
@@ -851,6 +883,13 @@ export const effectivePayable = (
     session.expiresAt.getTime() <= nowMillis;
   if (!lapsed && !isStaleRenewal(session, live)) {
     return Either.right({ _tag: 'Stored', session });
+  }
+  // A card check is never re-issued, cloned or re-minted: a second session for one
+  // attempt could be paid after the first was closed. The caller opens a new attempt.
+  if (session.firstCharge === 'card_check') {
+    return Either.left(
+      new Conflict({ field: 'checkout session (card check expired)' }),
+    );
   }
   // A bounded offer is never re-issued, cloned or re-minted: its `expiresAt` is its
   // `payableUntil`, so once it lapses the offer is over.
@@ -1316,6 +1355,59 @@ const prolong = (input: ProlongRequest, request: FastifyRequest) =>
     );
   });
 
+/**
+ * The caller's "no payment happened" close of a card-check session (§14.1 manager action),
+ * with the shared service token. Safe by shape: it only ever closes a card-check session
+ * that is still open, so the token cannot cancel a full-price checkout or undo a verify
+ * that already activated. 200 when closed now or already Closed; 409 once Completed (the
+ * verify activated); 422 for a session that is not a card check; 404 when unknown.
+ */
+const closeSession = (_input: unknown, request: FastifyRequest) =>
+  Effect.gen(function* () {
+    yield* serviceActor(request);
+    const sql = yield* SqlClient.SqlClient;
+    const id = readId(request);
+    const repo = makeCheckoutRepo(sql);
+    const found = yield* repo.findById(id);
+    if (Option.isNone(found)) {
+      return yield* Effect.fail(new NotFound({ resource: 'checkout session' }));
+    }
+    if (found.value.firstCharge !== 'card_check') {
+      return yield* Effect.fail(
+        new UnprocessableEntity({ reason: 'not a card-check session' }),
+      );
+    }
+    if (yield* closeOpenCardCheck(sql)(id, 'superseded')) {
+      return { status: 'closed' as const, closedReason: 'superseded' as const };
+    }
+    return yield* alreadySettled(repo, id);
+  });
+
+/** A close that lost to whatever settled the session first: 200 when that was a close
+ * (with its reason), 409 when the verify activated it. */
+const alreadySettled = (repo: CheckoutRepo, id: string) =>
+  Effect.flatMap(repo.findById(id), (current) => {
+    const settled = Option.getOrNull(current);
+    return settled?.status === CheckoutSessionStatus.Closed &&
+      settled.closedReason != null
+      ? Effect.succeed({
+          status: 'closed' as const,
+          closedReason: settled.closedReason,
+        })
+      : Effect.fail(new Conflict({ field: 'checkout session (completed)' }));
+  });
+
+/** The caller's close of a card-check session. */
+const closeRoute = (fastify: FastifyInstance): void => {
+  route(fastify, {
+    method: 'POST',
+    path: '/api/checkout-sessions/:id/close',
+    input: Schema.Unknown,
+    output: CheckoutSessionClosed,
+    handler: closeSession,
+  });
+};
+
 export default function checkout(fastify: FastifyInstance): void {
   route(fastify, {
     method: 'POST',
@@ -1360,6 +1452,8 @@ export default function checkout(fastify: FastifyInstance): void {
     output: CheckoutSessionPublic,
     handler: getSession,
   });
+
+  closeRoute(fastify);
 
   route(fastify, {
     method: 'POST',

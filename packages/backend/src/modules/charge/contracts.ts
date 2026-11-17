@@ -4,10 +4,11 @@ import {
   CHARGE_STATUSES,
   type CheckoutOrigin,
   type CheckoutRenewal,
+  type DomainEvent,
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
 } from '@billing-service/shared';
-import { Effect, Schema } from 'effect';
+import { Data, Effect, type Option, Schema } from 'effect';
 
 /**
  * Charge-pipeline contracts (FR-007). Every source normalizes its event into a
@@ -61,6 +62,57 @@ export const Settlement = Schema.Struct({
   // Optional: a message queued before the field existed decodes without it.
   nextAmount: Schema.optional(Schema.NullOr(Schema.Int)),
 });
+
+export type Settlement = Schema.Schema.Type<typeof Settlement>;
+
+/**
+ * What the scheduler's approval transaction recorded for one order, in the
+ * `scheduler.advance` ledger: the period it credited, or null when it credited none (the
+ * row was no longer live). It commits with the advance and the receipt it enqueues, so a
+ * copy of the same charge that arrives without a snapshot (the poller's, whose queue key
+ * the scheduler shares) reports exactly what the approval credited. A ledger row written
+ * before this shape existed holds a bare boolean.
+ */
+export const ScheduledApproval = Schema.Struct({
+  settlement: Schema.NullOr(Settlement),
+});
+
+export type ScheduledApproval = Schema.Schema.Type<typeof ScheduledApproval>;
+
+export const LedgerApproval = Schema.Union(Schema.Boolean, ScheduledApproval);
+
+export type LedgerApproval = Schema.Schema.Type<typeof LedgerApproval>;
+
+/** The scheduler's recorded approval of a scheduled order, if it has committed. */
+export type ApprovalLookup = (
+  orderReference: string,
+) => Effect.Effect<Option.Option<LedgerApproval>, SqlError.SqlError>;
+
+/**
+ * A scheduled charge whose approval has not committed yet: its receipt (a copy that
+ * carries no snapshot) is not settled now but retried by the queue until the approval's
+ * evidence exists — settling it earlier would report a period the approval has not
+ * credited, and lose the first-charge marker.
+ */
+export class SettlementPending extends Data.TaggedError('SettlementPending')<{
+  readonly orderReference: string;
+}> {
+  /** A wait, not a fault: the queue retries it without spending its failure budget
+   * (`isWaitingFailure`), and the approval's commit revives it (`reviveReceipts`). */
+  readonly waiting = true;
+}
+
+/**
+ * A receipt whose payload is not a charge: no retry can change that, so it dead-letters on
+ * its first attempt (`permanent`) and is never revived (`code`, recorded on the attempt,
+ * is what `reviveReceipts` and the receipt sweep recognise).
+ */
+export class ReceiptUndecodable extends Data.TaggedError('ReceiptUndecodable')<{
+  readonly message: string;
+}> {
+  readonly permanent = true;
+  readonly code = 'receipt_undecodable';
+}
 
 /**
  * A normalized incoming charge. `idemKey` is the source's dedup key (e.g.
@@ -211,6 +263,8 @@ export interface SettledCharge {
   > | null; /** What the next renewal autocharges after this charge; null when it will not autocharge
    * (no token: crypto or one-time) or there is no next charge. */
   readonly nextAmount: number | null;
+  /** See `Prolongation.charged`. */
+  readonly charged?: ChargedTerms;
 }
 
 /**
@@ -224,6 +278,17 @@ export interface Prolongation {
   readonly periodEnd: Date | null;
   readonly metadata: Record<string, unknown> | null;
   readonly nextAmount: number | null;
+  /** This charge is the first money of a payment a card check created. */
+  readonly cardCheckFirstCharge?: boolean;
+  /** The period and method this charge was taken at, when the source recorded them (a
+   * scheduled charge's approval); the success reports them over the match's. */
+  readonly charged?: ChargedTerms;
+}
+
+/** The terms a scheduled charge was taken at, as its approval recorded them. */
+export interface ChargedTerms {
+  readonly period: string;
+  readonly method: number;
 }
 
 /**
@@ -249,4 +314,25 @@ export type AppliedCharge = SettledCharge | RefusedCharge;
 export type ChargeApplier = (
   event: Charge,
   match: Match,
-) => Effect.Effect<AppliedCharge, SqlError.SqlError>;
+) => Effect.Effect<AppliedCharge, SqlError.SqlError | SettlementPending>;
+
+/** What the card-check dispatch may do to the charge it owns: publish its events, and
+ * close the charge as matched (always its last write). */
+export interface CardCheckSettle {
+  readonly publish: (
+    event: DomainEvent,
+  ) => Effect.Effect<void, SqlError.SqlError>;
+  readonly markMatched: Effect.Effect<void, SqlError.SqlError>;
+}
+
+/**
+ * The card-check dispatch, run inside the settlement transaction ahead of the refund
+ * branch and the matchers. It owns every charge whose reference names a card-check
+ * session: it settles it and returns true. Any other charge it leaves alone (false), and
+ * the pipeline goes on as before. A plain function composed at the runtime root, like the
+ * matcher and applier.
+ */
+export type CardCheckStep = (
+  event: Charge,
+  settle: CardCheckSettle,
+) => Effect.Effect<boolean, SqlError.SqlError>;

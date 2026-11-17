@@ -33,6 +33,7 @@ const deferNotify: DeferNotify = {
   newPeriodEnd: '2026-09-12',
   days: 30,
   at: 1700000001,
+  revision: 1,
 };
 
 const lapsePayload: LapseNotify = {
@@ -91,7 +92,11 @@ it.effect('paymentDeferred: produces correct name and payload', () =>
     expect(event.externalUserId).toBe('sp:42');
     expect(event.aggregateId).toBe('pay_abc');
     expect(event.correlationId).toBe('pay_abc');
-    expect(event.payload).toEqual({ newPeriodEnd: '2026-09-12', days: 30 });
+    expect(event.payload).toEqual({
+      newPeriodEnd: '2026-09-12',
+      days: 30,
+      revision: 1,
+    });
     expect(event.occurredAt).toBe(now);
   }),
 );

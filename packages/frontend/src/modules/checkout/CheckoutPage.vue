@@ -43,7 +43,16 @@ const isVerify = computed(
 const isPayable = computed(
   () =>
     store.session?.status !== CheckoutSessionStatus.Completed &&
-    store.session?.status !== CheckoutSessionStatus.Expired,
+    store.session?.status !== CheckoutSessionStatus.Expired &&
+    store.session?.status !== CheckoutSessionStatus.Closed,
+);
+
+// A card check verifies the card and charges nothing now; the first charge is the plan
+// price on `startsAt`, which the page states instead of the paid-period start.
+const cardCheck = computed(() =>
+  store.session?.firstCharge === 'card_check' && store.session.startsAt != null
+    ? { amount: store.session.amount, date: store.session.startsAt }
+    : null,
 );
 
 // The offer's `payableUntil` has passed: the server refuses Pay (410), so the page says
@@ -412,7 +421,15 @@ const legalLinks = [
                   })
             }}
           </p>
-          <p v-if="startsLater" class="checkout__renewal">
+          <p v-if="cardCheck" class="checkout__renewal">
+            {{
+              t('checkout.cardCheck', {
+                amount: formatPrice(cardCheck.amount, store.session.currency),
+                date: formatDate(cardCheck.date, locale),
+              })
+            }}
+          </p>
+          <p v-else-if="startsLater" class="checkout__renewal">
             {{
               t('checkout.startsAt', { date: formatDate(startsLater, locale) })
             }}

@@ -1,7 +1,7 @@
 import { Schema } from 'effect';
 
 import { ChargeKind } from '@/schemas/charge.js';
-import { CurrencySchema, Metadata } from '@/schemas/payment.js';
+import { CurrencySchema, FirstCharge, Metadata } from '@/schemas/payment.js';
 
 /**
  * Outgoing domain events must reach each connected sink within this many seconds
@@ -35,6 +35,9 @@ export const EVENT_NAMES = [
   'card_change_succeeded',
   'card_change_failed',
   'payment_refunded',
+  'subscription_card_checked',
+  'card_check_failed',
+  'card_check_anomaly',
   'unknown_payment_quarantined',
 ] as const;
 
@@ -114,6 +117,10 @@ const succeededPayload = {
   // link reports its replacement's id. Absent when no session settled it: a scheduled
   // renewal, or an operator bind of a quarantined charge.
   checkoutSessionId: Schema.optional(Schema.String),
+  // Present (true) only on the first money success of a payment a card check created:
+  // its first plan-price charge, whichever path took it (scheduled, /prolong, manual
+  // renewal). Absent on every other success.
+  cardCheckFirstCharge: Schema.optional(Schema.Literal(true)),
 };
 
 export const InitialPaymentSucceededEvent = Schema.Struct({
@@ -241,6 +248,9 @@ export const PaymentCreatedEvent = Schema.Struct({
     // The caller's own declaration of what was bought (see `Metadata`), echoed unchanged
     // from the checkout that created this payment. Null when the caller supplied none.
     metadata: Schema.NullOr(Metadata),
+    // Present only when a card check created the payment: then no money moved yet, and
+    // `amount`/`currency` are the plan's, first charged on the payment's due date.
+    firstCharge: Schema.optional(FirstCharge),
   }),
 });
 
@@ -431,6 +441,12 @@ export const PaymentDeferredEvent = Schema.Struct({
   payload: Schema.Struct({
     newPeriodEnd: Schema.String,
     days: Schema.Int,
+    // `handover`: a card-check payment's first charge moved while the payer is still paid
+    // elsewhere; it grants no access. Absent on an operator defer.
+    reason: Schema.optional(Schema.Literal('handover')),
+    // The payment's defer revision this defer set (1 for its first). Orders the defers of
+    // one payment whatever order they are delivered in.
+    revision: Schema.Int.pipe(Schema.nonNegative()),
   }),
 });
 
@@ -507,6 +523,72 @@ export type PaymentRefundedEvent = Schema.Schema.Type<
 >;
 
 /**
+ * A card check verified the card of a payer who is paid elsewhere until `startsAt`: the
+ * payment exists (Active, token on file) and its first plan-price charge is the scheduled
+ * one at `nextPaymentDate`. No money moved: `amount` is 0, `nextAmount` the plan price in
+ * `currency`, and there is no paid window (`periodStart`/`periodEnd` null). Never paired
+ * with a success event; `aggregateId` is the payment.
+ */
+export const SubscriptionCardCheckedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('subscription_card_checked'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct(succeededPayload),
+});
+
+export type SubscriptionCardCheckedEvent = Schema.Schema.Type<
+  typeof SubscriptionCardCheckedEvent
+>;
+
+/** What every card-check outcome event names: the session and the caller's declaration. */
+const cardCheckSubject = {
+  checkoutSessionId: Schema.String,
+  metadata: Schema.NullOr(Metadata),
+};
+
+/**
+ * A card check did not activate. `late`: the verify arrived within 24 h of `startsAt` or
+ * after `payableUntil`; `on_live`: the contact already held a live subscription. Both
+ * close the session. `declined`: the provider declined the verify; the session stays open
+ * for another try. `aggregateId` is the session.
+ */
+export const CardCheckFailedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('card_check_failed'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({
+    reason: Schema.Literal('late', 'on_live', 'declined'),
+    ...cardCheckSubject,
+  }),
+});
+
+export type CardCheckFailedEvent = Schema.Schema.Type<
+  typeof CardCheckFailedEvent
+>;
+
+/**
+ * A callback for an open card-check session that is neither a verified card nor a decline
+ * (e.g. a non-zero amount, a missing token). Nothing is written and the session stays
+ * open; a human looks. `status`/`reasonCode` are the raw provider values (null when
+ * absent), `tokenPresent` whether a recToken came with it (the token itself never leaves).
+ */
+export const CardCheckAnomalyEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('card_check_anomaly'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({
+    status: Schema.NullOr(Schema.String),
+    reasonCode: Schema.NullOr(Schema.String),
+    tokenPresent: Schema.Boolean,
+    ...cardCheckSubject,
+  }),
+});
+
+export type CardCheckAnomalyEvent = Schema.Schema.Type<
+  typeof CardCheckAnomalyEvent
+>;
+
+/**
  * An incoming payment that matched no recurrent payment (FR-009).
  * `externalUserId` is null by definition — the user is unknown until an operator
  * binds it.
@@ -578,6 +660,9 @@ export const DomainEvent = Schema.Union(
   CardChangeSucceededEvent,
   CardChangeFailedEvent,
   PaymentRefundedEvent,
+  SubscriptionCardCheckedEvent,
+  CardCheckFailedEvent,
+  CardCheckAnomalyEvent,
   UnknownPaymentQuarantinedEvent,
 );
 

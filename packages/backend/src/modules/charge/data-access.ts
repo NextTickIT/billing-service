@@ -119,6 +119,17 @@ export interface ChargeRepo {
   readonly insertPayment: (
     input: NewPayment,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /**
+   * Whether the success of order `externalRef` is the first money of a payment a card check
+   * created: the payment is `card_check` and the crediting transaction recorded this very
+   * order as its first money (`markFirstMoney`). Taken under the payment's row lock (its
+   * own statement, the read a fresh one after it), so the check, the fixation and the
+   * event that follow are serialised with every other writer of the payment.
+   */
+  readonly isFirstMoneyCharge: (
+    paymentId: string,
+    externalRef: string,
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
   readonly upsertQuarantine: (
     incomingEventId: string,
   ) => Effect.Effect<string, SqlError.SqlError>;
@@ -238,6 +249,19 @@ const insertPayment = (sql: SqlClient.SqlClient) => (input: NewPayment) =>
     ON CONFLICT ("incomingEventId") DO NOTHING
   `.pipe(Effect.asVoid);
 
+const isFirstMoneyCharge =
+  (sql: SqlClient.SqlClient) => (paymentId: string, externalRef: string) =>
+    sql`SELECT id FROM payments WHERE id = ${paymentId} FOR UPDATE`.pipe(
+      Effect.andThen(
+        sql<{ readonly first: boolean }>`
+          SELECT ("firstCharge" = 'card_check'
+                  AND "firstMoneyRef" IS NOT DISTINCT FROM ${externalRef}) AS first
+          FROM payments WHERE id = ${paymentId}
+        `,
+      ),
+      Effect.map((rows) => rows[0]?.first === true),
+    );
+
 const upsertQuarantine =
   (sql: SqlClient.SqlClient) => (incomingEventId: string) =>
     sql<{ readonly id: string }>`
@@ -354,6 +378,7 @@ export const makeChargeRepo = (sql: SqlClient.SqlClient): ChargeRepo => ({
   orderSettledByAnotherCopy: orderSettledByAnotherCopy(sql),
   findSettledOriginal: findSettledOriginal(sql),
   insertPayment: insertPayment(sql),
+  isFirstMoneyCharge: isFirstMoneyCharge(sql),
   upsertQuarantine: upsertQuarantine(sql),
   getIncomingChargeById: getIncomingChargeById(sql),
   listOpenQuarantine: listOpenQuarantine(sql),

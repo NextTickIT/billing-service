@@ -3,7 +3,9 @@ import { Schema } from 'effect';
 import { isNonZeroPeriod, isValidPeriod, RecurringPeriod } from '@/period.js';
 import {
   CurrencySchema,
+  FirstCharge,
   Metadata,
+  PaymentMethod,
   PaymentMethodSchema,
 } from '@/schemas/payment.js';
 
@@ -11,14 +13,16 @@ import {
  * Checkout session (docs/05/06). The session id doubles as the WayForPay
  * orderReference (with an option suffix when the payer picked a non-default option,
  * `checkoutRef`), so the callback matches back to it. status: 0=created (link
- * issued) 1=pending (paying at provider) 2=completed 3=expired. Owned by the
- * checkout slice; the id is the single source of truth every layer shares.
+ * issued) 1=pending (paying at provider) 2=completed 3=expired 4=closed (a card-check
+ * session that will never activate; `closedReason` says why). Owned by the checkout
+ * slice; the id is the single source of truth every layer shares.
  */
 export enum CheckoutSessionStatus {
   Created = 0,
   Pending = 1,
   Completed = 2,
   Expired = 3,
+  Closed = 4,
 }
 
 export const CheckoutSessionStatusSchema = Schema.Enums(CheckoutSessionStatus);
@@ -35,6 +39,21 @@ export enum CheckoutSessionKind {
 }
 
 export const CheckoutSessionKindSchema = Schema.Enums(CheckoutSessionKind);
+
+/**
+ * Why a card-check session was closed: `late` (the verify arrived within 24 h of
+ * `startsAt` or after `payableUntil`), `on_live` (the contact already holds a live
+ * subscription), `superseded` (the caller closed it to offer something else).
+ */
+export const CheckoutClosedReason = Schema.Literal(
+  'late',
+  'on_live',
+  'superseded',
+);
+
+export type CheckoutClosedReason = Schema.Schema.Type<
+  typeof CheckoutClosedReason
+>;
 
 /**
  * A browser redirect target the caller may attach to a checkout. Constrained to an
@@ -204,9 +223,19 @@ export const CheckoutSession = Schema.Struct({
   // The payer cannot switch away from `method` on this checkout, like a `/prolong` link.
   // Set from the create request's `lockMethod`; false on every server-minted session.
   lockMethod: Schema.Boolean,
+  // How the first money is taken (see FirstCharge). Every row carries it; optional here
+  // so a session built in code without it means `now`.
+  firstCharge: Schema.optional(FirstCharge),
+  // Set with status Closed only; null (or absent in code) otherwise.
+  closedReason: Schema.optional(Schema.NullOr(CheckoutClosedReason)),
 });
 
 export type CheckoutSession = Schema.Schema.Type<typeof CheckoutSession>;
+
+/** A session's first-charge mode, `now` when it carries none. */
+export const firstChargeOf = (
+  session: Pick<CheckoutSession, 'firstCharge'>,
+): FirstCharge => session.firstCharge ?? 'now';
 
 /** The furthest ahead a create request may set `startsAt` or `payableUntil`. */
 export const MAX_CHECKOUT_HORIZON_DAYS = 62;
@@ -307,7 +336,7 @@ export const sessionIdOfRef = (ref: string): string =>
  * at creation (Card unless the create request said otherwise); optional so a session may
  * still be inserted without a preselected method (it is then chosen on the page). */
 export const NewCheckoutSession = CheckoutSession.pipe(
-  Schema.omit('method', 'status', 'createdAt', 'metadata'),
+  Schema.omit('method', 'status', 'createdAt', 'metadata', 'closedReason'),
   Schema.extend(
     Schema.Struct({
       method: Schema.optional(PaymentMethodSchema),
@@ -367,6 +396,53 @@ const brokenRule = (
   recurring: boolean,
 ): string | undefined =>
   TERMS_RULES.find((rule) => !rule.holds(terms, recurring))?.message;
+
+interface CardCheckFields {
+  readonly recurring: boolean;
+  readonly startsAt?: Date | undefined;
+  readonly method?: number | undefined;
+  readonly lockMethod?: boolean | undefined;
+  readonly promo?: unknown;
+  readonly options?: unknown;
+  readonly renewal?: unknown;
+}
+
+/**
+ * What a `card_check` create must be: a recurring subscription whose period starts at
+ * `startsAt`, paid by card with the method locked (the verify is a WayForPay form), at
+ * its plain terms. A promo, options or renewal terms would describe a first charge the
+ * verify never takes.
+ */
+const CARD_CHECK_RULES: readonly {
+  readonly holds: (v: CardCheckFields) => boolean;
+  readonly message: string;
+}[] = [
+  { holds: (v) => v.recurring, message: 'card_check requires recurring' },
+  {
+    holds: (v) => v.startsAt !== undefined,
+    message: 'card_check requires startsAt',
+  },
+  {
+    holds: (v) => v.method === PaymentMethod.Card && v.lockMethod === true,
+    message: 'card_check requires method 0 with lockMethod',
+  },
+  {
+    holds: (v) =>
+      v.promo === undefined &&
+      v.options === undefined &&
+      v.renewal === undefined,
+    message: 'card_check forbids promo, options and renewal',
+  },
+];
+
+/** The first card-check rule a create breaks, as its message; undefined when it keeps
+ * them all or is not a card check. */
+export const brokenCardCheckRule = (
+  v: CardCheckFields & { readonly firstCharge?: FirstCharge | undefined },
+): string | undefined =>
+  v.firstCharge === 'card_check'
+    ? CARD_CHECK_RULES.find((rule) => !rule.holds(v))?.message
+    : undefined;
 
 /** The first option that breaks a rule, named by its index. */
 const brokenOption = (
@@ -436,6 +512,9 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       // Lock the payer to `method` (required with it): the page hides the picker and `/pay`
       // refuses any other method, as on a `/prolong` link.
       lockMethod: Schema.optional(Schema.Boolean),
+      // `now` (the default, same as absent) or `card_check` (see FirstCharge). A card
+      // check is admitted only while the billing env allows it (422 otherwise).
+      firstCharge: Schema.optional(FirstCharge),
     }),
   ),
   Schema.filter((v) => brokenRule(v, v.recurring) ?? true),
@@ -463,6 +542,7 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       ? true
       : 'lockMethod requires method',
   ),
+  Schema.filter((v) => brokenCardCheckRule(v) ?? true),
 );
 
 export type CreateCheckoutSession = Schema.Schema.Type<
@@ -478,11 +558,14 @@ export const SelectMethod = Schema.Struct({
 
 export type SelectMethod = Schema.Schema.Type<typeof SelectMethod>;
 
-/** POST /api/checkout-sessions response: the issued link and its expiry. */
+/** POST /api/checkout-sessions response: the issued link and its expiry. `firstCharge`
+ * echoes the stored mode on a caller's create (and its replay), so a caller never assumes
+ * a card check it did not get; the server-minted links (prolong, card change) omit it. */
 export const SessionCreated = Schema.Struct({
   sessionId: Schema.String,
   checkoutUrl: Schema.String,
   expiresAt: Schema.Date,
+  firstCharge: Schema.optional(FirstCharge),
 });
 
 export type SessionCreated = Schema.Schema.Type<typeof SessionCreated>;
@@ -610,6 +693,10 @@ export const CheckoutSessionPublic = CheckoutSession.pipe(
   ),
   Schema.extend(
     Schema.Struct({
+      // The stored first-charge mode: a `card_check` page verifies the card and charges
+      // nothing now. `closedReason` is set only on a Closed session.
+      firstCharge: FirstCharge,
+      closedReason: Schema.NullOr(CheckoutClosedReason),
       methodLocked: Schema.Boolean,
       prolong: Schema.Boolean,
       // Whether this session's order was ever handed to a provider (claimed for payment),
@@ -623,6 +710,16 @@ export const CheckoutSessionPublic = CheckoutSession.pipe(
 
 export type CheckoutSessionPublic = Schema.Schema.Type<
   typeof CheckoutSessionPublic
+>;
+
+/** POST /api/checkout-sessions/:id/close response: the session is Closed, and why. */
+export const CheckoutSessionClosed = Schema.Struct({
+  status: Schema.Literal('closed'),
+  closedReason: CheckoutClosedReason,
+});
+
+export type CheckoutSessionClosed = Schema.Schema.Type<
+  typeof CheckoutSessionClosed
 >;
 
 /**

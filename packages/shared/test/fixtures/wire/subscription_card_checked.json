@@ -1,0 +1,29 @@
+{
+  "id": "evt_w4pcb:chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab|WaitingAuthComplete:card_checked",
+  "idempotency_key": "evt_w4pcb:chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab|WaitingAuthComplete:card_checked",
+  "name": "subscription_card_checked",
+  "occurred_at": "2026-11-16T10:00:00.000Z",
+  "correlation_id": "w4pcb:chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab|WaitingAuthComplete",
+  "external_user_id": "64f0c0ffee00000000abcd12",
+  "aggregate_id": "3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f",
+  "payload": {
+    "amount": 0,
+    "currency": 1,
+    "method": 0,
+    "period": "P4W",
+    "source": "wayforpay_callback",
+    "charge_kind": "checkout",
+    "next_payment_date": "2026-12-03T00:00:00.000Z",
+    "next_amount": 5000,
+    "period_start": null,
+    "period_end": null,
+    "recurring": true,
+    "metadata": {
+      "source": "wfp_migration",
+      "attemptId": "att_42"
+    },
+    "checkout_session_id": "chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab",
+    "aggregate_id": "3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f",
+    "correlation_id": "w4pcb:chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab|WaitingAuthComplete"
+  }
+}

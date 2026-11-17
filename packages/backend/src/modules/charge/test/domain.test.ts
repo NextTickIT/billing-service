@@ -45,6 +45,10 @@ import {
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import { makeCheckoutApplier } from '@/modules/checkout/domain.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
+import type { ApprovalLookup } from '@/modules/charge/contracts.js';
+
+/** An approval recorded before the ledger kept snapshots: the row is the report. */
+const legacyApproval: ApprovalLookup = () => Effect.succeed(Option.some(true));
 
 const cardChangeMatch = (owed: boolean): MatchResult => ({
   matched: true,
@@ -262,6 +266,8 @@ const makeFakeRepo = () => {
           return input;
         });
       }),
+    // No payment in this fake was created by a card check.
+    isFirstMoneyCharge: () => Effect.succeed(false),
     getIncomingChargeById: (id) =>
       Effect.sync(() => Option.fromNullable(eventsById.get(id))),
     listOpenQuarantine: () => Effect.succeed([]),
@@ -555,6 +561,32 @@ it.effect(
       expect(pub.events[0]?.id).toBe('evt_k9:succeeded');
     }),
 );
+
+it('recurringPaymentSucceeded reports the terms the approval charged over the match', () => {
+  const event = recurringPaymentSucceeded(
+    decodedCharge('k5'),
+    {
+      matched: true,
+      kind: 'recurring',
+      subscriptionId: 'sub_9',
+      externalUserId: 'sp:9',
+      // The row's terms now, after a plan and method change.
+      period: 'P1Y',
+      method: 1,
+    },
+    'sub_9',
+    {
+      nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
+      periodStart: new Date('2026-01-01T00:00:00Z'),
+      periodEnd: new Date('2026-02-01T00:00:00Z'),
+      metadata: null,
+      nextAmount: 30000,
+      charged: { period: 'P4W', method: 0 },
+    },
+  );
+
+  expect(event.payload).toMatchObject({ period: 'P4W', method: 0 });
+});
 
 it('recurringPaymentSucceeded carries the docs/07 required payload fields', () => {
   const event = recurringPaymentSucceeded(
@@ -1268,7 +1300,7 @@ it.effect(
       const { writes, sessionStatus, payments, checkout } = recordingRepos();
       const h = harness(
         recurringCheckout({ origin: 'prolong', prolongOf: 'sub_live' }),
-        makeCheckoutApplier(payments, checkout),
+        makeCheckoutApplier(payments, checkout, legacyApproval),
       );
 
       yield* h.run(declined('kf'));
@@ -1375,7 +1407,7 @@ it.effect.each(RAILS)(
           prolongOf: 'sub_live',
           method,
         }),
-        makeCheckoutApplier(payments, checkout),
+        makeCheckoutApplier(payments, checkout, legacyApproval),
       );
 
       yield* h.run({

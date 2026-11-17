@@ -15,6 +15,10 @@ import {
   planMethodChange,
 } from '@/modules/checkout/domain.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
+import type { ApprovalLookup } from '@/modules/charge/contracts.js';
+
+/** An approval recorded before the ledger kept snapshots: the row is the report. */
+const legacyApproval: ApprovalLookup = () => Effect.succeed(Option.some(true));
 
 /**
  * Tests for the previous-method-agnostic payment-method change (docs/32):
@@ -230,6 +234,7 @@ const recordingRepo = () => {
     cancelUpstream: die,
     defer: die,
     deferCharge: die,
+    markFirstMoney: () => Effect.void,
     updateToken: (_id, token) =>
       Effect.sync(() => {
         calls.updatedToken = token;
@@ -272,10 +277,11 @@ it.effect(
 
       // WayForPay (card) success with a recToken → CARD: tokenize the new card, no arrears
       // advance (owed=false, active card verify).
-      const result = yield* makeCheckoutApplier(repo, checkout)(
-        event({ recToken: 'new-tok' }),
-        cardChangeMatch(CARD, false),
-      );
+      const result = yield* makeCheckoutApplier(
+        repo,
+        checkout,
+        legacyApproval,
+      )(event({ recToken: 'new-tok' }), cardChangeMatch(CARD, false));
 
       expect(calls.updatedToken).toBe('new-tok');
       expect(calls.setMethod).toBe(CARD);
@@ -304,10 +310,14 @@ it.effect(
       const { repo } = recordingRepo();
       const checkout = completingCheckout(() => undefined);
 
-      const result = yield* makeCheckoutApplier(repo, checkout)(
-        event({ recToken: 'new-tok' }),
-        { ...cardChangeMatch(CARD, false), amountCharged: true },
-      );
+      const result = yield* makeCheckoutApplier(
+        repo,
+        checkout,
+        legacyApproval,
+      )(event({ recToken: 'new-tok' }), {
+        ...cardChangeMatch(CARD, false),
+        amountCharged: true,
+      });
 
       expect(result).toMatchObject({
         nextPaymentDate: new Date('2026-02-01T00:00:00Z'),
@@ -326,7 +336,11 @@ it.effect(
       // An Approved WayForPay charge can omit recToken (docs/14). It must keep the sub on
       // card: do NOT clear the existing token (that would silently strip a live card sub to
       // manual). Store nothing (no new token), leave method Card.
-      yield* makeCheckoutApplier(repo, checkout)(
+      yield* makeCheckoutApplier(
+        repo,
+        checkout,
+        legacyApproval,
+      )(
         event({}), // wayforpay_callback, no recToken
         cardChangeMatch(CARD, false),
       );
@@ -347,10 +361,11 @@ it.effect(
       // WhitePay (crypto) success → CRYPTO: an owed crypto change pays arrears in crypto,
       // advances, and clears the token so the scheduler's token-less branch prompts a manual
       // crypto renewal next cycle.
-      const result = yield* makeCheckoutApplier(repo, checkout)(
-        event({}, 'whitepay_callback'),
-        cardChangeMatch(CRYPTO, true),
-      );
+      const result = yield* makeCheckoutApplier(
+        repo,
+        checkout,
+        legacyApproval,
+      )(event({}, 'whitepay_callback'), cardChangeMatch(CRYPTO, true));
 
       expect(calls.clearedToken).toBe(true);
       expect(calls.setMethod).toBe(CRYPTO);

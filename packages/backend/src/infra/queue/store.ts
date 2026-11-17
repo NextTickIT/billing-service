@@ -37,6 +37,10 @@ export interface ClaimedMessage {
   readonly payload: unknown;
   /** Attempt number for this claim (post-increment): 1 on the first try. */
   readonly attemptCount: number;
+  /** When the message was enqueued (bounds a waiting message). */
+  readonly createdAt: Date;
+  /** Ordinary failures so far (attempts that ended waiting are not counted). */
+  readonly failureCount: number;
 }
 
 export interface CompleteInput {
@@ -48,6 +52,8 @@ export interface CompleteInput {
   readonly result: unknown;
   readonly error: ErrorDetail | null;
   readonly outcome: Outcome;
+  /** This attempt failed as an ordinary failure (not a wait): it spends the budget. */
+  readonly countsAsFailure: boolean;
 }
 
 /**
@@ -114,13 +120,15 @@ export const claimBatch =
             "attemptCount" = m."attemptCount" + 1
         FROM claimed
         WHERE m.id = claimed.id
-        RETURNING m.id, m."messageType", m."idemKey", m.payload, m."attemptCount"
+        RETURNING m.id, m."messageType", m."idemKey", m.payload, m."attemptCount",
+                  m."createdAt", m."failureCount"
       ),
       logged AS (
         INSERT INTO message_status_events ("messageId", status)
         SELECT id, 'in_progress' FROM upd
       )
-      SELECT id, "messageType", "idemKey", payload, "attemptCount"
+      SELECT id, "messageType", "idemKey", payload, "attemptCount", "createdAt",
+             "failureCount"
       FROM upd
       ORDER BY id
     `;
@@ -157,10 +165,45 @@ export const complete =
           "retryAt" = ${input.outcome.retryAt},
           "lockedBy" = NULL,
           "lockedAt" = NULL,
-          "finishedAt" = ${finishedAt}
+          "finishedAt" = ${finishedAt},
+          "failureCount" = "failureCount" + ${input.countsAsFailure ? 1 : 0}
       WHERE id = ${input.messageId}
     `.pipe(Effect.asVoid);
   };
+
+/**
+ * Make the receipts of one provider order (`payment_event_received` messages naming it)
+ * due now, with a fresh failure budget: those waiting in `retry`, and any that
+ * dead-lettered (`fail`). Run by the approval's own transaction (the commit they waited
+ * for) and by the receipt sweep (`sweepUnsettledReceipts`). Logged like every status
+ * change, in the same statement. A receipt being processed (`in_progress`) is left to its
+ * worker; the sweep catches it if that attempt ends badly.
+ */
+export const reviveReceipts =
+  (sql: SqlClient.SqlClient) =>
+  (externalRef: string): Effect.Effect<number, SqlError.SqlError> =>
+    sql<{ readonly id: string }>`
+      WITH upd AS (
+        UPDATE messages
+        SET status = 'retry', "retryAt" = now(), "finishedAt" = NULL,
+            "failureCount" = 0
+        WHERE "messageType" = 'payment_event_received'
+          AND payload->>'externalRef' = ${externalRef}
+          AND status IN ('retry', 'fail')
+          -- A receipt that can never decode stays failed: reviving it only repeats the
+          -- failure. The sweep hands its order to a person instead.
+          AND NOT EXISTS (
+            SELECT 1 FROM attempts a
+            WHERE a."messageId" = messages.id AND a.error->>'code' = 'receipt_undecodable'
+          )
+        RETURNING id
+      ),
+      logged AS (
+        INSERT INTO message_status_events ("messageId", status)
+        SELECT id, 'retry' FROM upd
+      )
+      SELECT id FROM upd
+    `.pipe(Effect.map((rows) => rows.length));
 
 /**
  * Requeue messages whose worker died mid-flight: `in_progress` past the

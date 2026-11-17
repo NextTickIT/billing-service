@@ -1,0 +1,29 @@
+{
+  "id": "evt_w4p:sub_3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f_1796256000000|CHARGE|1796256000:succeeded",
+  "idempotency_key": "evt_w4p:sub_3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f_1796256000000|CHARGE|1796256000:succeeded",
+  "name": "recurring_payment_succeeded",
+  "occurred_at": "2026-12-03T00:00:00.000Z",
+  "correlation_id": "w4p:sub_3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f_1796256000000|CHARGE|1796256000",
+  "external_user_id": "64f0c0ffee00000000abcd12",
+  "aggregate_id": "3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f",
+  "payload": {
+    "amount": 5000,
+    "currency": 1,
+    "method": 0,
+    "period": "P4W",
+    "source": "wayforpay_charge",
+    "charge_kind": "scheduled",
+    "next_payment_date": "2026-12-31T00:00:00.000Z",
+    "next_amount": 5000,
+    "period_start": "2026-12-03T00:00:00.000Z",
+    "period_end": "2026-12-31T00:00:00.000Z",
+    "recurring": true,
+    "metadata": {
+      "source": "wfp_migration",
+      "attemptId": "att_42"
+    },
+    "card_check_first_charge": true,
+    "aggregate_id": "3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f",
+    "correlation_id": "w4p:sub_3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f_1796256000000|CHARGE|1796256000"
+  }
+}

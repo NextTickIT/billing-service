@@ -477,6 +477,71 @@ const KINDS: readonly (readonly [
     },
   ],
   [
+    'subscription_card_checked',
+    {
+      amount: 0,
+      currency: 1,
+      method: 0,
+      period: 'P4W',
+      source: 'wayforpay_callback',
+      chargeKind: 'checkout',
+      nextPaymentDate: '2026-04-01T00:00:00.000Z',
+      nextAmount: 5000,
+      periodStart: null,
+      periodEnd: null,
+      recurring: true,
+      metadata: null,
+      checkoutSessionId: 'chk_cc',
+    },
+    {
+      aggregate_id: SUBSCRIPTION,
+      correlation_id: CORRELATION,
+      amount: 0,
+      currency: 1,
+      method: 0,
+      period: 'P4W',
+      source: 'wayforpay_callback',
+      charge_kind: 'checkout',
+      next_payment_date: '2026-04-01T00:00:00.000Z',
+      next_amount: 5000,
+      period_start: null,
+      period_end: null,
+      recurring: true,
+      metadata: null,
+      checkout_session_id: 'chk_cc',
+    },
+  ],
+  [
+    'card_check_failed',
+    { reason: 'late', checkoutSessionId: 'chk_cc', metadata: null },
+    {
+      aggregate_id: SUBSCRIPTION,
+      correlation_id: CORRELATION,
+      reason: 'late',
+      checkout_session_id: 'chk_cc',
+      metadata: null,
+    },
+  ],
+  [
+    'card_check_anomaly',
+    {
+      status: 'Approved',
+      reasonCode: '1100',
+      tokenPresent: true,
+      checkoutSessionId: 'chk_cc',
+      metadata: null,
+    },
+    {
+      aggregate_id: SUBSCRIPTION,
+      correlation_id: CORRELATION,
+      status: 'Approved',
+      reason_code: '1100',
+      token_present: true,
+      checkout_session_id: 'chk_cc',
+      metadata: null,
+    },
+  ],
+  [
     'unknown_payment_quarantined',
     {
       quarantineId: 'q_1',
@@ -758,6 +823,100 @@ describe('makeCrmConnector — what the CRM stored', () => {
         },
       });
     }),
+  );
+});
+
+describe('makeCrmConnector — the card-check kinds and the handover defer', () => {
+  // The card-check facts and the handover defer are acted on only once `validated`. A CRM
+  // that has not registered them yet is an image older than the release: ask again until
+  // it is upgraded, never dead-letter them.
+  it.effect.each([
+    ['subscription_card_checked', 'validated', DELIVERED],
+    ['subscription_card_checked', 'unregistered', RETRYABLE],
+    ['subscription_card_checked', 'rejected', PERMANENT],
+    ['card_check_failed', 'validated', DELIVERED],
+    ['card_check_failed', 'unregistered', RETRYABLE],
+    ['card_check_failed', 'rejected', PERMANENT],
+    ['card_check_anomaly', 'validated', DELIVERED],
+    ['card_check_anomaly', 'unregistered', RETRYABLE],
+    ['card_check_anomaly', 'rejected', PERMANENT],
+  ] as const)('%s stored %s → %o', ([name, schemaStatus, expected]) =>
+    Effect.gen(function* () {
+      const crm = crmAnswering(ack(schemaStatus));
+
+      const result = yield* deliver(client(crm.fetch), event({ name }));
+
+      expect(result).toMatchObject(expected);
+      expect(crm.posts).toHaveLength(1);
+    }),
+  );
+});
+
+const handover = {
+  newPeriodEnd: '2026-12-02T00:00:00.000Z',
+  days: 1,
+  reason: 'handover',
+  revision: 2,
+};
+const operatorDefer = {
+  newPeriodEnd: '2026-12-06T00:00:00.000Z',
+  days: 5,
+  revision: 1,
+};
+
+describe('makeCrmConnector — the handover defer', () => {
+  it.effect.each([
+    ['a handover defer', 'payment_deferred', handover, 'validated', DELIVERED],
+    [
+      'a handover defer',
+      'payment_deferred',
+      handover,
+      'unregistered',
+      RETRYABLE,
+    ],
+    ['a handover defer', 'payment_deferred', handover, 'rejected', PERMANENT],
+    [
+      'an operator defer',
+      'payment_deferred',
+      operatorDefer,
+      'validated',
+      DELIVERED,
+    ],
+    [
+      'an operator defer',
+      'payment_deferred',
+      operatorDefer,
+      'unregistered',
+      DELIVERED,
+    ],
+    [
+      'an operator defer',
+      'payment_deferred',
+      operatorDefer,
+      'rejected',
+      PERMANENT,
+    ],
+    // Only a payment_deferred is a handover defer, whatever another payload says.
+    [
+      'a "handover" reason on another kind',
+      'renewal_failed',
+      handover,
+      'unregistered',
+      DELIVERED,
+    ],
+  ] as const)(
+    '%s stored %s → %o',
+    ([, name, payload, schemaStatus, expected]) =>
+      Effect.gen(function* () {
+        const crm = crmAnswering(ack(schemaStatus));
+
+        const result = yield* deliver(
+          client(crm.fetch),
+          event({ name, payload }),
+        );
+
+        expect(result).toMatchObject(expected);
+      }),
   );
 });
 

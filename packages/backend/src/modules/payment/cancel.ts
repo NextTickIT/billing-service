@@ -66,7 +66,8 @@ export const paymentReactivated = (
   payload: {},
 });
 
-/** payment_deferred envelope: N free days granted; carries the new period end. */
+/** payment_deferred envelope: N free days granted (or, `handover`, the first charge of a
+ * card-check payment moved); carries the new period end and the defer revision. */
 export const paymentDeferred = (
   notify: DeferNotify,
   now: Date,
@@ -77,7 +78,12 @@ export const paymentDeferred = (
   correlationId: notify.paymentId,
   externalUserId: notify.externalUserId,
   aggregateId: notify.paymentId,
-  payload: { newPeriodEnd: notify.newPeriodEnd, days: notify.days },
+  payload: {
+    newPeriodEnd: notify.newPeriodEnd,
+    days: notify.days,
+    ...(notify.reason === undefined ? {} : { reason: notify.reason }),
+    revision: notify.revision,
+  },
 });
 
 /** method_changed envelope: the no-payment flip recorded the new method. */

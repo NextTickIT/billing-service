@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { SqlClient, SqlError } from '@effect/sql';
 import {
   type DomainEvent,
+  type Payment,
   PaymentMethod,
   PaymentStatus,
 } from '@billing-service/shared';
@@ -33,6 +34,7 @@ import {
   type ChargeRepo,
 } from '@/modules/charge/data-access.js';
 import { ChargePipeline, handleChargeEvent } from '@/modules/charge/domain.js';
+import { makeCardCheckStep } from '@/modules/checkout/card-check.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
   makeCardChangeMatcher,
@@ -45,6 +47,12 @@ import {
   makePaymentRepo,
   type PaymentRepo,
 } from '@/modules/payment/data-access.js';
+import { settlementOf } from '@/modules/billing/events.js';
+import {
+  ledgerApproval,
+  ledgerClaimAdvance,
+} from '@/modules/billing/scheduler.js';
+import { advanceLocked, isLive } from '@/modules/payment/domain.js';
 import { makeRecurringMatcher } from '@/modules/payment/matcher.js';
 import { makeWorkerRuntime, type WorkerRuntime } from '@/runtime.js';
 
@@ -318,6 +326,28 @@ export const seedSub = (subs: PaymentRepo, s: SubSeed) =>
     retryAttempt: s.retryAttempt ?? 0,
   });
 
+/**
+ * The scheduler's approval of `orderReference` committed — the credited advance and its
+ * ledger record, as `recordApproved` writes them — without its own receipt copy: the copy
+ * a scenario ingests (a callback, the poller's) is the one the queue takes.
+ */
+export const recordApproval = (
+  sub: Pick<Payment, 'id' | 'period' | 'method'>,
+  orderReference: string,
+) =>
+  Effect.flatMap(SqlClient.SqlClient, (sql) =>
+    ledgerClaimAdvance(sql)(orderReference)(
+      advanceLocked(makePaymentRepo(sql), orderReference)(
+        sub.id,
+        sub.period,
+        new Date(),
+        isLive,
+      ).pipe(
+        Effect.map((advanced) => ({ settlement: settlementOf(advanced, sub) })),
+      ),
+    ),
+  );
+
 /** An injected database fault, typed like a real one so every retry path treats it so. */
 export const injectedFault = (what: string) =>
   new SqlError.SqlError({ message: `injected fault: ${what}` });
@@ -378,8 +408,10 @@ export const settlementHandler = (seams: SettlementSeams = {}) =>
         makeCheckoutApplier(
           seams.payments ?? makePaymentRepo(sql),
           makeCheckoutRepo(sql),
+          ledgerApproval(sql),
         ),
       publish: seams.publish ?? outbox.publish,
+      cardCheck: makeCardCheckStep(sql),
     });
   });
 

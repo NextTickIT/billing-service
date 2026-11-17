@@ -7,6 +7,8 @@ import {
   deliveryRetryConfig,
   describeError,
   isPermanentFailure,
+  countedAttempts,
+  isWaitingFailure,
   type RetryConfig,
   scheduledRetryConfig,
 } from '@/infra/queue/policy.js';
@@ -279,5 +281,111 @@ describe('describeError', () => {
   test('falls back to String for primitives', () => {
     expect(describeError('nope').message).toBe('nope');
     expect(describeError(42).message).toBe('42');
+  });
+});
+
+describe('decideOutcome: a waiting failure', () => {
+  const now = 1_790_000_000_000;
+  const HOUR = 3_600_000;
+
+  test.each([
+    [
+      'the first wait',
+      1,
+      now,
+      { status: 'retry', retryAt: new Date(now + 1_000), finished: false },
+    ],
+    [
+      'a wait past maxAttempts still retries',
+      6,
+      now - HOUR,
+      { status: 'retry', retryAt: new Date(now + 32_000) },
+    ],
+    [
+      'a long wait steps at most five minutes',
+      30,
+      now - HOUR,
+      { status: 'retry', retryAt: new Date(now + 300_000) },
+    ],
+    [
+      'just inside 48 h from enqueue',
+      400,
+      now - (48 * HOUR - 1),
+      { status: 'retry' },
+    ],
+    [
+      '48 h from enqueue: dead-letters',
+      400,
+      now - 48 * HOUR,
+      { status: 'fail', retryAt: null, finished: true },
+    ],
+  ])('%s', (_label, attemptCount, createdAtMillis, expected) => {
+    const outcome = decideOutcome(
+      { failed: true, attemptCount, waiting: true, createdAtMillis },
+      now,
+      config,
+    );
+
+    expect(outcome).toMatchObject(expected);
+  });
+
+  test('a permanent failure is not a wait', () => {
+    const outcome = decideOutcome(
+      {
+        failed: true,
+        attemptCount: 1,
+        waiting: true,
+        permanent: true,
+        createdAtMillis: now,
+      },
+      now,
+      config,
+    );
+
+    expect(outcome.status).toBe('fail');
+  });
+});
+
+describe('isWaitingFailure', () => {
+  test.each([
+    [{ waiting: true }, true],
+    [undefined, false],
+    ['waiting', false],
+    [{ waiting: 'yes' }, false],
+    [{}, false],
+    [null, false],
+  ])('isWaitingFailure(%j) → %s', (error, expected) => {
+    expect(isWaitingFailure(error)).toBe(expected);
+  });
+});
+
+describe('countedAttempts: waits never spend the failure budget', () => {
+  test.each([
+    [
+      'an ordinary failure after seven waits is the first failure',
+      { attemptCount: 8, failureCount: 0 },
+      { failed: true, waiting: false },
+      1,
+    ],
+    [
+      'the third ordinary failure',
+      { attemptCount: 9, failureCount: 2 },
+      { failed: true, waiting: false },
+      3,
+    ],
+    [
+      'a success counts the failures before it',
+      { attemptCount: 9, failureCount: 2 },
+      { failed: false, waiting: false },
+      2,
+    ],
+    [
+      'the eighth attempt, a wait, after one failure: seven waits',
+      { attemptCount: 8, failureCount: 1 },
+      { failed: true, waiting: true },
+      7,
+    ],
+  ])('%s', (_label, message, attempt, expected) => {
+    expect(countedAttempts(message, attempt)).toBe(expected);
   });
 });

@@ -5,7 +5,7 @@ import {
   CreateAccepted,
   CreatePaymentRequest,
   DeferAccepted,
-  DeferPaymentRequest,
+  DeferRequest,
   Payment,
   PaymentDetail,
   PaymentMethod,
@@ -20,6 +20,7 @@ import { withIdempotencyKey } from '@/infra/db/idempotency.js';
 import { assertBffSecret } from '@/infra/http/bff-secret.js';
 import { extractBearer } from '@/infra/http/bearer.js';
 import {
+  DeferRefused,
   NotFound,
   Unauthorized,
   UnprocessableEntity,
@@ -31,6 +32,7 @@ import {
 import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { authenticate, requireRole } from '@/modules/auth/domain.js';
+import { serviceActor } from '@/modules/auth/service-actor.js';
 import { makeChargeRepo } from '@/modules/charge/data-access.js';
 import {
   PAYMENT_CANCEL,
@@ -38,9 +40,17 @@ import {
   PAYMENT_REACTIVATE,
 } from '@/modules/payment/contracts.js';
 import {
+  deferToDate,
+  type DeferredTo,
+  lockDeferTarget,
   makePaymentRepo,
   type PaymentListFilter,
 } from '@/modules/payment/data-access.js';
+import {
+  handoverDecision,
+  operatorDeferBlocked,
+  wholeDaysBetween,
+} from '@/modules/payment/domain.js';
 import { addPeriod, isValidPeriod } from '@/modules/payment/period.js';
 
 const route = makeRoute((app: FastifyInstance) => app.runtime);
@@ -321,34 +331,27 @@ const assertDeferrable = (payment: Payment, days: number) => {
   return Effect.void;
 };
 
-/** Apply a deferral: push the anchor, audit, and enqueue the notify. Wrapped by the
- * idempotency ledger in `deferPayment`, so a re-send neither double-grants the free days
- * nor double-emits `payment_deferred`. */
-const applyDefer = (
-  sql: SqlClient.SqlClient,
-  actor: { readonly role: Role },
-  payment: Payment,
-  days: number,
-) =>
+/** Who did a defer, what it was, and what it wrote: the audit row and the notify. */
+interface DeferRecord {
+  readonly actor: string;
+  readonly payment: Payment;
+  readonly days: number;
+  readonly reason?: 'handover';
+  readonly deferred: DeferredTo;
+}
+
+/** Audit a defer and enqueue its `payment_deferred` notify, in the caller's transaction. */
+const recordDefer = (sql: SqlClient.SqlClient, record: DeferRecord) =>
   Effect.gen(function* () {
-    // The end the relative SQL actually wrote: a prolongation may have moved the anchor
-    // since `payment` was read, and the response and event must report the real one.
-    const deferred = yield* makePaymentRepo(sql).defer(payment.id, days);
-    if (Option.isNone(deferred)) {
-      return yield* Effect.fail(
-        new UnprocessableEntity({
-          reason: 'only an active payment can be deferred',
-        }),
-      );
-    }
-    const newPeriodEnd = deferred.value;
+    const { payment, days, deferred } = record;
+    const reason = record.reason === undefined ? {} : { reason: record.reason };
     const at = yield* Clock.currentTimeMillis;
     yield* makeChargeRepo(sql).insertAudit({
-      actor: Role[actor.role],
+      actor: record.actor,
       action: 'defer_payment',
       targetType: 'payment',
       targetId: payment.id,
-      detail: { days },
+      detail: { days, revision: deferred.revision, ...reason },
     });
     yield* enqueue(sql)({
       messageType: PAYMENT_DEFER,
@@ -356,40 +359,195 @@ const applyDefer = (
       // days) — rather than on a wall-clock read. The HTTP idempotency ledger already
       // collapses a resent request; this makes the QUEUE message dedupe on its own terms
       // too, so a redelivery cannot grant a second message for one grant.
-      idemKey: `defer:${payment.id}:${newPeriodEnd.toISOString()}`,
+      idemKey: `defer:${payment.id}:${deferred.newPeriodEnd.toISOString()}`,
       payload: {
         paymentId: payment.id,
         externalUserId: payment.externalUserId,
-        newPeriodEnd: newPeriodEnd.toISOString(),
+        newPeriodEnd: deferred.newPeriodEnd.toISOString(),
         days,
         at,
+        ...reason,
+        revision: deferred.revision,
       },
     });
-    return { status: 'deferred' as const, newPeriodEnd };
+    return {
+      status: 'deferred' as const,
+      newPeriodEnd: deferred.newPeriodEnd,
+      revision: deferred.revision,
+    };
   });
 
-const deferPayment = (
-  body: Schema.Schema.Type<typeof DeferPaymentRequest>,
-  request: FastifyRequest,
+/** Refuse, under the payment's lock, an operator defer of a card-check payment whose
+ * first charge is due and untaken (`operatorDeferBlocked`). The lock is held to the end of
+ * the transaction `operatorDefer` always opens, so no scheduler charge can start between
+ * this check and the write. */
+const assertNotInFlight = (sql: SqlClient.SqlClient, id: string) =>
+  Effect.gen(function* () {
+    const target = yield* lockDeferTarget(sql)(id);
+    if (
+      Option.isSome(target) &&
+      operatorDeferBlocked(target.value, yield* Clock.currentTimeMillis)
+    ) {
+      return yield* Effect.fail(
+        new DeferRefused({
+          code: 'charge_in_flight',
+          reason: 'the first charge is due',
+        }),
+      );
+    }
+  });
+
+/**
+ * Apply an operator deferral: check, push the anchor, audit, and enqueue the notify. Runs
+ * inside the idempotency ledger's fresh execution (`deferPayment`): a re-send replays the
+ * saved answer even if the payment changed since, and never double-grants the free days
+ * nor double-emits `payment_deferred`.
+ */
+const applyDefer = (
+  sql: SqlClient.SqlClient,
+  actor: { readonly role: Role },
+  id: string,
+  days: number,
 ) =>
   Effect.gen(function* () {
-    assertBffSecret(request);
-    const actor = yield* operatorActor(request);
-    yield* assertIdempotencyKey(request);
-    const id = readId(request);
-    const sql = yield* SqlClient.SqlClient;
     const repo = makePaymentRepo(sql);
     const found = yield* repo.findById(id);
     if (Option.isNone(found)) {
       return yield* Effect.fail(new NotFound({ resource: 'payment' }));
     }
-    yield* assertDeferrable(found.value, body.days);
+    yield* assertDeferrable(found.value, days);
+    yield* assertNotInFlight(sql, id);
+    // The end the relative SQL actually wrote: a prolongation may have moved the anchor
+    // since `payment` was read, and the response and event must report the real one.
+    const deferred = yield* repo.defer(id, days);
+    if (Option.isNone(deferred)) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({
+          reason: 'only an active payment can be deferred',
+        }),
+      );
+    }
+    return yield* recordDefer(sql, {
+      actor: Role[actor.role],
+      payment: found.value,
+      days,
+      deferred: deferred.value,
+    });
+  });
+
+const operatorDefer = (days: number | undefined, request: FastifyRequest) =>
+  Effect.gen(function* () {
+    assertBffSecret(request);
+    const actor = yield* operatorActor(request);
+    yield* assertIdempotencyKey(request);
+    if (days === undefined) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({ reason: 'days is required' }),
+      );
+    }
+    const sql = yield* SqlClient.SqlClient;
+    const id = readId(request);
+    if (Option.isNone(yield* makePaymentRepo(sql).findById(id))) {
+      return yield* Effect.fail(new NotFound({ resource: 'payment' }));
+    }
+    // One transaction whether or not the caller sent a key (the ledger opens none without
+    // one): the guard's row lock must hold through the write, the audit and the notify.
+    return yield* sql.withTransaction(
+      withIdempotencyKey(
+        'payment.defer',
+        idempotencyKeyOf(request),
+        DeferAccepted,
+      )(applyDefer(sql, actor, id, days)),
+    );
+  });
+
+/**
+ * Apply a handover defer under the payment's row lock: the eligibility and bounds checks
+ * (`handoverDecision`) and the write see one state. Runs inside the ledger's fresh
+ * execution, so a committed request always replays its saved answer.
+ */
+const applyHandover = (
+  sql: SqlClient.SqlClient,
+  payment: Payment,
+  deferTo: Date,
+) =>
+  Effect.gen(function* () {
+    const target = yield* lockDeferTarget(sql)(payment.id);
+    if (Option.isNone(target)) {
+      return yield* Effect.fail(new NotFound({ resource: 'payment' }));
+    }
+    const decision = handoverDecision(
+      target.value,
+      deferTo,
+      yield* Clock.currentTimeMillis,
+    );
+    if (decision.kind === 'refuse') {
+      return yield* Effect.fail(new DeferRefused(decision));
+    }
+    if (decision.kind === 'unchanged') {
+      return {
+        status: 'unchanged' as const,
+        newPeriodEnd: target.value.nextPaymentDate,
+        revision: target.value.deferRevision,
+      };
+    }
+    const deferred = yield* deferToDate(sql)(payment.id, deferTo);
+    if (Option.isNone(deferred)) {
+      return yield* Effect.fail(
+        new DeferRefused({
+          code: 'not_active',
+          reason: 'only an active payment can be deferred',
+          paymentStatus: target.value.status,
+        }),
+      );
+    }
+    return yield* recordDefer(sql, {
+      actor: 'service',
+      payment,
+      days: wholeDaysBetween(target.value.nextPaymentDate, deferTo),
+      reason: 'handover',
+      deferred: deferred.value,
+    });
+  });
+
+/**
+ * The handover defer: the shared service token, an absolute `deferTo`, and an
+ * Idempotency-Key (the caller retries under one key until it gets an answer). Its safety
+ * is the request shape (`handoverDecision`), not the credential.
+ */
+const handoverDefer = (body: DeferRequest, request: FastifyRequest) =>
+  Effect.gen(function* () {
+    yield* serviceActor(request);
+    yield* assertIdempotencyKey(request);
+    const key = idempotencyKeyOf(request);
+    if (body.days !== undefined || body.deferTo === undefined || key === null) {
+      return yield* Effect.fail(
+        new DeferRefused({
+          code: 'invalid_request',
+          reason:
+            'a handover defer takes deferTo (not days) and an Idempotency-Key',
+        }),
+      );
+    }
+    const deferTo = body.deferTo;
+    const sql = yield* SqlClient.SqlClient;
+    const found = yield* makePaymentRepo(sql).findById(readId(request));
+    if (Option.isNone(found)) {
+      return yield* Effect.fail(new NotFound({ resource: 'payment' }));
+    }
     return yield* withIdempotencyKey(
       'payment.defer',
-      idempotencyKeyOf(request),
+      key,
       DeferAccepted,
-    )(applyDefer(sql, actor, found.value, body.days));
+    )(applyHandover(sql, found.value, deferTo));
   });
+
+/** Operator defers (`{days}`, BFF secret + operator session) and handover defers
+ * (`{reason:'handover', deferTo}`, service token) share the route; the body picks. */
+const deferPayment = (body: DeferRequest, request: FastifyRequest) =>
+  body.reason === 'handover'
+    ? handoverDefer(body, request)
+    : operatorDefer(body.days, request);
 
 export default function payments(fastify: FastifyInstance): void {
   route(fastify, {
@@ -438,7 +596,7 @@ export default function payments(fastify: FastifyInstance): void {
   route(fastify, {
     method: 'POST',
     path: '/api/payment/:id/defer',
-    input: DeferPaymentRequest,
+    input: DeferRequest,
     output: DeferAccepted,
     status: 202,
     handler: deferPayment,

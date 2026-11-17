@@ -16,6 +16,8 @@ import { Effect, Either, Exit, Fiber, Option } from 'effect';
 import { claimBatch, reapStale } from '@/infra/queue/store.js';
 import { TaskRegistry } from '@/infra/task-registry.js';
 import migration0021 from '@/migrations/0021_checkout_renewal.js';
+import { settlementOf } from '@/modules/billing/events.js';
+import type { ScheduledApproval } from '@/modules/charge/contracts.js';
 import {
   ledgerClaimAdvance,
   scheduleTick,
@@ -159,8 +161,13 @@ const schedulerAdvance = (
   sub: Payment,
 ) =>
   ledgerClaimAdvance(sql)(orderReferenceOf(sub))(
-    advanceLocked(subs)(sub.id, sub.period, new Date(), isLive).pipe(
-      Effect.map(Option.isSome),
+    advanceLocked(subs, orderReferenceOf(sub))(
+      sub.id,
+      sub.period,
+      new Date(),
+      isLive,
+    ).pipe(
+      Effect.map((advanced) => ({ settlement: settlementOf(advanced, sub) })),
     ),
   );
 
@@ -415,7 +422,11 @@ const t16BarrierSchedulerAdvance: EffectScenario = {
         }),
       );
       assert.ok(Exit.isSuccess(out.prolongExit), 'the prolong settled');
-      assert.equal(out.result, true, 'the scheduler advance applied');
+      assert.notEqual(
+        (out.result as ScheduledApproval).settlement,
+        null,
+        'the scheduler advance applied (it recorded a credited window)',
+      );
       assert.equal(
         endMs(out.final),
         BARRIER_END.getTime() + 2 * P4W,
@@ -445,7 +456,11 @@ const t16BarrierRollback: EffectScenario = {
         }),
       );
       assert.ok(Exit.isFailure(out.prolongExit), 'the prolong failed');
-      assert.equal(out.result, true, 'the scheduler advance applied');
+      assert.notEqual(
+        (out.result as ScheduledApproval).settlement,
+        null,
+        'the scheduler advance applied (it recorded a credited window)',
+      );
       assert.equal(
         endMs(out.final),
         BARRIER_END.getTime() + P4W,
@@ -476,7 +491,7 @@ const t17DeferRacesProlong: EffectScenario = {
       assert.equal(endMs(out.final), expected, 'end = old + P4W + 3 days');
       assert.equal(out.final.nextPaymentDate.getTime(), expected);
       assert.equal(
-        Option.getOrNull(out.result)?.getTime(),
+        Option.getOrNull(out.result)?.newPeriodEnd.getTime(),
         expected,
         'defer reports the end it actually wrote',
       );
@@ -798,7 +813,10 @@ const t22DeferAcrossDst: EffectScenario = {
       const out = await run(driveDeferAcrossDst);
       const expected = computeDeferral(out.sub, 3).newPeriodEnd.getTime();
       assert.equal(expected, endMs(out.sub) + 72 * HOUR);
-      assert.equal(Option.getOrNull(out.deferred)?.getTime(), expected);
+      assert.equal(
+        Option.getOrNull(out.deferred)?.newPeriodEnd.getTime(),
+        expected,
+      );
       assert.equal(endMs(out.final), expected, 'currentPeriodEnd = old + 72h');
       assert.equal(out.final.nextPaymentDate.getTime(), expected);
     }),

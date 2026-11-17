@@ -490,3 +490,41 @@ describe('a lapsed caller link re-minted while the contact is PastDue', () => {
     expect(writes.reissued).toEqual([]);
   });
 });
+
+describe('effectivePayable: a card check is never re-issued', () => {
+  const cardCheck = (over: Partial<CheckoutSession> = {}) =>
+    session({ firstCharge: 'card_check', lockMethod: true, ...over });
+
+  test.each([
+    ['lapsed (past expiresAt)', cardCheck({ expiresAt: new Date(NOW - 1) })],
+    ['Expired', cardCheck({ status: CheckoutSessionStatus.Expired })],
+  ])('%s → 409, nothing re-issued', (_label, stored) => {
+    const result = effectivePayable(stored, Option.none(), NOW, TTL_SECONDS);
+
+    expect(Either.getLeft(result).pipe(Option.map((e) => e._tag))).toEqual(
+      Option.some('Conflict'),
+    );
+  });
+
+  test('a live card-check link is paid as stored', () => {
+    const stored = cardCheck();
+
+    const result = effectivePayable(stored, Option.none(), NOW, TTL_SECONDS);
+
+    expect(Either.getOrNull(result)).toEqual({
+      _tag: 'Stored',
+      session: stored,
+    });
+  });
+
+  test('the same lapsed link at full price is still cloned', () => {
+    const result = effectivePayable(
+      session({ expiresAt: new Date(NOW - 1) }),
+      Option.none(),
+      NOW,
+      TTL_SECONDS,
+    );
+
+    expect(Either.getOrNull(result)?._tag).toBe('Reissue');
+  });
+});

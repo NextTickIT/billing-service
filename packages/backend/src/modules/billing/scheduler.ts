@@ -4,20 +4,20 @@ import {
   type Payment,
   PaymentStatus,
 } from '@billing-service/shared';
+import { Cause, Clock, Data, Duration, Effect, Option, Schedule } from 'effect';
+
 import {
-  Cause,
-  Clock,
-  Data,
-  Duration,
-  Effect,
-  Option,
-  Schedule,
-  Schema,
-} from 'effect';
+  readIdempotentResponse,
+  withIdempotencyKey,
+} from '@/infra/db/idempotency.js';
+import { reviveReceipts } from '@/infra/queue/store.js';
 
-import { withIdempotencyKey } from '@/infra/db/idempotency.js';
-
-import type { Charge } from '@/modules/charge/contracts.js';
+import {
+  type ApprovalLookup,
+  type Charge,
+  LedgerApproval,
+  type ScheduledApproval,
+} from '@/modules/charge/contracts.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
 import { advanceLocked, isLive } from '@/modules/payment/domain.js';
 import { planRetry } from '@/modules/payment/retry.js';
@@ -27,6 +27,7 @@ import type { W4pChargeResponse } from '@/modules/wayforpay/contracts.js';
 import {
   chargeDeferred,
   chargeIncomingEvent,
+  settlementOf,
   withSettlement,
   chargeRetryFailed,
   type ManualCheckout,
@@ -92,21 +93,41 @@ export interface SchedulerDeps {
   readonly claimAdvance: (
     orderReference: string,
   ) => <E>(
-    effect: Effect.Effect<boolean, E>,
-  ) => Effect.Effect<boolean, E | SqlError.SqlError>;
+    effect: Effect.Effect<ScheduledApproval, E>,
+  ) => Effect.Effect<LedgerApproval, E | SqlError.SqlError>;
 }
 
 /** The production `claimAdvance`: the idempotency ledger under scope `scheduler.advance`,
  * whose own transaction is tx 2 (`advanceLocked` and the ingest enqueue nest in it). */
+const SCHEDULER_ADVANCE = 'scheduler.advance';
+
 export const ledgerClaimAdvance =
   (sql: SqlClient.SqlClient): SchedulerDeps['claimAdvance'] =>
   (orderReference) =>
   (effect) =>
     withIdempotencyKey(
-      'scheduler.advance',
+      SCHEDULER_ADVANCE,
       orderReference,
-      Schema.Boolean,
-    )(effect).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      LedgerApproval,
+    )(
+      // A receipt copy of this order that took the queue key first is waiting for this
+      // very commit: make it due in the same transaction.
+      Effect.tap(effect, () => reviveReceipts(sql)(orderReference)),
+    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+
+/**
+ * The approval the scheduler recorded for `orderReference`, once its transaction has
+ * committed (the ledger row is written in it). None while it has not: a charge copy that
+ * waits on it is retried rather than settled without it.
+ */
+export const ledgerApproval =
+  (sql: SqlClient.SqlClient): ApprovalLookup =>
+  (orderReference) =>
+    readIdempotentResponse(
+      SCHEDULER_ADVANCE,
+      orderReference,
+      LedgerApproval,
+    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
 
 /** The manual-renewal key of this cycle is held by a session that does not renew this
  * sub, so its link must not be sent to the contact (the minter has already alerted). */
@@ -297,12 +318,13 @@ const recordApproved = (
   deps
     .claimAdvance(orderReference)(
       Effect.gen(function* () {
-        const advanced = yield* advanceLocked(deps.subs)(
+        const advanced = yield* advanceLocked(deps.subs, orderReference)(
           sub.id,
           sub.period,
           now,
           isLive,
         );
+        const settlement = settlementOf(advanced, sub);
         yield* deps.ingest(
           withSettlement(
             chargeIncomingEvent(sub, orderReference, response, now),
@@ -310,7 +332,9 @@ const recordApproved = (
             sub,
           ),
         );
-        return Option.isSome(advanced);
+        // The ledger keeps what was credited, for a copy of this charge that the queue
+        // takes instead of the one just enqueued (they share its key).
+        return { settlement };
       }),
     )
     .pipe(

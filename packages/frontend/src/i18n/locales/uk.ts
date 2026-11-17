@@ -83,6 +83,8 @@ export default {
     typeOneTime: 'Одноразовий платіж',
     linkValidUntil: 'Посилання на оплату дійсне до {date}',
     startsAt: 'Оплачений період почнеться {date}',
+    cardCheck:
+      'Лише перевірка картки, зараз нічого не списується. Перше списання {amount} — {date}',
     redirecting: 'Перенаправлення на перевірку картки…',
     legalNote: 'Оплачуючи, ви приймаєте:',
     legalOffer: 'Оферта',

@@ -1,9 +1,11 @@
 import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
 import {
+  type CheckoutClosedReason,
   CheckoutSession,
   CheckoutSessionKind,
   CheckoutSessionStatus,
+  firstChargeOf,
   type NewCheckoutSession,
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
@@ -127,7 +129,7 @@ const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
       (id, "externalUserId", amount, currency, period, method, kind, recurring,
        "paymentId", "successUrl", "failureUrl", promo, "idempotencyKey", email,
        "expiresAt", renewal, origin, "renewalOf", options, metadata, "startsAt",
-       "payableUntil", "lockMethod")
+       "payableUntil", "lockMethod", "firstCharge")
     VALUES
       (${input.id}, ${input.externalUserId}, ${input.amount}, ${input.currency},
        ${input.period}, ${input.method ?? null}, ${input.kind}, ${input.recurring},
@@ -135,7 +137,7 @@ const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
        ${promo}::jsonb, ${input.idempotencyKey}, ${input.email},
        ${input.expiresAt}, ${renewal}::jsonb, ${input.origin}, ${input.renewalOf},
        ${options}::jsonb, ${metadata}::jsonb, ${input.startsAt},
-       ${input.payableUntil}, ${input.lockMethod})
+       ${input.payableUntil}, ${input.lockMethod}, ${firstChargeOf(input)})
     ON CONFLICT ("idempotencyKey") WHERE "idempotencyKey" IS NOT NULL DO NOTHING
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
@@ -182,10 +184,14 @@ const reissueLapsed =
         // would mint another payable order. Reset it to Created in the same transaction
         // so the caller's claim still wins; the buyer gets the SAME orderReference back.
         // `paymentId IS NULL` keeps card-change sessions out: those belong to their own
-        // endpoint and must never be handed to a plain checkout.
+        // endpoint and must never be handed to a plain checkout; a card check is never
+        // re-issued, so it is never handed back either. The outer WHERE re-checks the
+        // status on the row it locked: the subquery's snapshot predates a close or a
+        // settlement it waited for, and resetting such a row would reopen it.
         const live = yield* sql<{ readonly id: string }>`
           UPDATE checkout_sessions SET status = ${CheckoutSessionStatus.Created}
-          WHERE id = (
+          WHERE status IN (${CheckoutSessionStatus.Created}, ${CheckoutSessionStatus.Pending})
+            AND id = (
             SELECT id FROM checkout_sessions
             WHERE "externalUserId" = ${input.externalUserId}
               AND status IN (${CheckoutSessionStatus.Created}, ${CheckoutSessionStatus.Pending})
@@ -204,6 +210,7 @@ const reissueLapsed =
               AND "startsAt" IS NOT DISTINCT FROM ${input.startsAt}
               AND "payableUntil" IS NOT DISTINCT FROM ${input.payableUntil}
               AND "lockMethod" = ${input.lockMethod}
+              AND "firstCharge" = 'now'
               AND ((origin IS DISTINCT FROM 'prolong' AND NOT "lockMethod")
                 OR method = ${input.method ?? null})
             ORDER BY "createdAt" DESC
@@ -258,6 +265,40 @@ const renameOpenSessionsExternalUser =
         AND status IN (${CheckoutSessionStatus.Created}, ${CheckoutSessionStatus.Pending})
       RETURNING id
     `.pipe(Effect.map((rows) => rows.length));
+
+/**
+ * A session read under a row lock held to the end of the surrounding transaction: the
+ * card-check dispatch decides and writes under it, and `closeOpenCardCheck` (one UPDATE,
+ * which takes the same lock) waits for it, so a close and a verify never both win.
+ */
+export const lockSessionById =
+  (sql: SqlClient.SqlClient) =>
+  (
+    id: string,
+  ): Effect.Effect<Option.Option<CheckoutSession>, SqlError.SqlError> =>
+    sql<CheckoutSession>`
+      SELECT ${sql.unsafe(COLUMNS)} FROM checkout_sessions WHERE id = ${id} FOR UPDATE
+    `.pipe(Effect.map((rows) => Option.fromNullable(rows[0])));
+
+/**
+ * Close a card-check session that is still open (Created/Pending), recording why. Returns
+ * true iff THIS call closed it. Nothing else is ever closed: a full-price session, or one
+ * already Completed or Closed, is left as it is.
+ */
+export const closeOpenCardCheck =
+  (sql: SqlClient.SqlClient) =>
+  (
+    id: string,
+    reason: CheckoutClosedReason,
+  ): Effect.Effect<boolean, SqlError.SqlError> =>
+    sql<{ readonly id: string }>`
+      UPDATE checkout_sessions
+      SET status = ${CheckoutSessionStatus.Closed}, "closedReason" = ${reason}
+      WHERE id = ${id}
+        AND status IN (${CheckoutSessionStatus.Created}, ${CheckoutSessionStatus.Pending})
+        AND "firstCharge" = 'card_check'
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length > 0));
 
 /**
  * The latest prolong session for `subId` that the buyer claimed (pressed Pay) at or after

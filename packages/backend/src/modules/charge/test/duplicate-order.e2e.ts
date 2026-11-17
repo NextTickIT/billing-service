@@ -20,6 +20,7 @@ import {
   makeGate,
   openGate,
   pauseAt,
+  recordApproval,
   registerHandlers,
   seedSub,
   settlementHandler,
@@ -45,7 +46,10 @@ const seedDue = (externalUserId: string) =>
       end: new Date(Date.now() - DAY),
       token: 'tok',
     });
-    return `${PAYMENT_ORDER_PREFIX}${sub.id}_${sub.nextPaymentDate.getTime().toString()}`;
+    return {
+      sub,
+      orderReference: `${PAYMENT_ORDER_PREFIX}${sub.id}_${sub.nextPaymentDate.getTime().toString()}`,
+    };
   });
 
 const callbackCopy = (orderReference: string) =>
@@ -91,7 +95,7 @@ const scheduleAndApprove = Effect.gen(function* () {
 
 const schedulerThenCallback = Effect.gen(function* () {
   yield* registerHandlers;
-  const orderReference = yield* seedDue('sp:dup-seq');
+  const { orderReference } = yield* seedDue('sp:dup-seq');
   yield* scheduleAndApprove;
   yield* drain;
   yield* (yield* ChargePipeline).ingest(callbackCopy(orderReference));
@@ -113,7 +117,9 @@ const holdingOrderLock = (repo: ChargeRepo, gate: Gate): ChargeRepo => ({
  */
 const twoCopiesAtOnce = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const orderReference = yield* seedDue('sp:dup-race');
+  const { sub, orderReference } = yield* seedDue('sp:dup-race');
+  // The scheduler approved this order; both copies below are receipts of it.
+  yield* recordApproval(sub, orderReference);
   const gate = yield* makeGate;
   const copyA = yield* settlementHandler({
     repo: holdingOrderLock(makeChargeRepo(sql), gate),

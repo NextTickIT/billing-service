@@ -1,6 +1,8 @@
 import type { SqlError } from '@effect/sql';
 import {
   type CheckoutRenewal,
+  type FirstCharge,
+  MAX_CHECKOUT_HORIZON_DAYS,
   type Payment,
   PaymentMethod,
   PaymentStatus,
@@ -8,8 +10,10 @@ import {
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
+import type { DeferRefusal } from '@/infra/http/errors.js';
 import type {
   AdvanceAnchor,
+  DeferTarget,
   PaymentRepo,
 } from '@/modules/payment/data-access.js';
 import { addDays, addPeriod, samePeriod } from '@/modules/payment/period.js';
@@ -63,6 +67,18 @@ export interface ApplyPaymentParams {
    * stacks onto a live row ignores it: stacking already starts from the row's own end.
    */
   readonly startsAt?: Date | null | undefined;
+  /**
+   * `card_check`: a verified card, no money. The payment is created Active with its first
+   * charge due at `startsAt` and no paid window before it; it never stacks onto a live one.
+   * Absent means `now`.
+   */
+  readonly firstCharge?: FirstCharge;
+  /**
+   * The provider order whose money this charge is. When it credits the payment a period,
+   * the payment's first such order is recorded (`markFirstMoney`). Absent for a charge that
+   * moved no money (a card check).
+   */
+  readonly moneyRef?: string;
 }
 
 export interface ApplyPaymentResult {
@@ -79,6 +95,12 @@ export interface ApplyPaymentResult {
    * `subscriptionId` is that live payment; the caller refuses the settlement.
    */
   readonly introOnLive?: boolean;
+  /**
+   * Set when nothing was written because a card check met a live payment: a verify that
+   * bought nothing must never stack time onto a paid subscription. `subscriptionId` is
+   * that live payment.
+   */
+  readonly cardCheckOnLive?: boolean;
   /** The next scheduled charge date established by this charge (the paid-through anchor).
    * Carried out so the succeeded event can report it. */
   readonly nextPaymentDate: Date;
@@ -108,6 +130,15 @@ interface PeriodAnchors {
 }
 
 export const periodAnchors = (params: ApplyPaymentParams): PeriodAnchors => {
+  // A card check bought no period: the payer is paid elsewhere until `startsAt`, where the
+  // first charge falls. The "period" between is only the verify instant to that date.
+  if (params.firstCharge === 'card_check' && params.startsAt != null) {
+    return {
+      currentPeriodStart: params.paidAt,
+      currentPeriodEnd: params.startsAt,
+      nextPaymentDate: params.startsAt,
+    };
+  }
   // A payment that arrives after `startsAt` (a late settlement) never backdates the
   // period: the buyer gets the full time they paid for from the moment they paid.
   const start =
@@ -160,6 +191,7 @@ const insertNew =
         firstFailureAt: null,
         retryAttempt: 0,
         metadata: params.metadata ?? null,
+        firstCharge: params.firstCharge ?? 'now',
       })
       .pipe(
         Effect.map((created) => ({
@@ -256,6 +288,29 @@ const prolongedResult = (
   nextAmount: autochargeAmount(terms),
 });
 
+/** A charge that must never stack onto a live sub: an intro price (Q8) or a card check
+ * (it bought no time). */
+const mustNotStack = (params: ApplyPaymentParams): boolean =>
+  isIntroPriced(params) || params.firstCharge === 'card_check';
+
+/** Nothing written: the charge met the live `row` it must not stack onto. */
+const refusedOnLive = (
+  row: Payment,
+  params: ApplyPaymentParams,
+): ApplyPaymentResult => ({
+  subscriptionId: row.id,
+  created: false,
+  prolonged: false,
+  ...(params.firstCharge === 'card_check'
+    ? { cardCheckOnLive: true }
+    : { introOnLive: true }),
+  nextPaymentDate: row.nextPaymentDate,
+  periodStart: row.currentPeriodStart,
+  periodEnd: row.currentPeriodEnd,
+  metadata: row.metadata,
+  nextAmount: autochargeAmount(row),
+});
+
 /**
  * Apply a successful checkout charge. A one-time charge always inserts. A recurring one
  * stacks onto the user's live (Active/PastDue) recurring payment, re-read under a row
@@ -269,59 +324,73 @@ export const createOrExtend =
   (
     params: ApplyPaymentParams,
   ): Effect.Effect<ApplyPaymentResult, SqlError.SqlError> =>
-    Effect.gen(function* () {
-      const anchors = periodAnchors(params);
-      // A one-time payment never extends and never collapses into the user's recurring
-      // payment — always a new record, with no per-user cap.
-      if (!params.recurring) {
-        return yield* insertNew(repo)(params, anchors);
-      }
-      const existing = yield* repo.findActiveRecurringByExternalUser(
-        params.externalUserId,
-      );
-      const locked = Option.isSome(existing)
-        ? yield* repo.lockById(existing.value.id)
-        : Option.none<Payment>();
-      if (Option.isSome(locked) && isLive(locked.value)) {
-        const row = locked.value;
-        // `/pay` refuses an intro link on a live sub, but links claimed before the sub
-        // existed still settle here: re-check under the lock, write nothing.
-        if (isIntroPriced(params)) {
-          return {
-            subscriptionId: row.id,
-            created: false,
-            prolonged: false,
-            introOnLive: true,
-            nextPaymentDate: row.nextPaymentDate,
-            periodStart: row.currentPeriodStart,
-            periodEnd: row.currentPeriodEnd,
-            metadata: row.metadata,
-            nextAmount: autochargeAmount(row),
-          };
-        }
-        // The promo is dropped here: a live contact paying a promo link stacks the paid
-        // period only, never free time.
-        const stacked = stackAnchors(
-          row,
-          params.period,
-          params.paidAt,
-          params.cycles,
-        );
-        const terms = {
-          amount: params.renewal?.amount ?? params.amount,
-          ...tokenRule(params.source, params.recurringTokenRef, row),
-        };
-        yield* repo.extend(row.id, {
-          ...terms,
-          currency: params.currency,
-          period: params.renewal?.period ?? params.period,
-          ...stacked,
-          metadata: params.metadata,
-        });
-        return prolongedResult(row, stacked, params.metadata, terms);
-      }
+    applyOnce(repo, params).pipe(
+      Effect.tap((result) => recordFirstMoney(repo, params, result)),
+    );
+
+/**
+ * A charge that wrote a period records the payment's first money in the same
+ * transaction. A refusal wrote nothing, and a card check (refused or not) moved no money.
+ */
+const recordFirstMoney = (
+  repo: PaymentRepo,
+  params: ApplyPaymentParams,
+  result: ApplyPaymentResult,
+): Effect.Effect<void, SqlError.SqlError> =>
+  params.moneyRef === undefined ||
+  params.firstCharge === 'card_check' ||
+  result.introOnLive === true
+    ? Effect.void
+    : repo.markFirstMoney(result.subscriptionId, params.moneyRef);
+
+const applyOnce = (
+  repo: PaymentRepo,
+  params: ApplyPaymentParams,
+): Effect.Effect<ApplyPaymentResult, SqlError.SqlError> =>
+  Effect.gen(function* () {
+    const anchors = periodAnchors(params);
+    // A one-time payment never extends and never collapses into the user's recurring
+    // payment — always a new record, with no per-user cap.
+    if (!params.recurring) {
       return yield* insertNew(repo)(params, anchors);
-    });
+    }
+    const existing = yield* repo.findActiveRecurringByExternalUser(
+      params.externalUserId,
+    );
+    const locked = Option.isSome(existing)
+      ? yield* repo.lockById(existing.value.id)
+      : Option.none<Payment>();
+    if (Option.isSome(locked) && isLive(locked.value)) {
+      const row = locked.value;
+      // `/pay` refuses an intro link on a live sub, but links claimed before the sub
+      // existed still settle here: re-check under the lock, write nothing. A card check
+      // on a live sub is refused the same way.
+      if (mustNotStack(params)) {
+        return refusedOnLive(row, params);
+      }
+      // The promo is dropped here: a live contact paying a promo link stacks the paid
+      // period only, never free time.
+      const stacked = stackAnchors(
+        row,
+        params.period,
+        params.paidAt,
+        params.cycles,
+      );
+      const terms = {
+        amount: params.renewal?.amount ?? params.amount,
+        ...tokenRule(params.source, params.recurringTokenRef, row),
+      };
+      yield* repo.extend(row.id, {
+        ...terms,
+        currency: params.currency,
+        period: params.renewal?.period ?? params.period,
+        ...stacked,
+        metadata: params.metadata,
+      });
+      return prolongedResult(row, stacked, params.metadata, terms);
+    }
+    return yield* insertNew(repo)(params, anchors);
+  });
 
 /** What an advance credited: the anchors it wrote, plus the declaration the row carries
  * and what its next renewal autocharges (an advance rewrites neither), so a succeeded
@@ -336,10 +405,11 @@ export interface AdvancedPeriod extends AdvanceAnchor {
  * change). Locks the row, skips unless `guard` accepts it, then advances by
  * `stackAnchors`, which also resets dunning and sets Active. Runs in the caller's
  * transaction when there is one (as a savepoint), else in its own. Returns what it
- * credited, or None when the row is gone or the guard refused.
+ * credited, or None when the row is gone or the guard refused. The first such credit of
+ * a payment records `moneyRef` as its first money.
  */
 export const advanceLocked =
-  (repo: PaymentRepo) =>
+  (repo: PaymentRepo, moneyRef: string) =>
   (
     id: string,
     period: string,
@@ -354,6 +424,8 @@ export const advanceLocked =
         }
         const anchors = stackAnchors(locked.value, period, at);
         yield* repo.advanceAfterSuccess(id, anchors);
+        // Every advance credits a period for money taken under `moneyRef`.
+        yield* repo.markFirstMoney(id, moneyRef);
         return Option.some({
           ...anchors,
           metadata: locked.value.metadata,
@@ -375,3 +447,89 @@ export const computeDeferral = (
   const newPeriodEnd = addDays(payment.currentPeriodEnd, days);
   return { newPeriodEnd, newNextPaymentDate: newPeriodEnd };
 };
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The furthest one handover defer may move a first charge past its current date. */
+export const HANDOVER_MAX_STEP_DAYS = 30;
+
+/** What a handover defer does to its target (`handoverDecision`). */
+export type HandoverDecision =
+  | {
+      readonly kind: 'refuse';
+      readonly code: DeferRefusal;
+      readonly reason: string;
+      readonly paymentStatus?: number;
+    }
+  | { readonly kind: 'unchanged' }
+  | { readonly kind: 'defer' };
+
+const refuse = (
+  code: DeferRefusal,
+  reason: string,
+): Extract<HandoverDecision, { readonly kind: 'refuse' }> => ({
+  kind: 'refuse',
+  code,
+  reason,
+});
+
+/**
+ * The handover defer's rule, read under the payment's lock. It may only move the first
+ * charge of a card-check payment that has taken no money, forward, by at most
+ * HANDOVER_MAX_STEP_DAYS and no further than the checkout horizon from now. So the shared
+ * service token can neither grant free time on an ordinary payment nor pull a charge
+ * earlier. A target not after the current date writes nothing (`unchanged`).
+ */
+export const handoverDecision = (
+  target: DeferTarget,
+  deferTo: Date,
+  nowMillis: number,
+): HandoverDecision => {
+  if (target.status !== PaymentStatus.Active) {
+    return {
+      ...refuse('not_active', 'only an active payment can be deferred'),
+      paymentStatus: target.status,
+    };
+  }
+  if (target.firstCharge !== 'card_check') {
+    return refuse('not_card_check', 'not a card-check payment');
+  }
+  if (target.charged) {
+    return refuse('charged', 'the payment has already taken money');
+  }
+  const current = target.nextPaymentDate.getTime();
+  // Due now: the scheduler may be charging it this very moment (it charges a due row
+  // with no lock held across the provider call), so nothing may move it.
+  if (current <= nowMillis) {
+    return refuse('charge_in_flight', 'the first charge is due');
+  }
+  const to = deferTo.getTime();
+  if (to <= current) {
+    return { kind: 'unchanged' };
+  }
+  if (
+    to > current + HANDOVER_MAX_STEP_DAYS * DAY_MS ||
+    to > nowMillis + MAX_CHECKOUT_HORIZON_DAYS * DAY_MS
+  ) {
+    return refuse('out_of_bounds', 'deferTo is beyond the allowed bounds');
+  }
+  return { kind: 'defer' };
+};
+
+/**
+ * An operator defer of a card-check payment whose first charge is due and has taken no
+ * money: refused, since the scheduler may be charging it right now, and a date moved
+ * under that charge would also open the handover defer (which reads the due date) while
+ * the charge is still in flight. Every other payment defers as before.
+ */
+export const operatorDeferBlocked = (
+  target: DeferTarget,
+  nowMillis: number,
+): boolean =>
+  target.firstCharge === 'card_check' &&
+  !target.charged &&
+  target.nextPaymentDate.getTime() <= nowMillis;
+
+/** The whole days a handover defer moved the date, for display only. */
+export const wholeDaysBetween = (from: Date, to: Date): number =>
+  Math.floor((to.getTime() - from.getTime()) / DAY_MS);

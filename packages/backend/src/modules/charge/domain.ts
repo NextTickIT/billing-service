@@ -26,9 +26,12 @@ import {
   type MatchKind,
   type RefusedCharge,
   type SettledCharge,
+  ReceiptUndecodable,
+  type SettlementPending,
   settlementAnomaly,
   PAYMENT_EVENT_RECEIVED,
   PAYMENT_REBIND,
+  type CardCheckStep,
   type ChargeApplier,
   type ChargeMatcher,
   type Prolongation,
@@ -95,6 +98,16 @@ const settlingSession = (match: Match) =>
     ? {}
     : { checkoutSessionId: match.checkoutSessionId };
 
+/** The method and period a charge was taken at: what its source recorded, else the
+ * match's. */
+const termsCharged = (match: Match, prolongation: Prolongation) =>
+  prolongation.charged === undefined
+    ? { method: match.method, ...purchased(match) }
+    : {
+        method: prolongation.charged.method,
+        period: prolongation.charged.period,
+      };
+
 /** Shared success payload for the initial/recurring variants (docs/07). `nextPaymentDate`
  * is the next scheduled charge (null for a one-time purchase) and `nextAmount` what it
  * autocharges (null when it will not); `periodStart`/`periodEnd`
@@ -109,8 +122,7 @@ const succeededPayload = (
 ) => ({
   amount: event.amount,
   currency: event.currency,
-  method: match.method,
-  ...purchased(match),
+  ...termsCharged(match, prolongation),
   source: event.source,
   chargeKind: chargeKindOf(match.kind),
   nextPaymentDate: prolongation.nextPaymentDate?.toISOString() ?? null,
@@ -120,6 +132,9 @@ const succeededPayload = (
   recurring: match.recurring ?? true,
   metadata: prolongation.metadata,
   ...settlingSession(match),
+  ...(prolongation.cardCheckFirstCharge === true
+    ? { cardCheckFirstCharge: true as const }
+    : {}),
 });
 
 /** initial_payment_succeeded — a first checkout payment (match kind 'checkout'). */
@@ -472,6 +487,10 @@ interface HandleDeps {
   readonly publish: (
     event: DomainEvent,
   ) => Effect.Effect<void, SqlError.SqlError>;
+  /** The card-check dispatch; the worker always wires it. Without it a card-check
+   * callback matches nothing (the checkout matcher refuses those sessions) and is
+   * quarantined, never settled as paid. */
+  readonly cardCheck?: CardCheckStep;
 }
 
 /** Quarantine an unmatched charge (FR-009): the operator binds or refunds it. */
@@ -512,6 +531,10 @@ const recordMatchedSuccess = (
     if ('refused' in applied) {
       return yield* quarantineRefused(deps, event, incomingId, applied);
     }
+    const first = yield* deps.repo.isFirstMoneyCharge(
+      applied.subscriptionId,
+      event.externalRef,
+    );
     yield* deps.repo.insertPayment({
       incomingEventId: incomingId,
       paymentId: applied.subscriptionId,
@@ -538,7 +561,12 @@ const recordMatchedSuccess = (
         ),
       );
     }
-    yield* deps.publish(paymentSucceeded(event, match, applied));
+    yield* deps.publish(
+      paymentSucceeded(event, match, {
+        ...applied,
+        ...(first ? { cardCheckFirstCharge: true } : {}),
+      }),
+    );
     const migrated = subscriptionMigrated(event, match, applied);
     if (migrated !== null) {
       yield* deps.publish(migrated);
@@ -610,6 +638,11 @@ const recordCardChange = (
       return yield* quarantineRefused(deps, event, incomingId, applied);
     }
     if (match.amountCharged === true) {
+      // Only an arrears change credits a period and so can be a card check's first money.
+      const first = yield* deps.repo.isFirstMoneyCharge(
+        applied.subscriptionId,
+        event.externalRef,
+      );
       yield* deps.repo.insertPayment({
         incomingEventId: incomingId,
         paymentId: applied.subscriptionId,
@@ -620,12 +653,10 @@ const recordCardChange = (
         occurredAt: event.occurredAt,
       });
       yield* deps.publish(
-        recurringPaymentSucceeded(
-          event,
-          match,
-          applied.subscriptionId,
-          applied,
-        ),
+        recurringPaymentSucceeded(event, match, applied.subscriptionId, {
+          ...applied,
+          ...(first ? { cardCheckFirstCharge: true } : {}),
+        }),
       );
     }
     yield* deps.publish(cardChangeSucceeded(event, match));
@@ -666,6 +697,40 @@ const recordRefund = (
     return stored ? ('duplicate' as const) : ('emitted' as const);
   });
 
+/** Hand the charge to the card-check dispatch; true when it owned (and settled) it. */
+const settledAsCardCheck = (
+  deps: HandleDeps,
+  event: Charge,
+  incomingId: string,
+): Effect.Effect<boolean, SqlError.SqlError> =>
+  deps.cardCheck === undefined
+    ? Effect.succeed(false)
+    : deps.cardCheck(event, {
+        publish: deps.publish,
+        markMatched: deps.repo.setMatchResult(incomingId, 'matched'),
+      });
+
+/**
+ * The steps ahead of the matchers; true when one of them settled the charge. A card-check
+ * session's charges are its dispatch's alone, refunds included: no other path may settle a
+ * verify (it moved no money) or report on it. A refund is matched to no payment (docs/34).
+ */
+const settledBeforeMatch = (
+  deps: HandleDeps,
+  event: Charge,
+  incomingId: string,
+): Effect.Effect<boolean, SqlError.SqlError> =>
+  Effect.gen(function* () {
+    if (yield* settledAsCardCheck(deps, event, incomingId)) {
+      return true;
+    }
+    if (event.status === 'refunded') {
+      yield* recordRefund(deps, event, incomingId);
+      return true;
+    }
+    return false;
+  });
+
 /**
  * Settle one incoming charge, atomically: everything after the raw upsert runs in ONE
  * transaction (claim, subscription write, fixation, events, match result), with the
@@ -685,8 +750,7 @@ const process = (deps: HandleDeps, event: Charge) =>
         if ((yield* deps.repo.lockMatchResult(incomingId)) === 'matched') {
           return;
         }
-        if (event.status === 'refunded') {
-          yield* recordRefund(deps, event, incomingId);
+        if (yield* settledBeforeMatch(deps, event, incomingId)) {
           return;
         }
         const match = yield* deps.matcher(event);
@@ -720,14 +784,21 @@ const process = (deps: HandleDeps, event: Charge) =>
 /** The `payment_event_received` handler: decode the queue payload, then process. */
 export const handleChargeEvent =
   (deps: HandleDeps) =>
-  (payload: unknown): Effect.Effect<void, SqlError.SqlError> =>
+  (
+    payload: unknown,
+  ): Effect.Effect<
+    void,
+    SqlError.SqlError | SettlementPending | ReceiptUndecodable
+  > =>
     Schema.decodeUnknown(Charge)(payload).pipe(
-      Effect.flatMap((event) => process(deps, event)),
       Effect.catchTag('ParseError', (error) =>
-        Effect.die(
-          `invalid ${PAYMENT_EVENT_RECEIVED} payload: ${error.message}`,
+        Effect.fail(
+          new ReceiptUndecodable({
+            message: `invalid ${PAYMENT_EVENT_RECEIVED} payload: ${error.message}`,
+          }),
         ),
       ),
+      Effect.flatMap((event) => process(deps, event)),
     );
 
 /**
@@ -880,7 +951,10 @@ export interface ChargePipelineService {
   readonly ingest: (event: Charge) => Effect.Effect<void, SqlError.SqlError>;
   readonly handleFromPayload: (
     payload: unknown,
-  ) => Effect.Effect<void, SqlError.SqlError>;
+  ) => Effect.Effect<
+    void,
+    SqlError.SqlError | SettlementPending | ReceiptUndecodable
+  >;
   readonly rebindFromPayload: (
     payload: unknown,
   ) => Effect.Effect<void, SqlError.SqlError>;
@@ -904,6 +978,7 @@ export class ChargePipeline extends Context.Tag('PaymentPipeline')<
 export const makeChargePipelineLayer = (
   makeMatcher: (sql: SqlClient.SqlClient) => ChargeMatcher,
   makeApplier: (sql: SqlClient.SqlClient) => ChargeApplier,
+  makeCardCheck: (sql: SqlClient.SqlClient) => CardCheckStep,
 ) =>
   Layer.effect(
     ChargePipeline,
@@ -917,6 +992,7 @@ export const makeChargePipelineLayer = (
         matcher: makeMatcher(sql),
         applier: makeApplier(sql),
         publish: outbox.publish,
+        cardCheck: makeCardCheck(sql),
       };
       return {
         ingest: ingest({ enqueue: queue.enqueue }),

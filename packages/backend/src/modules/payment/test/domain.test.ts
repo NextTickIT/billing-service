@@ -1,4 +1,4 @@
-import { it } from '@effect/vitest';
+import { describe, it } from '@effect/vitest';
 import { type Payment, PaymentStatus } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
@@ -86,6 +86,7 @@ const makeFakeRepo = (existing: Payment | null) => {
     cancelUpstream: () => Effect.die('unused'),
     defer: () => Effect.die('unused'),
     deferCharge: () => Effect.die('unused'),
+    markFirstMoney: () => Effect.void,
     updateToken: () => Effect.die('unused'),
     setMethod: () => Effect.die('unused'),
     clearToken: () => Effect.die('unused'),
@@ -448,13 +449,13 @@ it.effect(
           }),
       };
 
-      const next = yield* advanceLocked(repo)(
+      const next = yield* advanceLocked(repo, 'ord_1')(
         'sub_1',
         'P1M',
         new Date('2026-02-03T00:00:00Z'),
         () => true,
       );
-      const refused = yield* advanceLocked(repo)(
+      const refused = yield* advanceLocked(repo, 'ord_1')(
         'sub_1',
         'P1M',
         new Date('2026-02-03T00:00:00Z'),
@@ -659,7 +660,7 @@ it.effect('advanceLocked on a token-less row promises no amount', () =>
       advanceAfterSuccess: () => Effect.void,
     };
 
-    const next = yield* advanceLocked(repo)(
+    const next = yield* advanceLocked(repo, 'ord_1')(
       'sub_1',
       'P1M',
       new Date('2026-02-03T00:00:00Z'),
@@ -669,5 +670,118 @@ it.effect('advanceLocked on a token-less row promises no amount', () =>
     expect(Option.map(next, (credited) => credited.nextAmount)).toEqual(
       Option.some(null),
     );
+  }),
+);
+
+describe('createOrExtend: a card check', () => {
+  const cardCheck = {
+    ...params,
+    firstCharge: 'card_check' as const,
+    startsAt: new Date('2026-02-01T00:00:00Z'),
+  };
+
+  it.effect(
+    'never stacks onto a live payment: nothing written, refused on_live',
+    () =>
+      Effect.gen(function* () {
+        const fake = makeFakeRepo(activePayment);
+
+        const result = yield* createOrExtend(fake.repo)(cardCheck);
+
+        expect(result).toMatchObject({
+          subscriptionId: 'sub_1',
+          cardCheckOnLive: true,
+        });
+        expect(result.introOnLive).toBeUndefined();
+        expect(fake.getExtended()).toBeNull();
+        expect(fake.getInserted()).toBeNull();
+      }),
+  );
+
+  it.effect('with no live payment creates one stored as card_check', () =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo(null);
+
+      const result = yield* createOrExtend(fake.repo)(cardCheck);
+
+      expect(result.created).toBe(true);
+      expect(fake.getInserted()).toMatchObject({ firstCharge: 'card_check' });
+    }),
+  );
+});
+
+/** The fake repo, recording every first-money mark. */
+const recordingFirstMoney = (existing: Payment | null) => {
+  const fake = makeFakeRepo(existing);
+  const marked: (readonly [string, string])[] = [];
+  const repo: PaymentRepo = {
+    ...fake.repo,
+    advanceAfterSuccess: () => Effect.void,
+    markFirstMoney: (id, ref) =>
+      Effect.sync(() => {
+        marked.push([id, ref]);
+      }),
+  };
+  return { repo, marked };
+};
+
+const CARD_CHECK = {
+  firstCharge: 'card_check' as const,
+  startsAt: new Date('2026-02-01T00:00:00Z'),
+};
+
+it.effect.each([
+  [
+    'a paid checkout that creates the payment',
+    null,
+    {},
+    [['sub_new', 'chk_1']],
+  ],
+  [
+    'a paid checkout that stacks onto a live one',
+    activePayment,
+    {},
+    [['sub_1', 'chk_1']],
+  ],
+  ['a card check (no money)', null, CARD_CHECK, []],
+  ['a card check refused on a live payment', activePayment, CARD_CHECK, []],
+  [
+    'an intro price refused on a live payment',
+    activePayment,
+    { renewal: { amount: 30000, period: 'P2M' } },
+    [],
+  ],
+] as const)('first money: %s', ([, existing, extra, expected]) =>
+  Effect.gen(function* () {
+    const { repo, marked } = recordingFirstMoney(existing);
+
+    yield* createOrExtend(repo)({ ...params, moneyRef: 'chk_1', ...extra });
+
+    expect(marked).toEqual(expected);
+  }),
+);
+
+it.effect('first money: a charge with no provider order records nothing', () =>
+  Effect.gen(function* () {
+    const { repo, marked } = recordingFirstMoney(null);
+
+    yield* createOrExtend(repo)(params);
+
+    expect(marked).toEqual([]);
+  }),
+);
+
+it.effect('first money: an advance (a renewal) records its order', () =>
+  Effect.gen(function* () {
+    const { repo, marked } = recordingFirstMoney(activePayment);
+
+    yield* advanceLocked(repo, 'sub_1_due')(
+      'sub_1',
+      'P1M',
+      new Date('2026-01-15T00:00:00Z'),
+      () => true,
+    );
+
+    expect(marked).toEqual([['sub_1', 'sub_1_due']]);
   }),
 );

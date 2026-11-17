@@ -147,3 +147,53 @@ export class ChangeUnavailable extends Data.TaggedError('ChangeUnavailable')<{
     return { status: 409, body: { error: this.reason } };
   }
 }
+
+/**
+ * A `firstCharge: 'card_check'` create while billing does not admit card checks
+ * (`W4P_CARD_CHECK_ENABLED` off). 422 with a code, so the caller reports the attempt as
+ * unavailable rather than silently retrying it at full price.
+ */
+export class CardCheckDisabled extends Data.TaggedError('CardCheckDisabled')<{
+  readonly externalUserId: string;
+}> {
+  toHttp(): HttpReply {
+    return {
+      status: 422,
+      body: { error: 'card check is disabled', code: 'card_check_disabled' },
+    };
+  }
+}
+
+/** Why a defer was refused; `not_active` also names the payment's status. */
+export type DeferRefusal =
+  | 'invalid_request'
+  | 'not_active'
+  | 'not_card_check'
+  | 'charged'
+  | 'charge_in_flight'
+  | 'out_of_bounds';
+
+/**
+ * A defer the payment does not admit (422): a handover defer outside its shape, or any
+ * defer of a card-check payment whose first charge is due and untaken (`charge_in_flight`). `code` is what the caller branches
+ * on; `paymentStatus` is the payment's status under lock when the refusal is `not_active`
+ * (a Cancelled or RenewalFailed payment has nothing left to protect).
+ */
+export class DeferRefused extends Data.TaggedError('DeferRefused')<{
+  readonly code: DeferRefusal;
+  readonly reason: string;
+  readonly paymentStatus?: number;
+}> {
+  toHttp(): HttpReply {
+    return {
+      status: 422,
+      body: {
+        error: this.reason,
+        code: this.code,
+        ...(this.paymentStatus === undefined
+          ? {}
+          : { paymentStatus: this.paymentStatus }),
+      },
+    };
+  }
+}

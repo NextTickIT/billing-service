@@ -49,7 +49,11 @@ async function poll(): Promise<void> {
       finish('confirmed', successUrl);
       return;
     }
-    if (session.status === CheckoutSessionStatus.Expired) {
+    // A Closed card check (too late, or already subscribed) will never complete.
+    if (
+      session.status === CheckoutSessionStatus.Expired ||
+      session.status === CheckoutSessionStatus.Closed
+    ) {
       finish('declined', failureUrl);
       return;
     }
