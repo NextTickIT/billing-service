@@ -411,7 +411,7 @@ export const settlementHandler = (seams: SettlementSeams = {}) =>
           ledgerApproval(sql),
         ),
       publish: seams.publish ?? outbox.publish,
-      cardCheck: makeCardCheckStep(sql),
+      cardCheck: makeCardCheckStep(sql, { chargeRefundAmountMinor: 100 }),
     });
   });
 

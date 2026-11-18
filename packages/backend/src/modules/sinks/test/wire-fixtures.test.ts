@@ -19,6 +19,7 @@ import {
   cardCheckPaymentCreated,
   subscriptionCardChecked,
 } from '@/modules/checkout/card-check.js';
+import { cardCheckRefundFailed } from '@/modules/checkout/card-check-refund.js';
 import { paymentDeferred } from '@/modules/payment/cancel.js';
 import { crmBody } from '@/modules/sinks/crm.js';
 
@@ -140,6 +141,20 @@ const FIXTURES: readonly (readonly [string, DomainEvent])[] = [
     cardCheckPaymentCreated(verify, session, PAYMENT_ID),
   ],
   ['card_check_failed', cardCheckFailed(verify, session, 'late')],
+  [
+    'card_check_refund_failed',
+    cardCheckRefundFailed(
+      {
+        checkoutSessionId: SESSION_ID,
+        orderReference: SESSION_ID,
+        amount: 100,
+        currency: 1,
+      },
+      session,
+      { reasonCode: null, outcomeUncertain: false },
+      VERIFIED_AT,
+    ),
+  ],
   [
     'card_check_anomaly',
     cardCheckAnomaly(

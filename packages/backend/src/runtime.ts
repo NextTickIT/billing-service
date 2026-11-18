@@ -131,7 +131,10 @@ export const makeWorkerLayer = (config: AppConfig) => {
         ledgerApproval(sql),
       ),
     // Ahead of both: a card-check session's charges are settled by its dispatch alone.
-    makeCardCheckStep,
+    (sql) =>
+      makeCardCheckStep(sql, {
+        chargeRefundAmountMinor: config.wayforpay.cardCheckChargeAmountMinor,
+      }),
   );
   const withQueue = Layer.provideMerge(QueueLive, withSinks);
   const withOutbox = Layer.provideMerge(OutboxLive, withQueue);

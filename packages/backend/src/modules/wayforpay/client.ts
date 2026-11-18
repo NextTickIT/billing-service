@@ -10,6 +10,8 @@ import {
   W4pChargeResponseSchema,
   type W4pCheckStatusResponse,
   W4pCheckStatusResponseSchema,
+  type W4pRefundResponse,
+  W4pRefundResponseSchema,
   type W4pRegularStatusResponse,
   W4pRegularStatusResponseSchema,
   type W4pTransaction,
@@ -49,6 +51,18 @@ export interface WayForPayClient {
   readonly charge: (
     params: ChargeParams,
   ) => Effect.Effect<W4pChargeResponse, W4pError>;
+  /** Refund a settled order, in ONE request (never retried here: a lost answer may hide
+   * an accepted refund). A Declined result is returned, not failed. */
+  readonly refund: (
+    params: RefundParams,
+  ) => Effect.Effect<W4pRefundResponse, W4pError>;
+}
+
+export interface RefundParams {
+  readonly orderReference: string;
+  readonly amount: number; // integer minor units
+  readonly currency: Currency;
+  readonly comment: string;
 }
 
 export interface ChargeParams {
@@ -103,12 +117,8 @@ const asReasonCode = (value: unknown): number | undefined => {
   return undefined;
 };
 
-/**
- * POST JSON and parse the body as JSON; transport + parse errors are typed.
- * Transient transport failures (network, 429, 5xx) retry with backoff; parse and
- * business reasonCodes do not. Every call is rate-limited.
- */
-const postJson = (
+/** POST JSON once and parse the body as JSON; transport + parse errors are typed. */
+const postOnce = (
   ctx: WayForPayClientOptions,
   url: string,
   endpoint: string,
@@ -145,9 +155,33 @@ const postJson = (
           value: response.raw,
         }),
     });
-  }).pipe((effect) =>
-    ctx.rateLimiter.limit(retryTransient(effect, isTransientW4p)),
+  });
+
+/**
+ * POST JSON and parse the body as JSON. Transient transport failures (network, 429, 5xx)
+ * retry with backoff; parse and business reasonCodes do not. Every call is rate-limited.
+ */
+const postJson = (
+  ctx: WayForPayClientOptions,
+  url: string,
+  endpoint: string,
+  payload: unknown,
+): Effect.Effect<unknown, W4pTransportError | W4pResponseError> =>
+  ctx.rateLimiter.limit(
+    retryTransient(postOnce(ctx, url, endpoint, payload), isTransientW4p),
   );
+
+/**
+ * One rate-limited POST, never repeated: for a call that moves money, where a lost
+ * response may hide an accepted request and only a status check may decide what next.
+ */
+const postJsonOnce = (
+  ctx: WayForPayClientOptions,
+  url: string,
+  endpoint: string,
+  payload: unknown,
+): Effect.Effect<unknown, W4pTransportError | W4pResponseError> =>
+  ctx.rateLimiter.limit(postOnce(ctx, url, endpoint, payload));
 
 const decode =
   <A, I>(schema: Schema.Schema<A, I>, endpoint: string) =>
@@ -323,6 +357,35 @@ const charge =
       return yield* decode(W4pChargeResponseSchema, 'CHARGE')(body);
     });
 
+const refund =
+  (ctx: WayForPayClientOptions): WayForPayClient['refund'] =>
+  (params) =>
+    Effect.gen(function* () {
+      const amount = params.amount / 100;
+      const currency = CurrencyCode[params.currency];
+      const merchantSignature = signRequest(
+        'REFUND',
+        {
+          merchantAccount: ctx.merchantAccount,
+          orderReference: params.orderReference,
+          amount,
+          currency,
+        },
+        ctx.merchantSecretKey,
+      );
+      const body = yield* postJsonOnce(ctx, ctx.apiUrl, 'REFUND', {
+        apiVersion: 1,
+        transactionType: 'REFUND',
+        merchantAccount: ctx.merchantAccount,
+        orderReference: params.orderReference,
+        amount,
+        currency,
+        comment: params.comment,
+        merchantSignature,
+      });
+      return yield* decode(W4pRefundResponseSchema, 'REFUND')(body);
+    });
+
 export const makeWayForPayClient = (
   options: WayForPayClientOptions,
 ): WayForPayClient => ({
@@ -330,6 +393,7 @@ export const makeWayForPayClient = (
   checkStatus: checkStatus(options),
   regularStatus: regularStatus(options),
   charge: charge(options),
+  refund: refund(options),
 });
 
 export const WayForPayLive = Layer.effect(

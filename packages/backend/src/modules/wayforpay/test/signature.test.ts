@@ -26,6 +26,17 @@ describe('buildSignatureBase', () => {
     ).toBe('m;o1');
   });
 
+  test('REFUND joins account, order, amount and currency in the documented order', () => {
+    expect(
+      buildSignatureBase('REFUND', {
+        merchantAccount: 'm',
+        orderReference: 'chk_1',
+        amount: 1,
+        currency: 'USD',
+      }),
+    ).toBe('m;chk_1;1;USD');
+  });
+
   test('throws on a missing field (the order bug surfaces loudly)', () => {
     expect(() =>
       buildSignatureBase('CHECK_STATUS', { merchantAccount: 'm' }),

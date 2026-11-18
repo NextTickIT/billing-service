@@ -19,6 +19,16 @@ const fetchReturning =
       text: () => Promise.resolve(JSON.stringify(body)),
     });
 
+/** A fetch that answers `body` and keeps every request body it was sent. */
+const recordingFetch = (body: unknown) => {
+  const sent: Record<string, unknown>[] = [];
+  const fetch: FetchLike = (_url, init) => {
+    sent.push(JSON.parse(init.body) as Record<string, unknown>);
+    return fetchReturning(body)(_url, init);
+  };
+  return { sent, fetch };
+};
+
 const clientFor = (body: unknown) =>
   makeWayForPayClient({
     merchantAccount: 'm',
@@ -101,4 +111,97 @@ it.effect('charge returns a Declined response rather than failing', () =>
         expect(response.reason).toBe('Insufficient funds');
       }),
     ),
+);
+
+it.effect('refund sends a signed v1 REFUND of the major-unit amount', () => {
+  const wire = recordingFetch({
+    transactionStatus: 'Refunded',
+    reasonCode: 1100,
+  });
+  const client = makeWayForPayClient({
+    merchantAccount: 'm',
+    merchantSecretKey: 's',
+    merchantPassword: 'p',
+    merchantDomainName: 'd',
+    apiUrl: 'http://x/api',
+    regularApiUrl: 'http://x/reg',
+    fetch: wire.fetch,
+    rateLimiter: noLimit,
+  });
+  return client
+    .refund({
+      orderReference: 'chk_1',
+      amount: 100,
+      currency: 1,
+      comment: 'Card verification refund',
+    })
+    .pipe(
+      Effect.map((response) => {
+        expect(response.transactionStatus).toBe('Refunded');
+        expect(wire.sent[0]).toMatchObject({
+          apiVersion: 1,
+          transactionType: 'REFUND',
+          merchantAccount: 'm',
+          orderReference: 'chk_1',
+          amount: 1,
+          currency: 'USD',
+          comment: 'Card verification refund',
+        });
+        expect(String(wire.sent[0]?.['merchantSignature'])).toHaveLength(32);
+      }),
+    );
+});
+
+it.effect('refund returns a Declined response rather than failing', () =>
+  clientFor({ transactionStatus: 'Declined', reasonCode: 1112 })
+    .refund({
+      orderReference: 'chk_1',
+      amount: 100,
+      currency: 1,
+      comment: 'Card verification refund',
+    })
+    .pipe(
+      Effect.map((response) => {
+        expect(response.transactionStatus).toBe('Declined');
+        expect(response.reasonCode).toBe(1112);
+      }),
+    ),
+);
+
+it.effect(
+  'refund sends ONE request: a 503 is returned to the caller, not retried',
+  () => {
+    let requests = 0;
+    const client = makeWayForPayClient({
+      merchantAccount: 'm',
+      merchantSecretKey: 's',
+      merchantPassword: 'p',
+      merchantDomainName: 'd',
+      apiUrl: 'http://x/api',
+      regularApiUrl: 'http://x/reg',
+      fetch: () => {
+        requests += 1;
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          text: () => Promise.resolve(''),
+        });
+      },
+      rateLimiter: noLimit,
+    });
+    return client
+      .refund({
+        orderReference: 'chk_1',
+        amount: 100,
+        currency: 1,
+        comment: 'Card verification refund',
+      })
+      .pipe(
+        Effect.flip,
+        Effect.map((error) => {
+          expect(error._tag).toBe('W4pTransportError');
+          expect(requests).toBe(1);
+        }),
+      );
+  },
 );

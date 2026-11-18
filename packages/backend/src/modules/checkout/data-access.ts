@@ -1,6 +1,7 @@
 import { SqlClient } from '@effect/sql';
 import type { SqlError } from '@effect/sql';
 import {
+  cardCheckMethodOf,
   type CheckoutClosedReason,
   CheckoutSession,
   CheckoutSessionKind,
@@ -129,7 +130,7 @@ const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
       (id, "externalUserId", amount, currency, period, method, kind, recurring,
        "paymentId", "successUrl", "failureUrl", promo, "idempotencyKey", email,
        "expiresAt", renewal, origin, "renewalOf", options, metadata, "startsAt",
-       "payableUntil", "lockMethod", "firstCharge")
+       "payableUntil", "lockMethod", "firstCharge", "cardCheckMethod")
     VALUES
       (${input.id}, ${input.externalUserId}, ${input.amount}, ${input.currency},
        ${input.period}, ${input.method ?? null}, ${input.kind}, ${input.recurring},
@@ -137,7 +138,8 @@ const insert = (sql: SqlClient.SqlClient) => (input: NewCheckoutSession) => {
        ${promo}::jsonb, ${input.idempotencyKey}, ${input.email},
        ${input.expiresAt}, ${renewal}::jsonb, ${input.origin}, ${input.renewalOf},
        ${options}::jsonb, ${metadata}::jsonb, ${input.startsAt},
-       ${input.payableUntil}, ${input.lockMethod}, ${firstChargeOf(input)})
+       ${input.payableUntil}, ${input.lockMethod}, ${firstChargeOf(input)},
+       ${cardCheckMethodOf(input)})
     ON CONFLICT ("idempotencyKey") WHERE "idempotencyKey" IS NOT NULL DO NOTHING
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
@@ -299,6 +301,150 @@ export const closeOpenCardCheck =
         AND "firstCharge" = 'card_check'
       RETURNING id
     `.pipe(Effect.map((rows) => rows.length > 0));
+
+/** Where a `charge_refund` card check's refund stands (SQL-only, not on the session). */
+export type VerifyRefundState = 'pending' | 'in_flight' | 'refunded' | 'failed';
+
+/**
+ * Record that a refund is owed for this session's verify charge: NULL → `pending`, true
+ * iff THIS call set it. A second copy of the approved charge (callback + poller), or one
+ * whose refund already settled, sets nothing and so enqueues nothing.
+ */
+export const markVerifyRefundOwed =
+  (sql: SqlClient.SqlClient) =>
+  (id: string): Effect.Effect<boolean, SqlError.SqlError> =>
+    sql<{ readonly id: string }>`
+      UPDATE checkout_sessions SET "verifyRefundState" = 'pending'
+      WHERE id = ${id} AND "verifyRefundState" IS NULL
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length > 0));
+
+/**
+ * Take ownership of the next REFUND attempt: `pending` → `in_flight`, counting the
+ * attempt, or take over an `in_flight` claim older than `leaseSeconds` (its worker died or
+ * timed out). Returns the attempt number, or None when the refund is settled, failed,
+ * owned by a live claim, or its row is locked right now — so two deliveries never both
+ * call. The row is taken with SKIP LOCKED, never waited for, and the lease is read and
+ * stamped with `clock_timestamp()`: `now()` is the transaction's start, so a claim that
+ * had waited on the lock would stamp, and judge, a lease already in the past.
+ */
+export const claimVerifyRefund =
+  (sql: SqlClient.SqlClient) =>
+  (
+    id: string,
+    leaseSeconds: number,
+  ): Effect.Effect<Option.Option<number>, SqlError.SqlError> =>
+    sql<{ readonly attempts: number }>`
+      WITH target AS (
+        SELECT id FROM checkout_sessions
+        WHERE id = ${id}
+          AND ("verifyRefundState" = 'pending'
+            OR ("verifyRefundState" = 'in_flight'
+              AND "verifyRefundClaimedAt"
+                < clock_timestamp() - make_interval(secs => ${leaseSeconds})))
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE checkout_sessions c
+      SET "verifyRefundState" = 'in_flight', "verifyRefundClaimedAt" = clock_timestamp(),
+          "verifyRefundAttempts" = c."verifyRefundAttempts" + 1
+      FROM target WHERE c.id = target.id
+      RETURNING c."verifyRefundAttempts" AS attempts
+    `.pipe(Effect.map((rows) => Option.fromNullable(rows[0]?.attempts)));
+
+/** The refund's state, for a delivery that could not claim it; None for no session. */
+export const verifyRefundStateOf =
+  (sql: SqlClient.SqlClient) =>
+  (
+    id: string,
+  ): Effect.Effect<
+    Option.Option<VerifyRefundState | null>,
+    SqlError.SqlError
+  > =>
+    sql<{ readonly state: VerifyRefundState | null }>`
+      SELECT "verifyRefundState" AS state FROM checkout_sessions WHERE id = ${id}
+    `.pipe(
+      Effect.map((rows) =>
+        Option.map(Option.fromNullable(rows[0]), (r) => r.state),
+      ),
+    );
+
+/** Who holds a claim: the session and the attempt number its claim returned. Writes that
+ * end a claim name it, so a worker whose claim was taken over changes nothing. */
+export interface VerifyRefundClaim {
+  readonly id: string;
+  readonly attempt: number;
+}
+
+/** Hand an attempt that ended without an answer back to `pending`, for the next one. */
+export const releaseVerifyRefund =
+  (sql: SqlClient.SqlClient) =>
+  (claim: VerifyRefundClaim): Effect.Effect<void, SqlError.SqlError> =>
+    sql`
+      UPDATE checkout_sessions SET "verifyRefundState" = 'pending'
+      WHERE id = ${claim.id} AND "verifyRefundState" = 'in_flight'
+        AND "verifyRefundAttempts" = ${claim.attempt}
+    `.pipe(Effect.asVoid);
+
+/**
+ * The refund is confirmed: by our REFUND call or by the provider's own Refunded/Voided
+ * row. A `failed` refund flips too — the provider's row is the truth, and support must
+ * not refund by hand what was already returned. True iff THIS call settled it.
+ */
+export const settleVerifyRefund =
+  (sql: SqlClient.SqlClient) =>
+  (id: string, at: Date): Effect.Effect<boolean, SqlError.SqlError> =>
+    sql<{ readonly id: string }>`
+      UPDATE checkout_sessions
+      SET "verifyRefundState" = 'refunded', "verifyRefundedAt" = ${at}
+      WHERE id = ${id} AND "verifyRefundState" IS DISTINCT FROM 'refunded'
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length > 0));
+
+/** Give up on the refund this claim owns; true iff THIS call did (so its event publishes
+ * once). */
+export const failVerifyRefund =
+  (sql: SqlClient.SqlClient) =>
+  (claim: VerifyRefundClaim): Effect.Effect<boolean, SqlError.SqlError> =>
+    sql<{ readonly id: string }>`
+      UPDATE checkout_sessions SET "verifyRefundState" = 'failed'
+      WHERE id = ${claim.id} AND "verifyRefundState" = 'in_flight'
+        AND "verifyRefundAttempts" = ${claim.attempt}
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length > 0));
+
+/**
+ * Refunds still owed whose task the queue gave up on (`fail`): the sweep makes those tasks
+ * due again with a fresh queue budget, so an outage that outlasts the queue's retries
+ * delays a refund, or its failure report, but never drops it. The REFUND budget lives on
+ * the session and is not reset.
+ */
+export const reviveOwedRefunds =
+  (sql: SqlClient.SqlClient) =>
+  (
+    messageType: string,
+    limit: number,
+  ): Effect.Effect<number, SqlError.SqlError> =>
+    sql<{ readonly id: string }>`
+      WITH upd AS (
+        UPDATE messages m
+        SET status = 'retry', "retryAt" = now(), "finishedAt" = NULL,
+            "failureCount" = 0
+        WHERE m.id IN (
+          SELECT m2.id FROM messages m2
+          JOIN checkout_sessions c ON c.id = m2.payload->>'checkoutSessionId'
+          WHERE m2."messageType" = ${messageType}
+            AND m2.status = 'fail'
+            AND c."verifyRefundState" IN ('pending', 'in_flight')
+          LIMIT ${limit}
+        )
+        RETURNING m.id
+      ),
+      logged AS (
+        INSERT INTO message_status_events ("messageId", status)
+        SELECT id, 'retry' FROM upd
+      )
+      SELECT id FROM upd
+    `.pipe(Effect.map((rows) => rows.length));
 
 /**
  * The latest prolong session for `subId` that the buyer claimed (pressed Pay) at or after

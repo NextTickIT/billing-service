@@ -13,6 +13,7 @@
       "source": "wfp_migration",
       "attemptId": "att_42"
     },
+    "card_check_method": "lookup",
     "aggregate_id": "chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab",
     "correlation_id": "w4pcb:chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab|WaitingAuthComplete"
   }

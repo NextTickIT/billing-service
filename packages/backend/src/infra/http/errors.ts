@@ -150,16 +150,25 @@ export class ChangeUnavailable extends Data.TaggedError('ChangeUnavailable')<{
 
 /**
  * A `firstCharge: 'card_check'` create while billing does not admit card checks
- * (`W4P_CARD_CHECK_ENABLED` off). 422 with a code, so the caller reports the attempt as
- * unavailable rather than silently retrying it at full price.
+ * (`W4P_CARD_CHECK_ENABLED` off), or a `charge_refund` one while that method is off
+ * (`W4P_CARD_CHECK_CHARGE_REFUND_ENABLED`; `method` set). 422 with the same code either
+ * way, so the caller reports the attempt as unavailable rather than silently retrying it
+ * at full price.
  */
 export class CardCheckDisabled extends Data.TaggedError('CardCheckDisabled')<{
   readonly externalUserId: string;
+  readonly method?: 'charge_refund';
 }> {
   toHttp(): HttpReply {
     return {
       status: 422,
-      body: { error: 'card check is disabled', code: 'card_check_disabled' },
+      body: {
+        error:
+          this.method === undefined
+            ? 'card check is disabled'
+            : `card check ${this.method} is disabled`,
+        code: 'card_check_disabled',
+      },
     };
   }
 }

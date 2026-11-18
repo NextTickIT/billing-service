@@ -119,6 +119,21 @@ export type W4pChargeResponse = Schema.Schema.Type<
 >;
 
 /**
+ * REFUND response (wiki 852115). `Refunded` / `Voided` is a returned payment; a Declined
+ * refund is a normal business answer the caller branches on, not a client error.
+ */
+export const W4pRefundResponseSchema = Schema.Struct({
+  reasonCode: OptionalStringOrNumber,
+  reason: Schema.optional(Schema.String),
+  orderReference: Schema.optional(Schema.String),
+  transactionStatus: Schema.optional(Schema.String),
+});
+
+export type W4pRefundResponse = Schema.Schema.Type<
+  typeof W4pRefundResponseSchema
+>;
+
+/**
  * Natural external id of a transaction in the RAW layer. One orderReference can
  * yield several rows — a PURCHASE and its later REFUND share the ref but differ in
  * transactionType and createdDate — so the id is `ref|type|createdDate`: a REFUND

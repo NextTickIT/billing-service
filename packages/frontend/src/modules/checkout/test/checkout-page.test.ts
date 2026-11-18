@@ -385,6 +385,44 @@ describe('a card check', () => {
     expect(html).not.toContain('Your paid period starts');
   });
 
+  it.each([
+    ['ru', 'Спишем $1 для проверки карты и сразу вернём'],
+    ['uk', 'Спишемо $1 для перевірки картки й одразу повернемо'],
+    ['en', 'We charge $1 to verify your card and refund it right away'],
+  ])(
+    'a charge_refund check says the verify charge comes back (%s)',
+    async (locale, expected) => {
+      const html = await render(
+        {
+          ...single,
+          firstCharge: 'card_check',
+          cardCheckMethod: 'charge_refund',
+          cardCheckChargeAmount: 100,
+          startsAt,
+        },
+        locale,
+      );
+
+      expect(html).toContain(expected);
+      expect(html).not.toContain('nothing is charged now');
+    },
+  );
+
+  it('a charge_refund check still names the first plan charge', async () => {
+    const html = await render(
+      {
+        ...single,
+        firstCharge: 'card_check',
+        cardCheckMethod: 'charge_refund',
+        cardCheckChargeAmount: 100,
+        startsAt,
+      },
+      'en',
+    );
+
+    expect(html).toContain('First charge $50 on');
+  });
+
   it('a full-price checkout says nothing about a card check', async () => {
     const html = await render({ ...single, startsAt }, 'en');
 

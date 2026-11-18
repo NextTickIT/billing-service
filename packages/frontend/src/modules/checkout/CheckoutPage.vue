@@ -6,6 +6,7 @@ import {
   type CheckoutOptionPublic,
   CheckoutSessionKind,
   CheckoutSessionStatus,
+  Currency,
   formatPeriod,
   isRenderablePeriod,
   PaymentMethod,
@@ -47,11 +48,17 @@ const isPayable = computed(
     store.session?.status !== CheckoutSessionStatus.Closed,
 );
 
-// A card check verifies the card and charges nothing now; the first charge is the plan
-// price on `startsAt`, which the page states instead of the paid-period start.
+// A card check charges no plan money now: `lookup` charges nothing, `charge_refund` a
+// small verify charge that is refunded at once (the copy says which). The first charge
+// is the plan price on `startsAt`, which the page states instead of the paid-period start.
 const cardCheck = computed(() =>
   store.session?.firstCharge === 'card_check' && store.session.startsAt != null
-    ? { amount: store.session.amount, date: store.session.startsAt }
+    ? {
+        amount: store.session.amount,
+        date: store.session.startsAt,
+        // The verify charge the server reports; absent on a lookup check.
+        verify: store.session.cardCheckChargeAmount,
+      }
     : null,
 );
 
@@ -423,10 +430,22 @@ const legalLinks = [
           </p>
           <p v-if="cardCheck" class="checkout__renewal">
             {{
-              t('checkout.cardCheck', {
-                amount: formatPrice(cardCheck.amount, store.session.currency),
-                date: formatDate(cardCheck.date, locale),
-              })
+              cardCheck.verify === undefined
+                ? t('checkout.cardCheck', {
+                    amount: formatPrice(
+                      cardCheck.amount,
+                      store.session.currency,
+                    ),
+                    date: formatDate(cardCheck.date, locale),
+                  })
+                : t('checkout.cardCheckCharge', {
+                    verify: formatPrice(cardCheck.verify, Currency.USD),
+                    amount: formatPrice(
+                      cardCheck.amount,
+                      store.session.currency,
+                    ),
+                    date: formatDate(cardCheck.date, locale),
+                  })
             }}
           </p>
           <p v-else-if="startsLater" class="checkout__renewal">

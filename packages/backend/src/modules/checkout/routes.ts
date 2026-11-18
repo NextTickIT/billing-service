@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { SqlClient, type SqlError } from '@effect/sql';
 import {
   CardChangeRequest,
+  cardCheckMethodOf,
   checkoutRef,
   CheckoutSessionClosed,
   type CheckoutOrigin,
@@ -11,6 +12,7 @@ import {
   CheckoutSessionPublic,
   CheckoutSessionStatus,
   CreateCheckoutSession,
+  echoedCardCheckMethod,
   firstChargeOf,
   MethodChangeRequest,
   MethodChangeResult,
@@ -85,7 +87,11 @@ import {
   normalizeCallback,
   verifyCallback,
 } from '@/modules/wayforpay/callback.js';
-import { buildPurchase, buildVerify } from '@/modules/wayforpay/purchase.js';
+import {
+  buildPurchase,
+  buildVerify,
+  buildVerifyCharge,
+} from '@/modules/wayforpay/purchase.js';
 import {
   normalizeWebhook,
   verifyWebhook,
@@ -155,18 +161,30 @@ const assertSchedule = (
     : Effect.fail(new UnprocessableEntity({ reason: broken }));
 };
 
-/** A card check is admitted only while billing's env allows it (422 otherwise); the env
- * gates admission, never a session already issued. */
+/** A card check is admitted only while billing's env allows it (422 otherwise), and a
+ * `charge_refund` one only while its own flag is on too; the env gates admission, never a
+ * session already issued. */
 const assertCardCheckAdmitted = (
   input: CreateCheckoutSession,
   request: FastifyRequest,
-): Effect.Effect<void, CardCheckDisabled> =>
-  input.firstCharge === 'card_check' &&
-  !request.server.appConfig.wayforpay.cardCheckEnabled
+): Effect.Effect<void, CardCheckDisabled> => {
+  if (input.firstCharge !== 'card_check') return Effect.void;
+  const config = request.server.appConfig.wayforpay;
+  if (!config.cardCheckEnabled) {
+    return Effect.fail(
+      new CardCheckDisabled({ externalUserId: input.externalUserId }),
+    );
+  }
+  return input.cardCheckMethod === 'charge_refund' &&
+    !config.cardCheckChargeRefundEnabled
     ? Effect.fail(
-        new CardCheckDisabled({ externalUserId: input.externalUserId }),
+        new CardCheckDisabled({
+          externalUserId: input.externalUserId,
+          method: 'charge_refund',
+        }),
       )
     : Effect.void;
+};
 
 const sameInstant = (a: Date | null, b: Date | null): boolean =>
   (a?.getTime() ?? null) === (b?.getTime() ?? null);
@@ -209,7 +227,7 @@ export const insertOrReplay = (
 /** What a request must share with the session its Idempotency-Key already names. */
 type ReplayIdentity = Pick<
   NewCheckoutSession,
-  'externalUserId' | 'origin' | 'startsAt' | 'firstCharge'
+  'externalUserId' | 'origin' | 'startsAt' | 'firstCharge' | 'cardCheckMethod'
 >;
 
 /**
@@ -217,7 +235,7 @@ type ReplayIdentity = Pick<
  * names none. The key alone is not identity: a reused key must never hand one contact
  * another contact's session, nor turn a /prolong into a plain checkout (or back), nor
  * start the paid period on a different date than this request asked for, nor turn a card
- * check into a full-price checkout (or back) (409).
+ * check into a full-price checkout (or back), nor switch its method (409).
  */
 const replayOf = (
   repo: CheckoutRepo,
@@ -235,7 +253,8 @@ const replayOf = (
       stored.externalUserId !== identity.externalUserId ||
       stored.origin !== identity.origin ||
       !sameInstant(stored.startsAt, identity.startsAt) ||
-      firstChargeOf(stored) !== firstChargeOf(identity)
+      firstChargeOf(stored) !== firstChargeOf(identity) ||
+      cardCheckMethodOf(stored) !== cardCheckMethodOf(identity)
     ) {
       return yield* Effect.fail(new Conflict({ field: 'idempotency key' }));
     }
@@ -276,12 +295,14 @@ const offerOf = (
  * it BEFORE any validation: the now-relative bounds of `startsAt` / `payableUntil` held
  * when the session was created, and a retry after they lapsed must still get the same
  * session back, not a 422. Only a new session is validated. The answer echoes the stored
- * `firstCharge` (identity guarantees a replay's equals the request's).
+ * `firstCharge` and a card check's `cardCheckMethod` (identity guarantees a replay's
+ * equal the request's).
  */
 const createSession = (input: CreateCheckoutSession, request: FastifyRequest) =>
   Effect.map(createOrReplaySession(input, request), (created) => ({
     ...created,
     firstCharge: firstChargeOf(input),
+    ...echoedCardCheckMethod(input),
   }));
 
 const createOrReplaySession = (
@@ -303,6 +324,7 @@ const createOrReplaySession = (
               origin: callerOrigin(input.reportAs),
               startsAt: input.startsAt ?? null,
               firstCharge: firstChargeOf(input),
+              cardCheckMethod: cardCheckMethodOf(input),
             },
             request.server.appConfig.checkoutBaseUrl,
           );
@@ -363,6 +385,7 @@ const createNewSession = (
         // and the email sink then fails loudly rather than pretending it delivered.
         email: input.email ?? '',
         firstCharge: firstChargeOf(input),
+        cardCheckMethod: cardCheckMethodOf(input),
       },
       request.server.appConfig.checkoutBaseUrl,
     );
@@ -440,6 +463,13 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
       startsAt,
       payableUntil,
       firstCharge: firstChargeOf(found.value),
+      ...echoedCardCheckMethod(found.value),
+      ...(cardCheckMethodOf(found.value) === 'charge_refund'
+        ? {
+            cardCheckChargeAmount:
+              request.server.appConfig.wayforpay.cardCheckChargeAmountMinor,
+          }
+        : {}),
       closedReason: closedReason ?? null,
       methodLocked: prolong || lockMethod,
       prolong,
@@ -447,18 +477,28 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
     };
   });
 
-/** Card (WayForPay): a card-check session always verifies the card (buildVerify) — it
- * charges nothing now, whatever the verify flag says; a 0-amount card change verifies when
- * verify is enabled; otherwise a signed Purchase form the browser POSTs to the provider.
- * `session` is the provider order (`orderFor`): its id is the order reference. */
+/** Card (WayForPay): a card-check session always verifies the card — by the 0 UAH Card
+ * Verify (buildVerify), or for `charge_refund` by a small USD Purchase that billing refunds
+ * (buildVerifyCharge); neither charges the plan, whatever the verify flag says. A 0-amount
+ * card change verifies when verify is enabled; otherwise a signed Purchase form the
+ * browser POSTs to the provider. `session` is the provider order (`orderFor`): its id is
+ * the order reference. */
 const payCard = (
   session: CheckoutSession,
   request: FastifyRequest,
 ): Effect.Effect<PayInstruction> =>
   Effect.gen(function* () {
     const config = request.server.appConfig.wayforpay;
+    const orderDate = Math.floor((yield* Clock.currentTimeMillis) / 1000);
     if (session.firstCharge === 'card_check') {
-      return buildVerify(config, session);
+      return cardCheckMethodOf(session) === 'charge_refund'
+        ? buildVerifyCharge(
+            config,
+            session,
+            orderDate,
+            config.cardCheckChargeAmountMinor,
+          )
+        : buildVerify(config, session);
     }
     if (
       session.kind === CheckoutSessionKind.CardChange &&
@@ -467,7 +507,6 @@ const payCard = (
     ) {
       return buildVerify(config, session);
     }
-    const orderDate = Math.floor((yield* Clock.currentTimeMillis) / 1000);
     return buildPurchase(config, session, orderDate);
   });
 

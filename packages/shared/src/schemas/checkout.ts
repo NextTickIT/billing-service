@@ -56,6 +56,18 @@ export type CheckoutClosedReason = Schema.Schema.Type<
 >;
 
 /**
+ * How a card check proves the card. `lookup`: a 0 UAH WayForPay Card Verify. `charge_refund`:
+ * a small real Purchase that billing refunds right after, for a bank that refuses the
+ * 0-amount verify but takes a charge. Either keeps the token; neither is the first plan
+ * charge. Stored on every session (`lookup` on rows from before the column existed).
+ */
+export const CARD_CHECK_METHODS = ['lookup', 'charge_refund'] as const;
+
+export const CardCheckMethod = Schema.Literal(...CARD_CHECK_METHODS);
+
+export type CardCheckMethod = Schema.Schema.Type<typeof CardCheckMethod>;
+
+/**
  * A browser redirect target the caller may attach to a checkout. Constrained to an
  * http(s) URL at the API boundary so a stored target can never be a `javascript:` (or
  * other scheme) open-redirect the return page would navigate to. Persisted rows read
@@ -226,6 +238,8 @@ export const CheckoutSession = Schema.Struct({
   // How the first money is taken (see FirstCharge). Every row carries it; optional here
   // so a session built in code without it means `now`.
   firstCharge: Schema.optional(FirstCharge),
+  // How a card check proves the card (see CardCheckMethod); `lookup` when absent.
+  cardCheckMethod: Schema.optional(CardCheckMethod),
   // Set with status Closed only; null (or absent in code) otherwise.
   closedReason: Schema.optional(Schema.NullOr(CheckoutClosedReason)),
 });
@@ -236,6 +250,19 @@ export type CheckoutSession = Schema.Schema.Type<typeof CheckoutSession>;
 export const firstChargeOf = (
   session: Pick<CheckoutSession, 'firstCharge'>,
 ): FirstCharge => session.firstCharge ?? 'now';
+
+/** A session's card-check method, `lookup` when it carries none. */
+export const cardCheckMethodOf = (
+  session: Pick<CheckoutSession, 'cardCheckMethod'>,
+): CardCheckMethod => session.cardCheckMethod ?? 'lookup';
+
+/** The method a card-check session reports on the wire; absent for any other session. */
+export const echoedCardCheckMethod = (
+  session: Pick<CheckoutSession, 'firstCharge' | 'cardCheckMethod'>,
+): { readonly cardCheckMethod?: CardCheckMethod } =>
+  firstChargeOf(session) === 'card_check'
+    ? { cardCheckMethod: cardCheckMethodOf(session) }
+    : {};
 
 /** The furthest ahead a create request may set `startsAt` or `payableUntil`. */
 export const MAX_CHECKOUT_HORIZON_DAYS = 62;
@@ -438,11 +465,18 @@ const CARD_CHECK_RULES: readonly {
 /** The first card-check rule a create breaks, as its message; undefined when it keeps
  * them all or is not a card check. */
 export const brokenCardCheckRule = (
-  v: CardCheckFields & { readonly firstCharge?: FirstCharge | undefined },
-): string | undefined =>
-  v.firstCharge === 'card_check'
-    ? CARD_CHECK_RULES.find((rule) => !rule.holds(v))?.message
-    : undefined;
+  v: CardCheckFields & {
+    readonly firstCharge?: FirstCharge | undefined;
+    readonly cardCheckMethod?: CardCheckMethod | undefined;
+  },
+): string | undefined => {
+  if (v.firstCharge !== 'card_check') {
+    return v.cardCheckMethod === undefined
+      ? undefined
+      : 'cardCheckMethod requires firstCharge card_check';
+  }
+  return CARD_CHECK_RULES.find((rule) => !rule.holds(v))?.message;
+};
 
 /** The first option that breaks a rule, named by its index. */
 const brokenOption = (
@@ -515,6 +549,10 @@ export const CreateCheckoutSession = CheckoutSession.pipe(
       // `now` (the default, same as absent) or `card_check` (see FirstCharge). A card
       // check is admitted only while the billing env allows it (422 otherwise).
       firstCharge: Schema.optional(FirstCharge),
+      // How the card check proves the card (see CardCheckMethod); `lookup` when absent.
+      // Only with `firstCharge: 'card_check'`; `charge_refund` is admitted only while the
+      // billing env allows it (422 otherwise).
+      cardCheckMethod: Schema.optional(CardCheckMethod),
     }),
   ),
   Schema.filter((v) => brokenRule(v, v.recurring) ?? true),
@@ -566,6 +604,8 @@ export const SessionCreated = Schema.Struct({
   checkoutUrl: Schema.String,
   expiresAt: Schema.Date,
   firstCharge: Schema.optional(FirstCharge),
+  // A card check's stored method, echoed like `firstCharge`; absent on any other session.
+  cardCheckMethod: Schema.optional(CardCheckMethod),
 });
 
 export type SessionCreated = Schema.Schema.Type<typeof SessionCreated>;
@@ -696,6 +736,12 @@ export const CheckoutSessionPublic = CheckoutSession.pipe(
       // The stored first-charge mode: a `card_check` page verifies the card and charges
       // nothing now. `closedReason` is set only on a Closed session.
       firstCharge: FirstCharge,
+      // A card check's method (the page tells the payer about a refunded charge);
+      // absent on any other session.
+      cardCheckMethod: Schema.optional(CardCheckMethod),
+      // A `charge_refund` check's verify charge, in USD minor units, so the page names the
+      // amount it takes and returns; absent on any other session.
+      cardCheckChargeAmount: Schema.optional(Schema.Int),
       closedReason: Schema.NullOr(CheckoutClosedReason),
       methodLocked: Schema.Boolean,
       prolong: Schema.Boolean,
