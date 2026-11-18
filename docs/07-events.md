@@ -61,6 +61,25 @@ A checkout created with `startsAt` (docs/06) that **creates** a payment anchors 
 `nextPaymentDate` run a full period (× cycles, + promo bonus) from it. A charge that stacks
 onto a live payment ignores `startsAt`.
 
+**`creditsPeriod`** (`credits_period` on the CRM wire) on the success events
+(`initial_`/`recurring_`/`one_time_purchase_succeeded`, `subscription_migrated`, and
+`subscription_card_checked`) says whether this money paid for subscription time; it is
+`false` only when the charge bought no time (a verification, or a card change without
+credit). It does NOT say billing knows the window: read `periodEnd` / `nextPaymentDate`
+for that. It is never `false` on `one_time_purchase_succeeded` (a P0D product
+included): that event comes only from a checkout settlement, which always creates or
+extends a payment; every `false` path emits `recurring_payment_succeeded` or
+`subscription_card_checked`. `true`: a checkout that created or stacked onto a payment, a scheduled renewal the
+scheduler credited, an arrears card change, an operator-bound quarantine (a real
+subscription payment whose window lives where it was billed, so `periodStart`/`periodEnd`
+stay null). `false`: money moved but bought no time — a card change that only re-tokenized
+(`periodStart`/`periodEnd` null, `nextPaymentDate` unchanged), a scheduled charge whose
+payment was no longer live when the scheduler took it (its approval recorded no credit; the
+event reports the row as it stands), and a card check (amount 0). A consumer must not
+extend access or count a renewal on `false`. Events stored before the field existed lack
+it: read its absence as unknown and keep the old behaviour. `card_change_succeeded`
+arrives after the success event, so it cannot carry this signal.
+
 **`checkoutSessionId`** (`checkout_session_id` on the CRM wire, optional) on the success
 events (`initial_`/`recurring_`/`one_time_purchase_succeeded`, `subscription_migrated`) is
 the id of the checkout session that settled the charge: the session actually paid, so a

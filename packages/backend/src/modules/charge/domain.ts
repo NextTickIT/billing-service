@@ -131,6 +131,7 @@ const succeededPayload = (
   periodEnd: prolongation.periodEnd?.toISOString() ?? null,
   recurring: match.recurring ?? true,
   metadata: prolongation.metadata,
+  creditsPeriod: prolongation.creditsPeriod,
   ...settlingSession(match),
   ...(prolongation.cardCheckFirstCharge === true
     ? { cardCheckFirstCharge: true as const }
@@ -382,6 +383,9 @@ export const boundPaymentSucceeded = (
     periodEnd: null,
     recurring: true,
     metadata: null,
+    // A bound charge is a real subscription payment (usually the legacy tail's renewal);
+    // its window lives where it was billed, not on a billing payment.
+    creditsPeriod: true,
   },
 });
 

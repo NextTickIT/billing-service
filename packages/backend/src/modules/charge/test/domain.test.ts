@@ -2,6 +2,9 @@ import { it } from '@effect/vitest';
 import {
   CheckoutSessionStatus,
   type DomainEvent,
+  type Payment,
+  PaymentMethod,
+  PaymentStatus,
 } from '@billing-service/shared';
 import { Effect, Logger, LogLevel, Option } from 'effect';
 import { expect } from 'vitest';
@@ -284,10 +287,15 @@ const matcherOf =
   () =>
     Effect.succeed(result);
 
-/** The fields a settled result defaults: not prolonged, and no window, declaration or
- * next amount. */
+/** The fields a settled result defaults: not prolonged, no window, declaration or next
+ * amount, and a credited period. */
 type Defaulted =
-  'prolonged' | 'periodStart' | 'periodEnd' | 'metadata' | 'nextAmount';
+  | 'prolonged'
+  | 'periodStart'
+  | 'periodEnd'
+  | 'metadata'
+  | 'nextAmount'
+  | 'creditsPeriod';
 
 /** A settled applier result; the `Defaulted` fields may be omitted. */
 type Settled = Omit<SettledCharge, Defaulted> &
@@ -299,6 +307,7 @@ const settledDefaults = {
   periodEnd: null,
   metadata: null,
   nextAmount: null,
+  creditsPeriod: true,
 } as const;
 
 const applierOf =
@@ -582,6 +591,7 @@ it('recurringPaymentSucceeded reports the terms the approval charged over the ma
       metadata: null,
       nextAmount: 30000,
       charged: { period: 'P4W', method: 0 },
+      creditsPeriod: true,
     },
   );
 
@@ -606,6 +616,7 @@ it('recurringPaymentSucceeded carries the docs/07 required payload fields', () =
       periodEnd: new Date('2026-02-01T00:00:00Z'),
       metadata: { plan: 'half_year' },
       nextAmount: 45000,
+      creditsPeriod: true,
     },
   );
   expect(event.payload).toEqual({
@@ -624,6 +635,7 @@ it('recurringPaymentSucceeded carries the docs/07 required payload fields', () =
     periodEnd: '2026-02-01T00:00:00.000Z',
     recurring: true,
     metadata: { plan: 'half_year' },
+    creditsPeriod: true,
   });
   expect(event.aggregateId).toBe('sub_9');
 });
@@ -636,6 +648,7 @@ const renewingProlongation = {
   periodEnd: new Date('2026-02-01T00:00:00Z'),
   metadata: null,
   nextAmount: expectedNextAmount,
+  creditsPeriod: true,
 };
 
 const checkoutMatchFor = (recurring: boolean): Match => ({
@@ -699,6 +712,23 @@ it.each([
   const event = build();
 
   expect(event.payload.nextAmount).toBe(expected);
+});
+
+it('an operator bind reports the bound charge as credited time, with no window', () => {
+  const event = boundPaymentSucceeded(decodedCharge('k7'), {
+    incomingEventId: 'inc_7',
+    quarantineId: 'q_7',
+    externalUserId: 'sp:7',
+    subscriptionId: null,
+    period: 'P1M',
+    method: 0,
+  });
+
+  expect(event.payload).toMatchObject({
+    creditsPeriod: true,
+    periodStart: null,
+    periodEnd: null,
+  });
 });
 
 it('initialPaymentFailed carries the decline reason and required fields', () => {
@@ -2243,4 +2273,203 @@ it.effect('a second backfill run selects only what stayed quarantined', () =>
     expect(report).toEqual(emptyReport);
     expect(second.pub.events).toEqual([]);
   }),
+);
+
+// ---- creditsPeriod: did the money credit a subscription period? ----
+
+const CREDITED_START = new Date('2026-01-01T00:00:00Z');
+const CREDITED_END = new Date('2026-02-01T00:00:00Z');
+
+/** A recurring card payment that owes since its end on Jan 1. */
+const owingRow: Payment = {
+  id: 'pay_1',
+  externalUserId: 'sp:cc',
+  amount: 30000,
+  currency: 0,
+  method: PaymentMethod.Card,
+  period: 'P1M',
+  status: PaymentStatus.PastDue,
+  recurring: true,
+  currentPeriodStart: new Date('2025-12-01T00:00:00Z'),
+  currentPeriodEnd: CREDITED_START,
+  nextPaymentDate: CREDITED_START,
+  recurringTokenRef: 'tok',
+  firstFailureAt: CREDITED_START,
+  retryAttempt: 1,
+  cancelRequestedAt: null,
+  metadata: null,
+  createdAt: new Date(0),
+  updatedAt: new Date(0),
+};
+
+/** The payment and session writes a settlement through the real applier makes, over
+ * `row`; a fresh checkout finds no live payment and inserts one. */
+const settlingRepos = (row: Payment) => {
+  const payments = {
+    transaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => effect,
+    lockById: () => Effect.succeed(Option.some(row)),
+    findById: () => Effect.succeed(Option.some(row)),
+    findActiveRecurringByExternalUser: () => Effect.succeed(Option.none()),
+    insert: (
+      input: Omit<
+        Payment,
+        'id' | 'cancelRequestedAt' | 'createdAt' | 'updatedAt'
+      >,
+    ) =>
+      Effect.succeed({
+        ...input,
+        id: 'pay_new',
+        cancelRequestedAt: null,
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+      }),
+    advanceAfterSuccess: () => Effect.void,
+    markFirstMoney: () => Effect.void,
+    updateToken: () => Effect.void,
+    setMethod: () => Effect.void,
+    clearToken: () => Effect.void,
+  } as unknown as PaymentRepo;
+  const checkout = {
+    completeIfOpen: () => Effect.succeed(true),
+  } as unknown as CheckoutRepo;
+  return makeCheckoutApplier(payments, checkout, legacyApproval);
+};
+
+/** The payload of the one success event a run published. */
+const successPayload = (events: readonly DomainEvent[]) =>
+  events.find(
+    (e) => e.name.endsWith('_succeeded') && e.name !== 'card_change_succeeded',
+  )?.payload;
+
+it.effect(
+  'a card change that moves money but credits no period reports creditsPeriod false with no window',
+  () =>
+    Effect.gen(function* () {
+      const h = harness(
+        {
+          ...(cardChangeMatch(true) as Match),
+          arrears: false,
+          origin: 'card_change',
+        },
+        settlingRepos({ ...owingRow, status: PaymentStatus.Active }),
+      );
+
+      yield* h.run({ ...encodedPayload('ccv'), amount: 1 });
+
+      expect(h.events.map((e) => e.name)).toEqual([
+        'recurring_payment_succeeded',
+        'card_change_succeeded',
+      ]);
+      expect(successPayload(h.events)).toMatchObject({
+        creditsPeriod: false,
+        periodStart: null,
+        periodEnd: null,
+      });
+    }),
+);
+
+it.effect(
+  'a card change that collects arrears reports creditsPeriod true with the credited window',
+  () =>
+    Effect.gen(function* () {
+      const h = harness(cardChangeMatch(true), settlingRepos(owingRow));
+
+      // Paid after the Jan 1 end: the credited window starts at that end.
+      yield* h.run({
+        ...encodedPayload('cca'),
+        occurredAt: '2026-01-20T00:00:00.000Z',
+      });
+
+      expect(successPayload(h.events)).toMatchObject({
+        creditsPeriod: true,
+        periodStart: CREDITED_START.toISOString(),
+        periodEnd: CREDITED_END.toISOString(),
+      });
+    }),
+);
+
+it.effect(
+  'a first checkout payment reports initial_payment_succeeded with creditsPeriod true',
+  () =>
+    Effect.gen(function* () {
+      const h = harness(
+        recurringCheckout({ period: 'P1M' }),
+        settlingRepos(owingRow),
+      );
+
+      yield* h.run(encodedPayload('cfirst'));
+
+      expect(h.events.map((e) => e.name)).toEqual([
+        'payment_created',
+        'initial_payment_succeeded',
+      ]);
+      expect(successPayload(h.events)).toMatchObject({ creditsPeriod: true });
+    }),
+);
+
+const scheduledRenewal: MatchResult = {
+  matched: true,
+  kind: 'recurring',
+  subscriptionId: 'pay_1',
+  externalUserId: 'sp:cc',
+  period: 'P1M',
+  method: 0,
+};
+
+it.effect(
+  'a scheduled renewal the scheduler credited reports creditsPeriod true',
+  () =>
+    Effect.gen(function* () {
+      const h = harness(scheduledRenewal, settlingRepos(owingRow));
+
+      yield* h.run({
+        ...encodedPayload('crenew'),
+        settlement: {
+          period: 'P1M',
+          method: 0,
+          periodStart: CREDITED_START.toISOString(),
+          periodEnd: CREDITED_END.toISOString(),
+          nextPaymentDate: CREDITED_END.toISOString(),
+          metadata: null,
+          nextAmount: 30000,
+        },
+      });
+
+      expect(h.events.map((e) => e.name)).toEqual([
+        'recurring_payment_succeeded',
+      ]);
+      expect(successPayload(h.events)).toMatchObject({ creditsPeriod: true });
+    }),
+);
+
+it.effect.each([
+  [
+    'an approval that credited nothing credits no period',
+    { settlement: null },
+    false,
+  ],
+  [
+    'a pre-snapshot approval that credited nothing credits no period',
+    false,
+    false,
+  ],
+  ['a pre-snapshot approval that credited a period credits one', true, true],
+] as const)(
+  'a scheduled receipt without a snapshot: %s',
+  ([, recorded, expectedCredits]) =>
+    Effect.gen(function* () {
+      const payments = {
+        findById: () => Effect.succeed(Option.some(owingRow)),
+      } as unknown as PaymentRepo;
+      const applier = makeCheckoutApplier(payments, {} as CheckoutRepo, () =>
+        Effect.succeed(Option.some(recorded)),
+      );
+      const h = harness(scheduledRenewal, applier);
+
+      yield* h.run(encodedPayload('cpoll'));
+
+      expect(successPayload(h.events)).toMatchObject({
+        creditsPeriod: expectedCredits,
+      });
+    }),
 );

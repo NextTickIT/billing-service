@@ -445,6 +445,7 @@ describe('settlement clamping and caller options', () => {
           periodEnd: null,
           metadata: null,
           nextAmount: null,
+          creditsPeriod: true,
         }).payload;
         expect(period).toBe('P3M');
         expect(writes.extended?.currentPeriodEnd).toEqual(

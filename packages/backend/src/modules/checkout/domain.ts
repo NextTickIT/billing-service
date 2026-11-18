@@ -664,6 +664,7 @@ const creditedChange = (
   periodEnd: credited.currentPeriodEnd,
   metadata: credited.metadata,
   nextAmount: credited.nextAmount,
+  creditsPeriod: true,
 });
 
 /**
@@ -689,6 +690,7 @@ const uncreditedChange = (
       periodEnd: null,
       metadata: current?.metadata ?? null,
       nextAmount: current === null ? null : autochargeAmount(current),
+      creditsPeriod: false,
     })),
   );
 
@@ -814,6 +816,7 @@ const applyCheckout =
         periodEnd: applied.periodEnd,
         metadata: applied.metadata,
         nextAmount: applied.nextAmount,
+        creditsPeriod: true,
       };
     }).pipe(
       payments.transaction,
@@ -842,11 +845,17 @@ const settledReport = (
   // The terms the approval charged, not the row's now: a plan change since does not
   // relabel this charge.
   charged: { period: settled.period, method: settled.method },
+  creditsPeriod: true,
 });
 
 /** The row as it stands: the report of a scheduled charge whose approval recorded no
- * window (it credited none, or it predates the snapshot in the ledger). */
-const rowReport = (payments: PaymentRepo, subscriptionId: string) =>
+ * window (it credited none, or it predates the snapshot in the ledger, whose bare boolean
+ * says whether it credited). */
+const rowReport = (
+  payments: PaymentRepo,
+  subscriptionId: string,
+  creditsPeriod: boolean,
+) =>
   Effect.map(payments.findById(subscriptionId), (option) => {
     const found = Option.getOrNull(option);
     return {
@@ -858,6 +867,7 @@ const rowReport = (payments: PaymentRepo, subscriptionId: string) =>
       periodEnd: found?.currentPeriodEnd ?? null,
       metadata: found?.metadata ?? null,
       nextAmount: found === null ? null : autochargeAmount(found),
+      creditsPeriod,
     };
   });
 
@@ -890,9 +900,12 @@ const applyScheduled = (
         );
       }
       const recorded = approval.value;
-      return typeof recorded !== 'boolean' && recorded.settlement !== null
-        ? Effect.succeed(settledReport(subscriptionId, recorded.settlement))
-        : rowReport(payments, subscriptionId);
+      if (typeof recorded === 'boolean') {
+        return rowReport(payments, subscriptionId, recorded);
+      }
+      return recorded.settlement === null
+        ? rowReport(payments, subscriptionId, false)
+        : Effect.succeed(settledReport(subscriptionId, recorded.settlement));
     },
   );
 };

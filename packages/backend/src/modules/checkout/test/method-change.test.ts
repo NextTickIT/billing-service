@@ -299,6 +299,7 @@ it.effect(
         periodEnd: null,
         metadata: null,
         nextAmount: null,
+        creditsPeriod: false,
       });
     }),
 );
