@@ -56,20 +56,20 @@ const orderTimeoutFor = (
   return Math.max(1, Math.min(timeout, left));
 };
 
-/**
- * Build a signed WayForPay Purchase (docs/14 flow A). No `regularMode`: we take the
- * recToken from the callback and run our own billing cycle, so we must not let
- * WayForPay create its own managed schedule (the migration gotcha). Amount is sent
- * in major units, which is also what the signature covers.
- */
-export const buildPurchase = (
+/** What one order charges: a single product line. */
+interface OrderLine {
+  readonly amount: number; // major units, as sent and signed
+  readonly currency: string;
+  readonly productName: string;
+}
+
+const purchaseForm = (
   config: W4pConfigService,
   session: CheckoutSession,
   orderDate: number,
+  line: OrderLine,
 ): PurchaseForm => {
-  const amount = session.amount / 100;
-  const currency = CurrencyCode[session.currency];
-  const productName = productNameFor(session);
+  const { amount, currency, productName } = line;
   const merchantSignature = signPurchase(
     {
       merchantAccount: config.merchantAccount,
@@ -105,6 +105,45 @@ export const buildPurchase = (
     },
   };
 };
+
+/**
+ * Build a signed WayForPay Purchase (docs/14 flow A). No `regularMode`: we take the
+ * recToken from the callback and run our own billing cycle, so we must not let
+ * WayForPay create its own managed schedule (the migration gotcha). Amount is sent
+ * in major units, which is also what the signature covers.
+ */
+export const buildPurchase = (
+  config: W4pConfigService,
+  session: CheckoutSession,
+  orderDate: number,
+): PurchaseForm =>
+  purchaseForm(config, session, orderDate, {
+    amount: session.amount / 100,
+    currency: CurrencyCode[session.currency],
+    productName: productNameFor(session),
+  });
+
+/** The product line of a `charge_refund` card check: on the statement the payer sees it
+ * is a verification that comes back, not the subscription. */
+export const VERIFY_CHARGE_PRODUCT_NAME =
+  'Card verification for the NextTick Guild subscription (refunded)';
+
+/**
+ * Build the Purchase of a `charge_refund` card check: `amountMinor` USD (not the plan's
+ * price), same order reference and URLs as any Purchase, no `regularMode`. Billing refunds
+ * it once approved and keeps the token; the plan's first charge stays at `startsAt`.
+ */
+export const buildVerifyCharge = (
+  config: W4pConfigService,
+  session: CheckoutSession,
+  orderDate: number,
+  amountMinor: number,
+): PurchaseForm =>
+  purchaseForm(config, session, orderDate, {
+    amount: amountMinor / 100,
+    currency: 'USD',
+    productName: VERIFY_CHARGE_PRODUCT_NAME,
+  });
 
 /**
  * Build a signed WayForPay Card Verify (0-amount tokenization, wiki 852189) as a

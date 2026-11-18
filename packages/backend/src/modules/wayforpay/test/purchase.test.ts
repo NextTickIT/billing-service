@@ -5,7 +5,11 @@ import {
 import { Redacted } from 'effect';
 import { describe, expect, test } from 'vitest';
 
-import { buildPurchase } from '@/modules/wayforpay/purchase.js';
+import {
+  buildPurchase,
+  buildVerifyCharge,
+  VERIFY_CHARGE_PRODUCT_NAME,
+} from '@/modules/wayforpay/purchase.js';
 import type { W4pConfigService } from '@/modules/wayforpay/config.js';
 
 const config: W4pConfigService = {
@@ -196,5 +200,41 @@ describe('orderTimeout never outlives a bounded offer', () => {
       orderDate,
     );
     expect(form.fields['orderTimeout']).toBe(1);
+  });
+});
+
+describe('buildVerifyCharge: the charge_refund card check', () => {
+  const VERIFY_MINOR = 100;
+  const form = buildVerifyCharge(
+    config,
+    session(new Date(1700003600 * 1000)),
+    1700000000,
+    VERIFY_MINOR,
+  );
+
+  test('charges the verify amount in USD, not the plan price, on the session order', () => {
+    expect(form.action).toBe('https://secure.wayforpay.com/pay');
+    expect([
+      form.fields['orderReference'],
+      form.fields['amount'],
+      form.fields['currency'],
+      form.fields['productPrice'],
+    ]).toEqual(['chk_1', 1, 'USD', [1]]);
+  });
+
+  test('names a refunded card verification on the receipt', () => {
+    expect(form.fields['productName']).toEqual([VERIFY_CHARGE_PRODUCT_NAME]);
+    expect(VERIFY_CHARGE_PRODUCT_NAME).toContain('refunded');
+  });
+
+  test('carries the callback and return URLs, a signature and no regularMode', () => {
+    expect(form.fields['serviceUrl']).toBe('https://us/callback');
+    expect(form.fields['returnUrl']).toBe('https://us/return');
+    expect(String(form.fields['merchantSignature'])).toHaveLength(32);
+    expect(form.fields['regularMode']).toBeUndefined();
+  });
+
+  test('the order lives as long as the link, like any Purchase', () => {
+    expect(form.fields['orderTimeout']).toBe(3600);
   });
 });

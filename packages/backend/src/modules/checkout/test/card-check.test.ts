@@ -6,6 +6,8 @@ import {
   type CardCheckFacts,
   cardCheckEvidence,
   classifyCardCheck,
+  isProviderRefund,
+  rawAmountMinor,
 } from '@/modules/checkout/card-check.js';
 
 /** The raw serviceUrl callback of a verified card (live facts, plan §0). */
@@ -99,6 +101,173 @@ describe('cardCheckEvidence: a verified card, read from the raw callback only', 
       verified: false,
     });
     expect(evidence.token).toBe('tok_cc');
+  });
+});
+
+/** The raw serviceUrl callback of an approved 1 USD verify charge (`charge_refund`). */
+const chargedRaw = {
+  orderReference: 'chk_cc',
+  transactionStatus: 'Approved',
+  reasonCode: 1100,
+  amount: '1',
+  currency: 'USD',
+  recToken: 'tok_cc',
+};
+
+const VERIFY_CHARGE_MINOR = 100;
+const CHARGE_REFUND = {
+  method: 'charge_refund',
+  amountMinor: VERIFY_CHARGE_MINOR,
+} as const;
+
+const withoutCharged = (key: keyof typeof chargedRaw) =>
+  Object.fromEntries(Object.entries(chargedRaw).filter(([k]) => k !== key));
+
+describe('cardCheckEvidence: a charge_refund verify, read from the raw callback only', () => {
+  it.each([
+    ['the approved callback, amount "1"', chargedRaw],
+    ['amount "1.00"', { ...chargedRaw, amount: '1.00' }],
+    ['amount as the number 1', { ...chargedRaw, amount: 1 }],
+    ['reasonCode as text', { ...chargedRaw, reasonCode: '1100' }],
+  ])('%s is verified', (_label, raw) => {
+    const evidence = cardCheckEvidence(charge(raw), CHARGE_REFUND);
+
+    expect(evidence.verified).toBe(true);
+  });
+
+  it.each([
+    ['just under the verify amount, 0.99', { ...chargedRaw, amount: '0.99' }],
+    ['just over the verify amount, 1.01', { ...chargedRaw, amount: '1.01' }],
+    ['a sub-cent amount, 1.001', { ...chargedRaw, amount: '1.001' }],
+    ['amount 0', { ...chargedRaw, amount: '0' }],
+    ['a missing amount', withoutCharged('amount')],
+    ['currency UAH', { ...chargedRaw, currency: 'UAH' }],
+    ['a missing currency', withoutCharged('currency')],
+    [
+      'status WaitingAuthComplete (the lookup success)',
+      { ...chargedRaw, transactionStatus: 'WaitingAuthComplete' },
+    ],
+    ['reasonCode 1101', { ...chargedRaw, reasonCode: 1101 }],
+    ['a missing recToken', withoutCharged('recToken')],
+  ])('%s is not verified', (_label, raw) => {
+    const evidence = cardCheckEvidence(charge(raw), CHARGE_REFUND);
+
+    expect(evidence.verified).toBe(false);
+  });
+
+  it('the lookup verify payload is not a charge_refund verify', () => {
+    const evidence = cardCheckEvidence(charge(verifiedRaw), CHARGE_REFUND);
+
+    expect(evidence.verified).toBe(false);
+  });
+
+  it('the approved charge is not a lookup verify', () => {
+    const evidence = cardCheckEvidence(charge(chargedRaw));
+
+    expect(evidence.verified).toBe(false);
+  });
+
+  it('the same payload from the poller is not verified', () => {
+    const evidence = cardCheckEvidence(
+      charge(chargedRaw, 'wayforpay_poller'),
+      CHARGE_REFUND,
+    );
+
+    expect(evidence.verified).toBe(false);
+  });
+});
+
+describe('cardCheckEvidence: what a charge_refund callback took and declined', () => {
+  it.each([
+    ['an approved verify charge', chargedRaw, true],
+    [
+      'an approved charge at the wrong amount',
+      { ...chargedRaw, amount: '50' },
+      true,
+    ],
+    ['an approved charge without a token', withoutCharged('recToken'), true],
+    [
+      'an approved charge from the poller',
+      chargedRaw,
+      true,
+      'wayforpay_poller',
+    ],
+    [
+      'a declined charge',
+      { ...chargedRaw, transactionStatus: 'Declined' },
+      false,
+    ],
+    [
+      'a charge still in processing',
+      { ...chargedRaw, transactionStatus: 'InProcessing' },
+      false,
+    ],
+  ])('%s took money: %s', (_label, raw, expected, source?: string) => {
+    const evidence = cardCheckEvidence(charge(raw, source), CHARGE_REFUND);
+
+    expect(evidence.moneyTaken).toBe(expected);
+  });
+
+  it('an approved callback on a lookup session took no money to refund', () => {
+    const evidence = cardCheckEvidence(charge(chargedRaw));
+
+    expect(evidence.moneyTaken).toBe(false);
+  });
+
+  it.each([
+    ['Declined', true],
+    ['Expired', true],
+    ['Approved', false],
+  ])('status %s is a decline: %s', (transactionStatus, expected) => {
+    const evidence = cardCheckEvidence(
+      charge({ ...chargedRaw, transactionStatus }),
+      CHARGE_REFUND,
+    );
+
+    expect(evidence.declined).toBe(expected);
+  });
+});
+
+describe('rawAmountMinor: a major-unit decimal as exact minor units', () => {
+  it.each([
+    ['"1"', '1', 100],
+    ['"1.00"', '1.00', 100],
+    ['"1.5"', '1.5', 150],
+    ['"0.99"', '0.99', 99],
+    ['the number 1.01', 1.01, 101],
+    ['"0"', '0', 0],
+  ])('%s is %d', (_label, raw, expected) => {
+    expect(rawAmountMinor(raw)).toBe(expected);
+  });
+
+  it.each([
+    ['a sub-cent "1.001"', '1.001'],
+    ['a negative "-1"', '-1'],
+    ['an empty string', ''],
+    ['text', 'one'],
+    ['absent', undefined],
+    ['NaN', Number.NaN],
+  ])('%s is unreadable', (_label, raw) => {
+    expect(rawAmountMinor(raw)).toBeNull();
+  });
+});
+
+describe("isProviderRefund: the provider returned an order's money", () => {
+  it.each([
+    ['a Refunded order', { transactionStatus: 'Refunded' }, 'pending', true],
+    ['a Voided order', { transactionStatus: 'Voided' }, 'unknown', true],
+    ['a REFUND journal row', { transactionType: 'REFUND' }, 'refunded', true],
+    [
+      'an Approved charge',
+      { transactionStatus: 'Approved' },
+      'succeeded',
+      false,
+    ],
+    ['a Declined charge', { transactionStatus: 'Declined' }, 'failed', false],
+  ] as const)('%s: %s', (_label, raw, status, expected) => {
+    const event = { ...charge(raw), status };
+
+    expect(isProviderRefund(event)).toBe(expected);
   });
 });
 

@@ -83,6 +83,8 @@ export default {
     startsAt: 'Your paid period starts {date}',
     cardCheck:
       'Card verification only, nothing is charged now. First charge {amount} on {date}',
+    cardCheckCharge:
+      'We charge {verify} to verify your card and refund it right away. First charge {amount} on {date}',
     redirecting: 'Redirecting to card verification…',
     legalNote: 'By paying, you accept:',
     legalOffer: 'Offer',

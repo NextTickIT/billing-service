@@ -73,6 +73,19 @@ export interface WayForPayConfig {
    */
   readonly cardCheckEnabled: boolean;
   /**
+   * Admission of `cardCheckMethod: 'charge_refund'` card checks
+   * (`W4P_CARD_CHECK_CHARGE_REFUND_ENABLED`). Like `cardCheckEnabled`, gates the create
+   * only; an issued session keeps its method. Off: such a create is a 422.
+   */
+  readonly cardCheckChargeRefundEnabled: boolean;
+  /**
+   * What a `charge_refund` card check charges (and refunds), in USD minor units
+   * (`W4P_CARD_CHECK_CHARGE_AMOUNT_MINOR`, default 100 = 1 USD). The settlement reads the
+   * same value to recognise the verify charge, so change it only while no such check is
+   * open: a charge at the old amount is an anomaly (still refunded).
+   */
+  readonly cardCheckChargeAmountMinor: number;
+  /**
    * Fallback for an ACTIVE card change when `cardVerifyEnabled` is false: re-tokenize
    * via a minimal tokenizing Purchase of this many MINOR units instead of a 0-amount
    * Card Verify. 0 attempts a free charge; 1 = 0.01 UAH. The card-change applier
@@ -369,6 +382,13 @@ const loadSchedulerConfig = (): SchedulerConfig => ({
   ),
 });
 
+/** A positive integer amount in minor units, else the fallback; a typo must not turn the
+ * verify charge into 0 or a fraction the provider would refuse. */
+const positiveMinor = (raw: string | undefined, fallback: number): number => {
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 const loadWayForPayConfig = (): WayForPayConfig => ({
   merchantAccount: process.env['W4P_MERCHANT_ACCOUNT'] ?? '',
   merchantSecretKey: Redacted.make(process.env['W4P_SECRET_KEY'] ?? ''),
@@ -381,6 +401,12 @@ const loadWayForPayConfig = (): WayForPayConfig => ({
   rateLimitRps: positiveNumber(process.env['W4P_RATE_LIMIT_RPS'], 2),
   cardVerifyEnabled: process.env['W4P_CARD_VERIFY_ENABLED'] === 'true',
   cardCheckEnabled: process.env['W4P_CARD_CHECK_ENABLED'] === 'true',
+  cardCheckChargeRefundEnabled:
+    process.env['W4P_CARD_CHECK_CHARGE_REFUND_ENABLED'] === 'true',
+  cardCheckChargeAmountMinor: positiveMinor(
+    process.env['W4P_CARD_CHECK_CHARGE_AMOUNT_MINOR'],
+    100,
+  ),
   cardChangeChargeMinor: Number(
     process.env['W4P_CARD_CHANGE_CHARGE_MINOR'] ?? '0',
   ),

@@ -1,6 +1,7 @@
 import { Schema } from 'effect';
 
 import { ChargeKind } from '@/schemas/charge.js';
+import { CardCheckMethod } from '@/schemas/checkout.js';
 import { CurrencySchema, FirstCharge, Metadata } from '@/schemas/payment.js';
 
 /**
@@ -38,6 +39,7 @@ export const EVENT_NAMES = [
   'subscription_card_checked',
   'card_check_failed',
   'card_check_anomaly',
+  'card_check_refund_failed',
   'unknown_payment_quarantined',
 ] as const;
 
@@ -533,7 +535,11 @@ export const SubscriptionCardCheckedEvent = Schema.Struct({
   ...envelope,
   name: Schema.Literal('subscription_card_checked'),
   externalUserId: Schema.String,
-  payload: Schema.Struct(succeededPayload),
+  payload: Schema.Struct({
+    ...succeededPayload,
+    // How the card was proved; optional so an event stored before the field decodes.
+    cardCheckMethod: Schema.optional(CardCheckMethod),
+  }),
 });
 
 export type SubscriptionCardCheckedEvent = Schema.Schema.Type<
@@ -559,6 +565,8 @@ export const CardCheckFailedEvent = Schema.Struct({
   payload: Schema.Struct({
     reason: Schema.Literal('late', 'on_live', 'declined'),
     ...cardCheckSubject,
+    // Optional so an event stored before the field decodes.
+    cardCheckMethod: Schema.optional(CardCheckMethod),
   }),
 });
 
@@ -586,6 +594,34 @@ export const CardCheckAnomalyEvent = Schema.Struct({
 
 export type CardCheckAnomalyEvent = Schema.Schema.Type<
   typeof CardCheckAnomalyEvent
+>;
+
+/**
+ * A `charge_refund` card check took money (the provider approved the verify charge) and
+ * billing could not return it: the provider refused the refund, or it kept failing past
+ * the retry budget, or its outcome stayed unknown (`outcomeUncertain`). Support refunds it
+ * by hand. `amount` is in minor units of `currency`
+ * (what was charged), `reasonCode` the provider's last answer (null when it never gave
+ * one), `orderReference` the provider order to refund. `aggregateId` is the session.
+ */
+export const CardCheckRefundFailedEvent = Schema.Struct({
+  ...envelope,
+  name: Schema.Literal('card_check_refund_failed'),
+  externalUserId: Schema.String,
+  payload: Schema.Struct({
+    orderReference: Schema.String,
+    amount: Schema.Int,
+    currency: CurrencySchema,
+    reasonCode: Schema.NullOr(Schema.String),
+    // True when billing could not learn whether the money went back (the status stayed
+    // unreadable, or the refund stayed in processing): check the provider first.
+    outcomeUncertain: Schema.Boolean,
+    ...cardCheckSubject,
+  }),
+});
+
+export type CardCheckRefundFailedEvent = Schema.Schema.Type<
+  typeof CardCheckRefundFailedEvent
 >;
 
 /**
@@ -663,6 +699,7 @@ export const DomainEvent = Schema.Union(
   SubscriptionCardCheckedEvent,
   CardCheckFailedEvent,
   CardCheckAnomalyEvent,
+  CardCheckRefundFailedEvent,
   UnknownPaymentQuarantinedEvent,
 );
 

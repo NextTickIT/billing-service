@@ -109,7 +109,8 @@ const MONEY_KINDS: ReadonlySet<StoredEvent['name']> = new Set([
 
 /**
  * The card-check facts the CRM acts on (activate a migration, close an attempt, open a
- * case), and the handover defer it keys its handover date on. Like the money kinds, only
+ * case, show support a verify charge to refund by hand), and the handover defer it keys
+ * its handover date on. Like the money kinds, only
  * `validated` counts. Unlike them, `unregistered` is retried: it means the CRM image
  * predates these kinds, and the fact must reach it once it is upgraded.
  */
@@ -117,6 +118,7 @@ const CARD_CHECK_KINDS: ReadonlySet<StoredEvent['name']> = new Set([
   'subscription_card_checked',
   'card_check_failed',
   'card_check_anomaly',
+  'card_check_refund_failed',
 ]);
 
 const isHandoverDefer = (event: StoredEvent): boolean =>

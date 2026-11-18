@@ -46,6 +46,12 @@ import {
   ledgerClaimAdvance,
   runScheduler,
 } from '@/modules/billing/scheduler.js';
+import {
+  CARD_CHECK_REFUND,
+  cardCheckRefundHandler,
+  cardCheckRefundRetryConfig,
+  runCardCheckRefundSweep,
+} from '@/modules/checkout/card-check-refund.js';
 import { makeContactsRepo } from '@/modules/contacts/data-access.js';
 import { runContactsSync } from '@/modules/contacts/sync.js';
 import { makeSinksRepo } from '@/modules/sinks/data-access.js';
@@ -136,6 +142,14 @@ const registerHandlers = (
     yield* registry.register(
       EXTERNAL_USER_ID_CHANGE,
       externalUserIdChangedNotify(outbox.publish),
+    );
+    yield* registry.register(
+      CARD_CHECK_REFUND,
+      cardCheckRefundHandler({
+        sql,
+        client: yield* WayForPay,
+        publish: outbox.publish,
+      }),
     );
   });
 
@@ -505,6 +519,10 @@ export const bootWorker = (config: AppConfig) =>
         graceSeconds: RECEIPT_GRACE_SECONDS,
       }),
     );
+    // A refund still owed whose task dead-lettered is re-driven here.
+    yield* Effect.forkDaemon(
+      runCardCheckRefundSweep(sql, RECEIPT_SWEEP_INTERVAL_SECONDS),
+    );
     const queue = yield* Queue;
     return yield* queue.run({
       workerId,
@@ -512,6 +530,9 @@ export const bootWorker = (config: AppConfig) =>
       batchSize: config.queue.batchSize,
       visibilityTimeoutMillis: config.queue.visibilityTimeoutMillis,
       retry: { ...defaultRetryConfig, maxAttempts: config.queue.maxAttempts },
-      retryByType: { [DELIVER_EVENT]: deliveryRetryConfig },
+      retryByType: {
+        [DELIVER_EVENT]: deliveryRetryConfig,
+        [CARD_CHECK_REFUND]: cardCheckRefundRetryConfig,
+      },
     });
   });

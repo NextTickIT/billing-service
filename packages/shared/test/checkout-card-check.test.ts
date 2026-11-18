@@ -96,3 +96,43 @@ describe('CreateCheckoutSession.firstCharge on a full-price checkout', () => {
     },
   );
 });
+
+describe('CreateCheckoutSession.cardCheckMethod', () => {
+  test.each([
+    ['absent', {}, undefined],
+    ['lookup', { cardCheckMethod: 'lookup' }, 'lookup'],
+    ['charge_refund', { cardCheckMethod: 'charge_refund' }, 'charge_refund'],
+  ])('a card check with the method %s decodes', (_label, method, expected) => {
+    const result = decode({ ...cardCheck, ...method });
+
+    expect(Either.getOrNull(result)?.cardCheckMethod).toBe(expected);
+  });
+
+  test.each([
+    ['absent', {}],
+    ['"now"', { firstCharge: 'now' }],
+  ])(
+    'a method on a full-price checkout (firstCharge %s) is refused',
+    (_label, mode) => {
+      const message = failure({
+        ...cardCheck,
+        firstCharge: undefined,
+        ...mode,
+        cardCheckMethod: 'charge_refund',
+      });
+
+      expect(message).toContain(
+        'cardCheckMethod requires firstCharge card_check',
+      );
+    },
+  );
+
+  test.each(['refund', 'CHARGE_REFUND', '', null])(
+    'cardCheckMethod %j is not a method',
+    (cardCheckMethod) => {
+      const result = decode({ ...cardCheck, cardCheckMethod });
+
+      expect(Either.isLeft(result)).toBe(true);
+    },
+  );
+});

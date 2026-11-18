@@ -10,13 +10,15 @@ import { createHmac } from 'node:crypto';
  * regularApi (STATUS/…) does NOT sign — it uses `merchantPassword` instead.
  */
 
-export type SignedRequestType = 'TRANSACTION_LIST' | 'CHECK_STATUS';
+export type SignedRequestType = 'TRANSACTION_LIST' | 'CHECK_STATUS' | 'REFUND';
 
 export const SIGNATURE_FIELD_ORDER = {
   // Source: Transaction list (wiki 1736786).
   TRANSACTION_LIST: ['merchantAccount', 'dateBegin', 'dateEnd'],
   // Source: Check Status (wiki 852117).
   CHECK_STATUS: ['merchantAccount', 'orderReference'],
+  // Source: Refund (wiki 852115).
+  REFUND: ['merchantAccount', 'orderReference', 'amount', 'currency'],
 } as const satisfies Record<SignedRequestType, readonly string[]>;
 
 export const hmacMd5Hex = (base: string, secretKey: string): string =>

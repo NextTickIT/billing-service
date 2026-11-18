@@ -1,0 +1,23 @@
+{
+  "id": "evt_card_check_refund_failed:chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab",
+  "idempotency_key": "evt_card_check_refund_failed:chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab",
+  "name": "card_check_refund_failed",
+  "occurred_at": "2026-11-16T10:00:00.000Z",
+  "correlation_id": "card_check_refund:chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab",
+  "external_user_id": "64f0c0ffee00000000abcd12",
+  "aggregate_id": "chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab",
+  "payload": {
+    "order_reference": "chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab",
+    "amount": 100,
+    "currency": 1,
+    "reason_code": null,
+    "outcome_uncertain": false,
+    "checkout_session_id": "chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab",
+    "metadata": {
+      "source": "wfp_migration",
+      "attemptId": "att_42"
+    },
+    "aggregate_id": "chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab",
+    "correlation_id": "card_check_refund:chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab"
+  }
+}

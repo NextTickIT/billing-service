@@ -23,6 +23,7 @@
       "attemptId": "att_42"
     },
     "checkout_session_id": "chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab",
+    "card_check_method": "lookup",
     "aggregate_id": "3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f",
     "correlation_id": "w4pcb:chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab|WaitingAuthComplete"
   }

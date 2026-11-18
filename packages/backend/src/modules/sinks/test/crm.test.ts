@@ -492,6 +492,7 @@ const KINDS: readonly (readonly [
       recurring: true,
       metadata: null,
       checkoutSessionId: 'chk_cc',
+      cardCheckMethod: 'charge_refund',
     },
     {
       aggregate_id: SUBSCRIPTION,
@@ -509,15 +510,45 @@ const KINDS: readonly (readonly [
       recurring: true,
       metadata: null,
       checkout_session_id: 'chk_cc',
+      card_check_method: 'charge_refund',
     },
   ],
   [
     'card_check_failed',
-    { reason: 'late', checkoutSessionId: 'chk_cc', metadata: null },
+    {
+      reason: 'late',
+      checkoutSessionId: 'chk_cc',
+      metadata: null,
+      cardCheckMethod: 'lookup',
+    },
     {
       aggregate_id: SUBSCRIPTION,
       correlation_id: CORRELATION,
       reason: 'late',
+      checkout_session_id: 'chk_cc',
+      metadata: null,
+      card_check_method: 'lookup',
+    },
+  ],
+  [
+    'card_check_refund_failed',
+    {
+      orderReference: 'chk_cc',
+      amount: 100,
+      currency: 1,
+      reasonCode: '1109',
+      outcomeUncertain: false,
+      checkoutSessionId: 'chk_cc',
+      metadata: null,
+    },
+    {
+      aggregate_id: SUBSCRIPTION,
+      correlation_id: CORRELATION,
+      order_reference: 'chk_cc',
+      amount: 100,
+      currency: 1,
+      reason_code: '1109',
+      outcome_uncertain: false,
       checkout_session_id: 'chk_cc',
       metadata: null,
     },
@@ -840,6 +871,9 @@ describe('makeCrmConnector — the card-check kinds and the handover defer', () 
     ['card_check_anomaly', 'validated', DELIVERED],
     ['card_check_anomaly', 'unregistered', RETRYABLE],
     ['card_check_anomaly', 'rejected', PERMANENT],
+    ['card_check_refund_failed', 'validated', DELIVERED],
+    ['card_check_refund_failed', 'unregistered', RETRYABLE],
+    ['card_check_refund_failed', 'rejected', PERMANENT],
   ] as const)('%s stored %s → %o', ([name, schemaStatus, expected]) =>
     Effect.gen(function* () {
       const crm = crmAnswering(ack(schemaStatus));

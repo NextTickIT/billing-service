@@ -175,6 +175,8 @@ const NOT_RENDERED: ReadonlyMap<string, string> = new Map([
   ['status', "the provider's raw status on a card-check anomaly, internal"],
   ['reasonCode', "the provider's raw code on a card-check anomaly, internal"],
   ['tokenPresent', 'a card-check anomaly flag, internal'],
+  ['outcomeUncertain', 'a flag for support, never shown to the payer'],
+  ['cardCheckMethod', 'lookup vs charge_refund, branched on rather than shown'],
 ]);
 
 // Without this, a walk that silently returned nothing would make the check below pass

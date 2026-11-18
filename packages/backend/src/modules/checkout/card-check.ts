@@ -3,8 +3,11 @@ import type { SqlError } from '@effect/sql';
 import {
   type CardCheckAnomalyEvent,
   type CardCheckFailedEvent,
+  cardCheckMethodOf,
   type CheckoutSession,
   CheckoutSessionStatus,
+  Currency,
+  currencyFromCode,
   parseCheckoutRef,
   type PaymentCreatedEvent,
   PaymentMethod,
@@ -17,10 +20,18 @@ import type {
   CardCheckStep,
   Charge,
 } from '@/modules/charge/contracts.js';
+import { enqueue } from '@/infra/queue/store.js';
+import {
+  CARD_CHECK_REFUND,
+  type CardCheckRefundTask,
+  refundTaskKey,
+} from '@/modules/checkout/card-check-refund.js';
 import {
   closeOpenCardCheck,
   lockSessionById,
   makeCheckoutRepo,
+  markVerifyRefundOwed,
+  settleVerifyRefund,
 } from '@/modules/checkout/data-access.js';
 import { makePaymentRepo } from '@/modules/payment/data-access.js';
 import {
@@ -30,10 +41,12 @@ import {
 
 /**
  * Card-check dispatch (plan wfp-migration-card-check §1.3). A card-check session's
- * callback carries a 0-UAH WayForPay verify, never money, so no ordinary path may settle
- * it: this step owns every charge that names such a session, decides one outcome from the
+ * callback carries a 0-UAH WayForPay verify (`lookup`) or a small USD charge billing
+ * refunds (`charge_refund`), never the plan's money, so no ordinary path may settle it:
+ * this step owns every charge that names such a session, decides one outcome from the
  * session's state and the RAW callback, and writes it in the settlement transaction under
- * the session's row lock.
+ * the session's row lock. An approved `charge_refund` charge owes its refund whatever the
+ * outcome; the provider's own refund row of it is this step's too.
  */
 
 /** A verify that lands this close to `startsAt` (or later) is refused: the payer's old
@@ -43,10 +56,16 @@ export const LATE_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** The verify's success: WayForPay holds the authorisation and has issued a token. */
 const VERIFIED_STATUS = 'WaitingAuthComplete';
 const VERIFIED_REASON_CODE = '1100';
+/** A `charge_refund` verify's success: the provider took the charge and issued a token. */
+const CHARGED_STATUS = 'Approved';
 const DECLINED_STATUSES: readonly string[] = ['Declined', 'Expired'];
+/** What the provider reports for an order whose money went back. */
+const RETURNED_STATUSES: readonly string[] = ['refunded', 'voided'];
 
 // "0", "00", "0.00" — a decimal that is exactly zero, nothing else.
 const ZERO_AMOUNT = /^0+(\.0+)?$/;
+// A plain non-negative decimal, as WayForPay writes a major-unit amount.
+const DECIMAL = /^(\d+)(?:\.(\d+))?$/;
 
 /** A raw provider field as text (numbers stringified), or null when absent. */
 const rawText = (payload: Charge['payload'], key: string): string | null => {
@@ -62,41 +81,101 @@ export const rawAmountIsZero = (raw: unknown): boolean =>
     ? raw === 0
     : typeof raw === 'string' && ZERO_AMOUNT.test(raw);
 
+/**
+ * The RAW major-unit amount as exact minor units: "1", "1.0", "1.00" and 1 are 100.
+ * Null when absent, unparseable, or finer than a minor unit — never rounded, so a charge
+ * of 1.001 is not taken for 1.
+ */
+const amountText = (raw: unknown): string | null => {
+  if (typeof raw === 'string') return raw;
+  return typeof raw === 'number' && Number.isFinite(raw) ? String(raw) : null;
+};
+
+export const rawAmountMinor = (raw: unknown): number | null => {
+  const match = DECIMAL.exec(amountText(raw) ?? '');
+  if (match === null) return null;
+  const fraction = (match[2] ?? '').replace(/0+$/, '');
+  if (fraction.length > 2) return null;
+  return Number(match[1]) * 100 + Number(fraction.padEnd(2, '0'));
+};
+
+/** What a session's card check must look like: its method, and for `charge_refund` the
+ * amount charged (minor units, USD). */
+export type ExpectedVerify =
+  | { readonly method: 'lookup' }
+  | { readonly method: 'charge_refund'; readonly amountMinor: number };
+
 /** What the raw callback says, and whether it proves a verified card. */
 export interface CardCheckEvidence {
   readonly verified: boolean;
   readonly declined: boolean;
+  /** A `charge_refund` charge the provider approved: money was taken and is owed back,
+   * whether or not the rest of the evidence holds. */
+  readonly moneyTaken: boolean;
   readonly status: string | null;
   readonly reasonCode: string | null;
   readonly token: string | null;
 }
 
+/** Whether the raw amount and currency are what this method's verify carries. */
+const verifyTerms = (
+  payload: Charge['payload'],
+  expected: ExpectedVerify,
+): boolean =>
+  expected.method === 'lookup'
+    ? rawAmountIsZero(payload['amount']) && payload['currency'] === 'UAH'
+    : rawAmountMinor(payload['amount']) === expected.amountMinor &&
+      payload['currency'] === 'USD';
+
+/** The status a method's verify succeeds with, and the token it carries, if any. */
+const successStatus = (expected: ExpectedVerify): string =>
+  expected.method === 'charge_refund' ? CHARGED_STATUS : VERIFIED_STATUS;
+
+const tokenOf = (payload: Charge['payload']): string | null => {
+  const raw = payload['recToken'];
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+};
+
 /**
  * Read the evidence from the raw payload only — never from the normalised amount and
  * currency, whose defaults (`mapping.ts`) would turn a missing field into "0 UAH". A
- * verified card is a signed WayForPay callback reporting the verify's status and code, an
- * amount of exactly 0 in UAH, and a token.
+ * verified card is a signed WayForPay callback reporting the method's status
+ * (`WaitingAuthComplete` for `lookup`, `Approved` for `charge_refund`) with code 1100, the
+ * method's exact amount and currency (0 UAH; the configured USD charge), and a token.
  */
-export const cardCheckEvidence = (event: Charge): CardCheckEvidence => {
+export const cardCheckEvidence = (
+  event: Charge,
+  expected: ExpectedVerify = { method: 'lookup' },
+): CardCheckEvidence => {
   const { payload } = event;
   const status = rawText(payload, 'transactionStatus');
   const reasonCode = rawText(payload, 'reasonCode');
-  const rawToken = payload['recToken'];
-  const token =
-    typeof rawToken === 'string' && rawToken.length > 0 ? rawToken : null;
+  const token = tokenOf(payload);
   return {
     verified:
       event.source === 'wayforpay_callback' &&
-      status === VERIFIED_STATUS &&
+      status === successStatus(expected) &&
       reasonCode === VERIFIED_REASON_CODE &&
-      rawAmountIsZero(payload['amount']) &&
-      payload['currency'] === 'UAH' &&
+      verifyTerms(payload, expected) &&
       token !== null,
     declined: status !== null && DECLINED_STATUSES.includes(status),
+    moneyTaken:
+      expected.method === 'charge_refund' && status === CHARGED_STATUS,
     status,
     reasonCode,
     token,
   };
+};
+
+/** The provider's own refund record for this order: a REFUND row, or the order reported
+ * Refunded / Voided. The card-check step owns every such row of a `charge_refund` session. */
+export const isProviderRefund = (event: Charge): boolean =>
+  event.status === 'refunded' || providerReturned(event);
+
+/** Whether the row says the money went back (a REFUND row may also report a refusal). */
+export const providerReturned = (event: Charge): boolean => {
+  const status = rawText(event.payload, 'transactionStatus');
+  return status !== null && RETURNED_STATUSES.includes(status.toLowerCase());
 };
 
 /** The outcome before the apply. `verify` may still turn into `on_live` under the payment
@@ -161,6 +240,7 @@ export const cardCheckFailed = (
     reason,
     checkoutSessionId: session.id,
     metadata: session.metadata,
+    cardCheckMethod: cardCheckMethodOf(session),
   },
 });
 
@@ -228,6 +308,7 @@ export const subscriptionCardChecked = (
     recurring: true,
     metadata: applied.metadata,
     checkoutSessionId: session.id,
+    cardCheckMethod: cardCheckMethodOf(session),
   },
 });
 
@@ -334,28 +415,128 @@ const settleOutcome = (
   }
 };
 
+/** The refund an approved verify charge owes: what the provider says it took, or the
+ * configured charge when the raw amount is unreadable; USD unless the raw says otherwise. */
+export const refundTaskOf = (
+  event: Charge,
+  session: CheckoutSession,
+  configuredMinor: number,
+): CardCheckRefundTask => {
+  const taken = rawAmountMinor(event.payload['amount']);
+  const code = rawText(event.payload, 'currency');
+  return {
+    checkoutSessionId: session.id,
+    orderReference: event.externalRef,
+    amount: taken !== null && taken > 0 ? taken : configuredMinor,
+    currency:
+      (code === null ? undefined : currencyFromCode(code)) ?? Currency.USD,
+  };
+};
+
+/**
+ * Owe the refund of an approved verify charge, in the settlement transaction: the session
+ * flips to `pending` and the task is enqueued, once. A duplicate copy (callback + poller)
+ * finds the state already set; the queue key backs that up.
+ */
+const oweRefund = (sql: SqlClient.SqlClient, task: CardCheckRefundTask) =>
+  Effect.gen(function* () {
+    if (!(yield* markVerifyRefundOwed(sql)(task.checkoutSessionId))) return;
+    yield* enqueue(sql)({
+      messageType: CARD_CHECK_REFUND,
+      idemKey: refundTaskKey(task.orderReference),
+      payload: task,
+    });
+  });
+
+/** The provider's refund row of a verify charge: settle the refund if the row says the
+ * money went back and it is not settled yet; otherwise only log. Never a
+ * `payment_refunded`, a quarantine or an anomaly: the verify charge was never a payment. */
+const observeRefund = (
+  sql: SqlClient.SqlClient,
+  event: Charge,
+  session: CheckoutSession,
+  nowMillis: number,
+) =>
+  Effect.gen(function* () {
+    const settled =
+      providerReturned(event) &&
+      (yield* settleVerifyRefund(sql)(session.id, new Date(nowMillis)));
+    // A warning when it settles: it may correct a refund already reported as failed.
+    yield* (
+      settled
+        ? Effect.logWarning('CARD_CHECK_REFUNDED by provider row')
+        : Effect.logInfo('CARD_CHECK_REFUND_SEEN')
+    ).pipe(
+      Effect.annotateLogs({ idemKey: event.idemKey, sessionId: session.id }),
+    );
+  });
+
+/** What the dispatch step needs beyond `sql`: the `charge_refund` amount it recognises. */
+export interface CardCheckStepOptions {
+  readonly chargeRefundAmountMinor: number;
+}
+
+const expectedVerify = (
+  session: CheckoutSession,
+  options: CardCheckStepOptions,
+): ExpectedVerify =>
+  cardCheckMethodOf(session) === 'charge_refund'
+    ? { method: 'charge_refund', amountMinor: options.chargeRefundAmountMinor }
+    : { method: 'lookup' };
+
+/** Settle one charge of an owned session (everything but the provider's refund row). */
+const settleVerify = (
+  ctx: Omit<Verify, 'token'> & { readonly options: CardCheckStepOptions },
+) =>
+  Effect.gen(function* () {
+    const { sql, event, session, nowMillis } = ctx;
+    const evidence = cardCheckEvidence(
+      event,
+      expectedVerify(session, ctx.options),
+    );
+    if (evidence.moneyTaken) {
+      yield* oweRefund(
+        sql,
+        refundTaskOf(event, session, ctx.options.chargeRefundAmountMinor),
+      );
+    }
+    const outcome = classifyCardCheck({
+      status: session.status,
+      evidence,
+      nowMillis,
+      startsAt: session.startsAt,
+      payableUntil: session.payableUntil,
+    });
+    if (outcome === 'verify' && evidence.token !== null) {
+      yield* activate({ ...ctx, token: evidence.token });
+    } else if (outcome !== 'verify') {
+      yield* settleOutcome(outcome, { ...ctx, evidence });
+    }
+  });
+
 /** The dispatch step for the pipeline, built on `sql` at the runtime root. */
 export const makeCardCheckStep =
-  (sql: SqlClient.SqlClient): CardCheckStep =>
+  (sql: SqlClient.SqlClient, options: CardCheckStepOptions): CardCheckStep =>
   (event, settle) =>
     Effect.gen(function* () {
       const owned = yield* ownedSession(sql, event.externalRef);
       if (Option.isNone(owned)) return false;
       const session = owned.value;
-      const evidence = cardCheckEvidence(event);
       const nowMillis = yield* Clock.currentTimeMillis;
-      const outcome = classifyCardCheck({
-        status: session.status,
-        evidence,
-        nowMillis,
-        startsAt: session.startsAt,
-        payableUntil: session.payableUntil,
-      });
-      const ctx = { sql, event, session, settle };
-      if (outcome === 'verify' && evidence.token !== null) {
-        yield* activate({ ...ctx, token: evidence.token, nowMillis });
-      } else if (outcome !== 'verify') {
-        yield* settleOutcome(outcome, { ...ctx, evidence });
+      if (
+        cardCheckMethodOf(session) === 'charge_refund' &&
+        isProviderRefund(event)
+      ) {
+        yield* observeRefund(sql, event, session, nowMillis);
+      } else {
+        yield* settleVerify({
+          sql,
+          event,
+          session,
+          settle,
+          nowMillis,
+          options,
+        });
       }
       yield* settle.markMatched;
       return true;
