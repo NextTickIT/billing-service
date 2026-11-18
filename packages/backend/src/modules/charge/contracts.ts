@@ -265,6 +265,8 @@ export interface SettledCharge {
   readonly nextAmount: number | null;
   /** See `Prolongation.charged`. */
   readonly charged?: ChargedTerms;
+  /** See `Prolongation.creditsPeriod`. */
+  readonly creditsPeriod: boolean;
 }
 
 /**
@@ -280,6 +282,10 @@ export interface Prolongation {
   readonly nextAmount: number | null;
   /** This charge is the first money of a payment a card check created. */
   readonly cardCheckFirstCharge?: boolean;
+  /** The charge credited or extended a subscription period. False when money moved but
+   * bought no time (a card change that only re-tokenized, a scheduled charge whose row was
+   * no longer live): consumers must not read such a success as a renewal. */
+  readonly creditsPeriod: boolean;
   /** The period and method this charge was taken at, when the source recorded them (a
    * scheduled charge's approval); the success reports them over the match's. */
   readonly charged?: ChargedTerms;

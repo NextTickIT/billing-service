@@ -122,6 +122,7 @@ it.effect(
         metadata: null,
         // The callback returned a card token, so the next renewal autocharges this price.
         nextAmount: 30000,
+        creditsPeriod: true,
       });
       expect(insertedToken).toBe('tok');
       expect(completed).toBe(true);
@@ -184,6 +185,7 @@ it.effect(
         metadata: null,
         // Never charged again, so no next amount.
         nextAmount: null,
+        creditsPeriod: true,
       });
       expect(insertedRecurring).toBe(false);
       // The provider returned a recToken; a one-time payment must not store it.
@@ -244,6 +246,8 @@ it.effect(
           periodEnd: new Date('2026-03-01T00:00:00Z'),
           metadata: null,
           nextAmount: 30000,
+          // The pre-snapshot approval recorded that it credited.
+          creditsPeriod: true,
         });
       }),
     );
@@ -293,6 +297,7 @@ it.effect(
           metadata: { planCode: 'half_year' },
           nextAmount: 45000,
           charged: { period: 'P1M', method: 0 },
+          creditsPeriod: true,
         });
       }),
     ),
@@ -423,6 +428,7 @@ it.effect(
         metadata: null,
         // The card change left a card on file: the next renewal autocharges the row's price.
         nextAmount: 30000,
+        creditsPeriod: true,
       });
       expect(second).toEqual({
         refused: 'already_applied',
@@ -587,9 +593,10 @@ it.effect('an arrears session on a cancelled row credits nothing', () =>
   Effect.gen(function* () {
     const { applier, advances } = cardChangeRepo(PaymentStatus.Cancelled);
 
-    yield* applier(event, owedCardChange);
+    const result = yield* applier(event, owedCardChange);
 
     expect(advances).toEqual([]);
+    expect(result).toMatchObject({ creditsPeriod: false });
   }),
 );
 
@@ -606,9 +613,10 @@ it.effect(
       });
 
       expect(advances).toEqual([]);
-      // Money moved, so the unchanged schedule is reported.
+      // Money moved, so the unchanged schedule is reported; it bought no time.
       expect(result).toMatchObject({
         nextPaymentDate: owingPayment.nextPaymentDate,
+        creditsPeriod: false,
       });
     }),
 );
@@ -620,12 +628,14 @@ it.effect(
       const legacy: Match = { ...owedCardChange, origin: null };
 
       const active = cardChangeRepo(PaymentStatus.Active);
-      yield* active.applier(event, legacy);
+      const onActive = yield* active.applier(event, legacy);
       expect(active.advances).toEqual([]);
+      expect(onActive).toMatchObject({ creditsPeriod: false });
 
       const pastDue = cardChangeRepo(PaymentStatus.PastDue);
-      yield* pastDue.applier(event, legacy);
+      const onPastDue = yield* pastDue.applier(event, legacy);
       expect(pastDue.advances).toHaveLength(1);
+      expect(onPastDue).toMatchObject({ creditsPeriod: true });
     }),
 );
 
@@ -755,16 +765,18 @@ it.effect(
         metadata: null,
         nextAmount: 30000,
         charged: { period: 'P1M', method: 0 },
+        creditsPeriod: true,
       });
     }),
 );
 
 it.effect.each([
-  ['an approval that credited nothing', { settlement: null }],
-  ['an approval recorded before snapshots', true],
+  ['an approval that credited nothing', { settlement: null }, false],
+  ['an approval recorded before snapshots that credited', true, true],
+  ['an approval recorded before snapshots that credited nothing', false, false],
 ] as const)(
   '%s: the receipt reports the row; a vanished row reports nothing',
-  ([, recorded]) =>
+  ([, recorded, credited]) =>
     Effect.gen(function* () {
       const applier = makeCheckoutApplier(
         { ...unusedSubs, findById: () => Effect.succeed(Option.none()) },
@@ -783,6 +795,7 @@ it.effect.each([
         periodEnd: null,
         metadata: null,
         nextAmount: null,
+        creditsPeriod: credited,
       });
     }),
 );

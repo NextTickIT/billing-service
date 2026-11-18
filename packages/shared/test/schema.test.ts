@@ -180,3 +180,41 @@ it('charge_deferred is a known event name and decodes', () => {
   });
   expect(Either.isRight(r)).toBe(true);
 });
+
+const succeededPayload = {
+  amount: 5000,
+  currency: Currency.USD,
+  method: PaymentMethod.Card,
+  period: 'P1M',
+  source: 'wayforpay_callback',
+  chargeKind: 'checkout',
+  nextPaymentDate: null,
+  nextAmount: null,
+  periodStart: null,
+  periodEnd: null,
+  recurring: true,
+  metadata: null,
+};
+
+const decodeSuccess = (payload: Record<string, unknown>) =>
+  decodeEvent({
+    ...eventEnvelope,
+    name: 'recurring_payment_succeeded',
+    payload,
+  });
+
+it.each([
+  ['a success that credited a period', { creditsPeriod: true }],
+  ['a success that credited none', { creditsPeriod: false }],
+  ['a success stored before the flag existed', {}],
+])('%s decodes', (_, flag) => {
+  const r = decodeSuccess({ ...succeededPayload, ...flag });
+
+  expect(Either.isRight(r)).toBe(true);
+});
+
+it('a success whose creditsPeriod is not a boolean is refused', () => {
+  const r = decodeSuccess({ ...succeededPayload, creditsPeriod: 'yes' });
+
+  expect(Either.isLeft(r)).toBe(true);
+});

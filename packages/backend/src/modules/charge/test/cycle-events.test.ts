@@ -47,6 +47,7 @@ const prolongation: Prolongation = {
   metadata: null,
   // One cycle's price: the payment renews at its own terms, not the three-cycle total.
   nextAmount: 5000,
+  creditsPeriod: true,
 };
 
 describe('events for a multi-cycle payment', () => {
@@ -97,6 +98,7 @@ describe('events for a multi-cycle payment', () => {
         periodEnd: '2026-04-09T00:00:00.000Z',
         recurring: true,
         metadata: null,
+        creditsPeriod: true,
       });
     }
   });

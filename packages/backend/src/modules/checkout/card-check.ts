@@ -307,6 +307,7 @@ export const subscriptionCardChecked = (
     periodEnd: null,
     recurring: true,
     metadata: applied.metadata,
+    creditsPeriod: false,
     checkoutSessionId: session.id,
     cardCheckMethod: cardCheckMethodOf(session),
   },

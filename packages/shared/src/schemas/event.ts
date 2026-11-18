@@ -123,6 +123,12 @@ const succeededPayload = {
   // its first plan-price charge, whichever path took it (scheduled, /prolong, manual
   // renewal). Absent on every other success.
   cardCheckFirstCharge: Schema.optional(Schema.Literal(true)),
+  // Whether this money paid for subscription time (docs/07). False only when the charge
+  // bought no time: a verification, a card change without credit, a scheduled charge whose
+  // payment was no longer live. It does not say billing knows the window: `periodEnd` and
+  // `nextPaymentDate` do (an operator bind is true with both null). Optional: an event
+  // stored before the field existed lacks it, and a consumer reads its absence as unknown.
+  creditsPeriod: Schema.optional(Schema.Boolean),
 };
 
 export const InitialPaymentSucceededEvent = Schema.Struct({

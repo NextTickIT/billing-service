@@ -151,6 +151,7 @@ const NOT_RENDERED: ReadonlyMap<string, string> = new Map([
   ['movedPayments', 'operational count, never messaged'],
   ['movedSessions', 'operational count, never messaged'],
   ['recurring', 'boolean the flow branches on'],
+  ['creditsPeriod', 'boolean: whether the money bought time, branched on'],
   ['source', 'provider label, internal'],
   ['chargeKind', 'scheduled vs checkout, branched on rather than shown'],
   ['reason', 'provider decline text, passed through verbatim'],

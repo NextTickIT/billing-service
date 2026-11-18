@@ -79,7 +79,11 @@ client retry within the period dedupes to one notification.
 
 Fired ONLY on the no-payment flip (there is no charge to carry the signal). The paid
 paths already emit `card_change_succeeded` (always) and `recurring_payment_succeeded`
-(when owed). Wired like `payment_deferred`: `PAYMENT_METHOD_CHANGE` message →
+(whenever the charge moved money). That success carries `creditsPeriod: true` only when
+the change credited a period (arrears collected); a charge that only re-tokenized the card
+(the minimal tokenizing charge with verify off, or a priced change on a payment that owed
+nothing) carries `creditsPeriod: false`, null `periodStart`/`periodEnd` and the unchanged
+`nextPaymentDate` (docs/07). Wired like `payment_deferred`: `PAYMENT_METHOD_CHANGE` message →
 `methodChangeNotify` → `method_changed` DomainEvent (payload `{ method }`).
 
 ### 4.5 RenewalFailed revival (deliberate divergence)

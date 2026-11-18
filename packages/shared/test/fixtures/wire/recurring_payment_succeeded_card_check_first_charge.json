@@ -22,6 +22,7 @@
       "source": "wfp_migration",
       "attemptId": "att_42"
     },
+    "credits_period": true,
     "card_check_first_charge": true,
     "aggregate_id": "3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f",
     "correlation_id": "w4p:sub_3f6c2a10-5b7e-4d2a-9c1e-7a8b9c0d1e2f_1796256000000|CHARGE|1796256000"

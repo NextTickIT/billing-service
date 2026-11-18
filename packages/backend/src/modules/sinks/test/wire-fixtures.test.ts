@@ -198,6 +198,7 @@ const FIXTURES: readonly (readonly [string, DomainEvent])[] = [
         metadata: METADATA,
         nextAmount: 5000,
         cardCheckFirstCharge: true,
+        creditsPeriod: true,
       },
     ),
   ],
