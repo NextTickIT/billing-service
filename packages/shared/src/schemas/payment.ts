@@ -272,3 +272,31 @@ export type DeferAccepted = Schema.Schema.Type<typeof DeferAccepted>;
 export const CreateAccepted = Schema.Struct({ id: Schema.String });
 
 export type CreateAccepted = Schema.Schema.Type<typeof CreateAccepted>;
+
+/**
+ * POST /api/payment/apply-offer body: the CRM hands over a campaign buyer. `buyerId` is
+ * the id the paid campaign checkout ran under; `externalUserId` is the contact the
+ * purchase belongs to from now on.
+ */
+export const ApplyOfferRequest = Schema.Struct({
+  buyerId: Schema.NonEmptyString,
+  externalUserId: Schema.NonEmptyString,
+});
+
+export type ApplyOfferRequest = Schema.Schema.Type<typeof ApplyOfferRequest>;
+
+/**
+ * POST /api/payment/apply-offer response: the contact's live subscription — the member's,
+ * which the purchase `extended`, or the purchase's own, moved to a new buyer (`created`) —
+ * and its paid-through end and next charge date, the latter also as DD.MM.YYYY (Kyiv) for
+ * the bot to drop into a message.
+ */
+export const ApplyOfferAccepted = Schema.Struct({
+  result: Schema.Literal('extended', 'created'),
+  paymentId: Schema.String,
+  periodEnd: Schema.Date,
+  nextPaymentDate: Schema.Date,
+  nextPaymentDate_formatted: Schema.String,
+});
+
+export type ApplyOfferAccepted = Schema.Schema.Type<typeof ApplyOfferAccepted>;

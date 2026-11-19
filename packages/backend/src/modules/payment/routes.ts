@@ -1,5 +1,7 @@
-import { SqlClient } from '@effect/sql';
+import { SqlClient, type SqlError } from '@effect/sql';
 import {
+  ApplyOfferAccepted,
+  ApplyOfferRequest,
   CancelAccepted,
   CancelPaymentRequest,
   CreateAccepted,
@@ -22,6 +24,7 @@ import { extractBearer } from '@/infra/http/bearer.js';
 import {
   DeferRefused,
   NotFound,
+  OfferRefused,
   Unauthorized,
   UnprocessableEntity,
 } from '@/infra/http/errors.js';
@@ -34,24 +37,32 @@ import { enqueue } from '@/infra/queue/store.js';
 import { authenticate, requireRole } from '@/modules/auth/domain.js';
 import { serviceActor } from '@/modules/auth/service-actor.js';
 import { makeChargeRepo } from '@/modules/charge/data-access.js';
+import { makeExternalUserIdChangeRepo } from '@/modules/identity/data-access.js';
+import { enqueueExternalUserIdChange } from '@/modules/identity/domain.js';
 import {
   PAYMENT_CANCEL,
   PAYMENT_DEFER,
   PAYMENT_REACTIVATE,
 } from '@/modules/payment/contracts.js';
 import {
+  type CampaignPayment,
+  cancelNow,
   deferToDate,
   type DeferredTo,
+  lockCampaignPayments,
   lockDeferTarget,
   makePaymentRepo,
+  markCampaignApplied,
   type PaymentListFilter,
 } from '@/modules/payment/data-access.js';
 import {
+  campaignDecision,
   handoverDecision,
   operatorDeferBlocked,
   wholeDaysBetween,
 } from '@/modules/payment/domain.js';
 import { addPeriod, isValidPeriod } from '@/modules/payment/period.js';
+import { formattedFields } from '@/modules/sinks/formatted.js';
 
 const route = makeRoute((app: FastifyInstance) => app.runtime);
 
@@ -336,7 +347,7 @@ interface DeferRecord {
   readonly actor: string;
   readonly payment: Payment;
   readonly days: number;
-  readonly reason?: 'handover';
+  readonly reason?: 'handover' | 'campaign';
   readonly deferred: DeferredTo;
 }
 
@@ -549,7 +560,241 @@ const deferPayment = (body: DeferRequest, request: FastifyRequest) =>
     ? handoverDefer(body, request)
     : operatorDefer(body.days, request);
 
+/** The campaign apply-offer serves: the CRM stamps it on the campaign checkout. */
+const CAMPAIGN = 'bf2026';
+
+/** The answer for a subscription that is paid through `periodEnd` and charges next on
+ * `nextPaymentDate`. */
+const offerAnswer = (
+  result: ApplyOfferAccepted['result'],
+  paymentId: string,
+  dates: { readonly periodEnd: Date; readonly nextPaymentDate: Date },
+): ApplyOfferAccepted => ({
+  result,
+  paymentId,
+  ...dates,
+  nextPaymentDate_formatted:
+    formattedFields({ nextPaymentDate: dates.nextPaymentDate.toISOString() })[
+      'nextPaymentDate_formatted'
+    ] ?? '',
+});
+
+/** Cancel payments terminally for an applied offer, each with its audit row. */
+const cancelForOffer = (sql: SqlClient.SqlClient, ids: readonly string[]) =>
+  cancelNow(sql)(ids).pipe(
+    Effect.andThen(
+      Effect.forEach(
+        ids,
+        (id) =>
+          makeChargeRepo(sql).insertAudit({
+            actor: 'service',
+            action: 'cancel_payment',
+            targetType: 'payment',
+            targetId: id,
+            detail: { reason: 'campaign' },
+          }),
+        { discard: true },
+      ),
+    ),
+  );
+
+/**
+ * A member: push their Active subscription out by `days` — the operator defer's guard,
+ * write, audit row and `payment_deferred` notify, with no 30-day cap — and cancel the
+ * purchase's own subscription, which must never charge.
+ */
+const extendMember = (
+  sql: SqlClient.SqlClient,
+  live: Payment,
+  pending: readonly CampaignPayment[],
+  days: number,
+) =>
+  Effect.gen(function* () {
+    yield* assertNotInFlight(sql, live.id);
+    const deferred = yield* makePaymentRepo(sql).defer(live.id, days);
+    if (Option.isNone(deferred)) {
+      return yield* Effect.fail(
+        new OfferRefused({
+          code: 'not_active',
+          reason: "the contact's subscription is no longer active",
+        }),
+      );
+    }
+    yield* recordDefer(sql, {
+      actor: 'service',
+      payment: live,
+      days,
+      reason: 'campaign',
+      deferred: deferred.value,
+    });
+    yield* cancelForOffer(
+      sql,
+      pending.map((p) => p.id),
+    );
+    const end = deferred.value.newPeriodEnd;
+    return offerAnswer('extended', live.id, {
+      periodEnd: end,
+      nextPaymentDate: end,
+    });
+  });
+
+/**
+ * Extend the contact's Active subscription, or hand the purchase's subscription over as
+ * theirs. A PastDue one is cancelled first: it is unpaid and its retry ladder would keep
+ * charging the card the purchase already paid.
+ */
+const applyDays = (
+  sql: SqlClient.SqlClient,
+  contact: string,
+  pending: readonly CampaignPayment[],
+  days: number,
+): Effect.Effect<
+  ApplyOfferAccepted,
+  SqlError.SqlError | OfferRefused | DeferRefused
+> =>
+  Effect.gen(function* () {
+    const live =
+      yield* makePaymentRepo(sql).findActiveRecurringByExternalUser(contact);
+    if (Option.isSome(live) && live.value.status === PaymentStatus.Active) {
+      return yield* extendMember(sql, live.value, pending, days);
+    }
+    if (Option.isSome(live)) {
+      yield* cancelForOffer(sql, [live.value.id]);
+    }
+    const own = pending[pending.length - 1];
+    if (own === undefined) {
+      return yield* Effect.dieMessage('apply-offer with nothing pending');
+    }
+    return offerAnswer('created', own.id, {
+      periodEnd: own.currentPeriodEnd,
+      nextPaymentDate: own.nextPaymentDate,
+    });
+  });
+
+/** Move the purchase to the contact, mark it applied with this answer, and emit the
+ * rename's `external_user_id_changed` so the CRM links the money to the contact. */
+const handOver = (
+  sql: SqlClient.SqlClient,
+  cmd: ApplyOfferRequest,
+  pending: readonly CampaignPayment[],
+  answer: ApplyOfferAccepted,
+) =>
+  Effect.gen(function* () {
+    yield* markCampaignApplied(sql)(
+      pending.map((p) => p.id),
+      { buyerId: cmd.buyerId, externalUserId: cmd.externalUserId, ...answer },
+    );
+    const change = yield* makeExternalUserIdChangeRepo(sql).append({
+      fromExternalUserId: cmd.buyerId,
+      toExternalUserId: cmd.externalUserId,
+      source: 'campaign',
+      reason: CAMPAIGN,
+      movedPayments: pending.length,
+      movedSessions: 0,
+    });
+    yield* enqueueExternalUserIdChange(sql, {
+      from: cmd.buyerId,
+      to: cmd.externalUserId,
+      movedPayments: pending.length,
+      movedSessions: 0,
+      changeId: change.id,
+    });
+  });
+
+const refusal = (kind: 'applied_elsewhere' | 'not_recurring') =>
+  new OfferRefused({
+    code: kind,
+    reason:
+      kind === 'applied_elsewhere'
+        ? 'the purchase is already applied to another contact'
+        : 'the purchase is not a recurring subscription',
+  });
+
+/** Apply a buyer's paid campaign purchase to a contact, inside the ledger's transaction.
+ * Both ids are locked first, so a concurrent apply or rename on either waits. */
+const applyOffer = (
+  sql: SqlClient.SqlClient,
+  cmd: ApplyOfferRequest,
+): Effect.Effect<
+  ApplyOfferAccepted,
+  | SqlError.SqlError
+  | OfferRefused
+  | DeferRefused
+  | NotFound
+  | UnprocessableEntity
+> =>
+  Effect.gen(function* () {
+    yield* makeExternalUserIdChangeRepo(sql).lockUsers([
+      cmd.buyerId,
+      cmd.externalUserId,
+    ]);
+    const rows = yield* lockCampaignPayments(sql)(CAMPAIGN, cmd.buyerId);
+    const decision = campaignDecision(rows, cmd.externalUserId);
+    switch (decision.kind) {
+      case 'not_found':
+        return yield* Effect.fail(
+          new NotFound({ resource: 'campaign payment' }),
+        );
+      case 'applied_elsewhere':
+      case 'not_recurring':
+        return yield* Effect.fail(refusal(decision.kind));
+      case 'invalid_days':
+        return yield* Effect.fail(
+          new UnprocessableEntity({
+            reason: 'extend_days must be a whole number of days in 1..400',
+          }),
+        );
+      case 'replay':
+        return decision.answer;
+      case 'apply': {
+        const answer = yield* applyDays(
+          sql,
+          cmd.externalUserId,
+          decision.pending,
+          decision.days,
+        );
+        yield* handOver(sql, cmd, decision.pending, answer);
+        return answer;
+      }
+    }
+  });
+
+/**
+ * The CRM applies a paid campaign purchase to the contact it belongs to: the shared
+ * service token (no BFF secret, like `/prolong`) and a required Idempotency-Key. Each
+ * payment is applied once whatever the key (its `campaignApplied` marker); a refusal rolls
+ * the key's claim back, so the caller may retry once the payment has landed.
+ */
+const applyOfferRoute = (body: ApplyOfferRequest, request: FastifyRequest) =>
+  Effect.gen(function* () {
+    yield* serviceActor(request);
+    yield* assertIdempotencyKey(request);
+    const key = idempotencyKeyOf(request);
+    if (key === null || body.buyerId === body.externalUserId) {
+      return yield* Effect.fail(
+        new UnprocessableEntity({
+          reason:
+            'an Idempotency-Key is required, and buyerId must differ from externalUserId',
+        }),
+      );
+    }
+    const sql = yield* SqlClient.SqlClient;
+    return yield* withIdempotencyKey(
+      'payment.apply_offer',
+      key,
+      ApplyOfferAccepted,
+    )(applyOffer(sql, body));
+  });
+
 export default function payments(fastify: FastifyInstance): void {
+  route(fastify, {
+    method: 'POST',
+    path: '/api/payment/apply-offer',
+    input: ApplyOfferRequest,
+    output: ApplyOfferAccepted,
+    handler: applyOfferRoute,
+  });
+
   route(fastify, {
     method: 'GET',
     path: '/api/payment',

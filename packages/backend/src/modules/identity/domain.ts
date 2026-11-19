@@ -1,4 +1,4 @@
-import type { SqlError } from '@effect/sql';
+import type { SqlClient, SqlError } from '@effect/sql';
 import {
   type DomainEvent,
   type ExternalUserIdChangedEvent,
@@ -14,6 +14,7 @@ import {
   NotFound,
   UnprocessableEntity,
 } from '@/infra/http/errors.js';
+import { enqueue } from '@/infra/queue/store.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
   EXTERNAL_USER_ID_CHANGE,
@@ -209,3 +210,23 @@ export const externalUserIdChangedNotify =
         ),
       ),
     );
+
+/** Enqueue the `external_user_id_changed` notify (docs/31). Keyed on the ledger row the
+ * remap appended, so a retried call (which replays that row) dedupes while a genuine
+ * re-rename of the same pair is its own message — the id pair alone collapsed every
+ * remap after the first. */
+export const enqueueExternalUserIdChange = (
+  sql: SqlClient.SqlClient,
+  result: RenameAccepted,
+) =>
+  enqueue(sql)({
+    messageType: EXTERNAL_USER_ID_CHANGE,
+    idemKey: `euidchg:${result.changeId}`,
+    payload: {
+      from: result.from,
+      to: result.to,
+      movedPayments: result.movedPayments,
+      movedSessions: result.movedSessions,
+      changeId: result.changeId,
+    },
+  }).pipe(Effect.asVoid);

@@ -20,6 +20,16 @@ import { formattedFields } from '@/modules/sinks/formatted.js';
  */
 const SINK_NAME = 'sendpulse';
 
+/**
+ * A Guild/CRM buyer id (`gm_calibration`): a UUID minted for a site purchase (calibration,
+ * a campaign) made before the buyer is a SendPulse contact, whose ids are 24-hex. No
+ * contact has it, so a flow run would 400, retry for a day and dead-letter; the buyer
+ * reaches the bot through the checkout's success URL instead, and a remap then moves the
+ * payment to the real contact.
+ */
+const BUYER_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export type FetchLike = (
   url: string,
   init: {
@@ -121,8 +131,11 @@ export const makeSendPulseConnector = (
   name: SINK_NAME,
   deliver: (event: StoredEvent) =>
     Effect.gen(function* () {
-      if (event.externalUserId === null) {
-        return; // no contact to target (e.g. quarantine event)
+      if (
+        event.externalUserId === null ||
+        BUYER_ID.test(event.externalUserId)
+      ) {
+        return; // no contact to target (e.g. quarantine event, a site buyer)
       }
       const flowId = flows[event.name];
       if (flowId === undefined || flowId.length === 0) {
