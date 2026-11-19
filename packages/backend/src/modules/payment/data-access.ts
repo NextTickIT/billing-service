@@ -682,8 +682,9 @@ const decodeApplied = Schema.decodeUnknown(Schema.NullOr(CampaignApplied));
 
 /**
  * The payments of `campaign` bought under `buyerId`, oldest first, row-locked to the end
- * of the surrounding transaction: the unapplied ones still under that id, and the applied
- * ones, found by the buyer id their marker records (their owner has moved).
+ * of the surrounding transaction: the unapplied ones still under that id (a refunded one
+ * excluded — its money went back), and the applied ones, found by the buyer id their
+ * marker records (their owner has moved).
  */
 export const lockCampaignPayments =
   (sql: SqlClient.SqlClient) =>
@@ -696,7 +697,11 @@ export const lockCampaignPayments =
              "campaignApplied"
       FROM payments
       WHERE metadata->>'campaign' = ${campaign}
-        AND (("externalUserId" = ${buyerId} AND "campaignApplied" IS NULL)
+        AND (("externalUserId" = ${buyerId} AND "campaignApplied" IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM domain_events e
+                WHERE e.name = 'payment_refunded' AND e."aggregateId" = payments.id::text
+              ))
              OR "campaignApplied"->>'buyerId' = ${buyerId})
       ORDER BY "createdAt"
       FOR UPDATE

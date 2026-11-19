@@ -563,6 +563,9 @@ const deferPayment = (body: DeferRequest, request: FastifyRequest) =>
 /** The campaign apply-offer serves: the CRM stamps it on the campaign checkout. */
 const CAMPAIGN = 'bf2026';
 
+/** A campaign buyer id: the CRM's `gm_calibration` UUID the checkout ran under. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** The answer for a subscription that is paid through `periodEnd` and charges next on
  * `nextPaymentDate`. */
 const offerAnswer = (
@@ -610,8 +613,9 @@ const extendMember = (
   days: number,
 ) =>
   Effect.gen(function* () {
-    yield* assertNotInFlight(sql, live.id);
-    const deferred = yield* makePaymentRepo(sql).defer(live.id, days);
+    const repo = makePaymentRepo(sql);
+    yield* repo.lockById(live.id);
+    const deferred = yield* repo.defer(live.id, days);
     if (Option.isNone(deferred)) {
       return yield* Effect.fail(
         new OfferRefused({
@@ -703,7 +707,7 @@ const handOver = (
 
 const refusal = (kind: 'applied_elsewhere' | 'not_recurring') =>
   new OfferRefused({
-    code: kind,
+    code: kind === 'applied_elsewhere' ? 'conflict' : kind,
     reason:
       kind === 'applied_elsewhere'
         ? 'the purchase is already applied to another contact'
@@ -770,11 +774,10 @@ const applyOfferRoute = (body: ApplyOfferRequest, request: FastifyRequest) =>
     yield* serviceActor(request);
     yield* assertIdempotencyKey(request);
     const key = idempotencyKeyOf(request);
-    if (key === null || body.buyerId === body.externalUserId) {
+    if (key === null || !UUID.test(body.buyerId)) {
       return yield* Effect.fail(
         new UnprocessableEntity({
-          reason:
-            'an Idempotency-Key is required, and buyerId must differ from externalUserId',
+          reason: 'an Idempotency-Key is required, and buyerId must be a UUID',
         }),
       );
     }

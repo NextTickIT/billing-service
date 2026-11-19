@@ -113,15 +113,16 @@ under ref `chk_<id>_c<n>`. The method stays locked to the subscription's, as bef
 ### `POST /api/payment/apply-offer`
 
 Auth: service token (no BFF secret). Idempotency-Key required (422 without one). Body
-`{"buyerId":"<buyer uuid>","externalUserId":"<contact>"}` (the CRM calls it for the bot).
-Applies the paid payments bought under `buyerId` whose `metadata.campaign` is `bf2026`,
-in one transaction:
+`{"buyerId":"<buyer uuid>","externalUserId":"<contact>"}` (the CRM calls it for the bot;
+a `buyerId` that is not a UUID is 422).
+Applies the paid, unrefunded payments bought under `buyerId` whose `metadata.campaign`
+is `bf2026`, in one transaction:
 
 - each must be a recurring subscription, else 409 `not_recurring`;
 - `metadata.extend_days`: whole days, 1..400, a number or a digit string, else 422;
 - the contact holds an **Active** recurring payment (a member): it is pushed out by the
   days (the defer write: both dates, audit, `payment_deferred` with `reason: campaign`, no
-  30-day cap; a card-check first charge in flight is refused like an operator defer), and
+  30-day cap), and
   the purchase's subscription is cancelled terminally — `result: "extended"`;
 - otherwise the purchase's subscription is the contact's, as it is (Active, its card
   token, its renewal terms) — `result: "created"`. A **PastDue** contact payment is
@@ -131,7 +132,7 @@ in one transaction:
 200 `{"result","paymentId","periodEnd","nextPaymentDate","nextPaymentDate_formatted"}`
 (the contact's live subscription; `_formatted` is DD.MM.YYYY in Kyiv). Each payment is
 applied once whatever the key (`payments."campaignApplied"`): a repeat for the same
-contact answers the first result again, for another contact is 409 `applied_elsewhere`;
+contact answers the first result again, for another contact is 409 `conflict`;
 nothing under `buyerId` is 404. Events for a UUID-shaped `externalUserId` (a site buyer
 not yet a SendPulse contact) are not delivered to SendPulse.
 

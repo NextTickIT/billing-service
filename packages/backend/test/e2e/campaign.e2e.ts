@@ -104,8 +104,8 @@ const buyByCard = async (http: Http, recToken: string): Promise<string> => {
 const seedPurchase = async (
   extendDays: unknown,
   recurring = true,
+  buyer: string = randomUUID(),
 ): Promise<string> => {
-  const buyer = randomUUID();
   const now = new Date();
   const end = new Date(now.getTime() + 154 * DAY_MS);
   await onDb(
@@ -257,12 +257,17 @@ const refusals = async (http: Http, buyer: string) => {
     { buyerId: buyer, externalUserId: MEMBER },
     null,
   );
+  const notUuid = await apply(http, {
+    buyerId: `bf-${buyer}`,
+    externalUserId: MEMBER,
+  });
 
   assert.equal(elsewhere.status, 409, 'applied to another contact → 409');
-  assert.equal(((await elsewhere.json()) as Json)['code'], 'applied_elsewhere');
+  assert.equal(((await elsewhere.json()) as Json)['code'], 'conflict');
   assert.equal(unknown.status, 404, 'unknown buyer → 404');
   assert.equal(noToken.status, 401, 'no service token → 401');
   assert.equal(noKey.status, 422, 'no Idempotency-Key → 422');
+  assert.equal(notUuid.status, 422, 'buyerId not a UUID → 422');
   assert.equal(
     await purchaseOf(http, buyer),
     `${MEMBER}|${CANCELLED}|${MEMBER}`,
@@ -382,7 +387,59 @@ const pastDueScenario: Scenario = {
   },
 };
 
+const TWICE = '64b7f0c2a1d3e4f5a6b7c806';
+
+/** One buyer id (the CRM reuses it per email) buys twice; each purchase is applied
+ * exactly once over three calls with fresh keys. */
+const twoPurchases = async (http: Http) => {
+  const buyer = await seedPurchase('154');
+  const first = await answerOf(
+    await apply(http, { buyerId: buyer, externalUserId: TWICE }),
+    'first purchase',
+  );
+  await seedPurchase('364', true, buyer);
+  const firstEnd = new Date(String(first['periodEnd']));
+
+  const second = await answerOf(
+    await apply(http, { buyerId: buyer, externalUserId: TWICE }),
+    'second purchase',
+  );
+  const third = await answerOf(
+    await apply(http, { buyerId: buyer, externalUserId: TWICE }),
+    'nothing left to apply',
+  );
+
+  assert.equal(first['result'], 'created', 'the first purchase is theirs');
+  assert.deepEqual(
+    [second['result'], second['paymentId'], second['periodEnd']],
+    [
+      'extended',
+      first['paymentId'],
+      new Date(firstEnd.getTime() + 364 * DAY_MS).toISOString(),
+    ],
+    'the second purchase adds its days to the first',
+  );
+  assert.deepEqual(third, second, 'a third call replays the latest result');
+  assert.equal(
+    await scalar(
+      http,
+      `SELECT count(*) FROM audit_log WHERE action = 'defer_payment'`,
+    ),
+    '1',
+    'the days were added once more, never again',
+  );
+  assert.equal(await activeSubsOf(http, TWICE), '1');
+};
+
+const twoPurchasesScenario: Scenario = {
+  name: 'apply-offer: two purchases under one buyer id, three calls — each applied exactly once',
+  run: async ({ baseUrl, query }) => {
+    await twoPurchases(await httpContext(baseUrl, query, 'bf-twice-svc'));
+  },
+};
+
 export const campaignScenarios: readonly Scenario[] = [
+  twoPurchasesScenario,
   memberScenario,
   newcomerScenario,
   pastDueScenario,

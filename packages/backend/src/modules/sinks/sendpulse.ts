@@ -131,11 +131,13 @@ export const makeSendPulseConnector = (
   name: SINK_NAME,
   deliver: (event: StoredEvent) =>
     Effect.gen(function* () {
-      if (
-        event.externalUserId === null ||
-        BUYER_ID.test(event.externalUserId)
-      ) {
-        return; // no contact to target (e.g. quarantine event, a site buyer)
+      if (event.externalUserId === null) {
+        return; // no contact to target (e.g. quarantine event)
+      }
+      if (BUYER_ID.test(event.externalUserId)) {
+        return yield* Effect.logInfo(
+          `SENDPULSE_SKIPPED ${event.name} ${event.id}: site buyer id, no contact yet`,
+        );
       }
       const flowId = flows[event.name];
       if (flowId === undefined || flowId.length === 0) {

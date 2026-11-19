@@ -210,11 +210,11 @@ export class DeferRefused extends Data.TaggedError('DeferRefused')<{
 /**
  * A campaign offer that cannot be applied (409): its purchase is not a recurring
  * subscription (`not_recurring`), is already applied to another contact
- * (`applied_elsewhere`), or the contact's subscription stopped being Active mid-apply
+ * (`conflict`), or the contact's subscription stopped being Active mid-apply
  * (`not_active`). `code` is what the caller branches on.
  */
 export class OfferRefused extends Data.TaggedError('OfferRefused')<{
-  readonly code: 'not_recurring' | 'applied_elsewhere' | 'not_active';
+  readonly code: 'not_recurring' | 'conflict' | 'not_active';
   readonly reason: string;
 }> {
   toHttp(): HttpReply {
