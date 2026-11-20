@@ -3,13 +3,15 @@ import type { SqlError, Statement } from '@effect/sql';
 import {
   type CreatePayment,
   type FirstCharge,
+  type Metadata,
   Payment,
   PaymentStatus,
 } from '@billing-service/shared';
-import { Effect, Option } from 'effect';
+import { Effect, Option, Schema } from 'effect';
 
 import { columnList } from '@/infra/db/columns.js';
 import { requireRow } from '@/infra/db/rows.js';
+import { CampaignApplied } from '@/modules/payment/contracts.js';
 
 /** New billing terms applied when a checkout extends an existing payment. */
 export interface ExtendPayment {
@@ -661,6 +663,94 @@ const setEmail =
       WHERE "externalUserId" = ${externalUserId} AND email <> ${email}
       RETURNING id
     `.pipe(Effect.map((rows) => rows.length));
+
+/** A paid campaign payment, as apply-offer decides on it. */
+export interface CampaignPayment {
+  readonly id: string;
+  readonly recurring: boolean;
+  readonly currentPeriodEnd: Date;
+  readonly nextPaymentDate: Date;
+  readonly metadata: Metadata | null;
+  readonly applied: CampaignApplied | null;
+}
+
+interface CampaignRow extends Omit<CampaignPayment, 'applied'> {
+  readonly campaignApplied: unknown;
+}
+
+const decodeApplied = Schema.decodeUnknown(Schema.NullOr(CampaignApplied));
+
+/**
+ * The payments of `campaign` bought under `buyerId`, oldest first, row-locked to the end
+ * of the surrounding transaction: the unapplied ones still under that id (a refunded one
+ * excluded — its money went back), and the applied ones, found by the buyer id their
+ * marker records (their owner has moved).
+ */
+export const lockCampaignPayments =
+  (sql: SqlClient.SqlClient) =>
+  (
+    campaign: string,
+    buyerId: string,
+  ): Effect.Effect<readonly CampaignPayment[], SqlError.SqlError> =>
+    sql<CampaignRow>`
+      SELECT id, recurring, "currentPeriodEnd", "nextPaymentDate", metadata,
+             "campaignApplied"
+      FROM payments
+      WHERE metadata->>'campaign' = ${campaign}
+        AND (("externalUserId" = ${buyerId} AND "campaignApplied" IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM domain_events e
+                WHERE e.name = 'payment_refunded' AND e."aggregateId" = payments.id::text
+              ))
+             OR "campaignApplied"->>'buyerId' = ${buyerId})
+      ORDER BY "createdAt"
+      FOR UPDATE
+    `.pipe(
+      Effect.flatMap((rows) =>
+        Effect.forEach(rows, ({ campaignApplied, ...row }) =>
+          decodeApplied(campaignApplied).pipe(
+            Effect.orDie,
+            Effect.map((applied) => ({ ...row, applied })),
+          ),
+        ),
+      ),
+    );
+
+/** Move campaign payments to their contact and stamp them applied, in one statement. */
+export const markCampaignApplied =
+  (sql: SqlClient.SqlClient) =>
+  (
+    ids: readonly string[],
+    applied: CampaignApplied,
+  ): Effect.Effect<void, SqlError.SqlError> =>
+    Schema.encode(CampaignApplied)(applied).pipe(
+      Effect.orDie,
+      Effect.flatMap(
+        (encoded) => sql`
+          UPDATE payments
+          SET "externalUserId" = ${applied.externalUserId},
+              "campaignApplied" = ${JSON.stringify(encoded)}::jsonb,
+              "updatedAt" = now()
+          WHERE id IN ${sql.in(ids)}
+        `,
+      ),
+      Effect.asVoid,
+    );
+
+/**
+ * Cancel payments terminally, now: no soft-cancel grace, no lapse, never charged again.
+ * Emits nothing; the caller says why in its own records.
+ */
+export const cancelNow =
+  (sql: SqlClient.SqlClient) =>
+  (ids: readonly string[]): Effect.Effect<void, SqlError.SqlError> =>
+    sql`
+      UPDATE payments
+      SET status = ${PaymentStatus.Cancelled},
+          "cancelRequestedAt" = COALESCE("cancelRequestedAt", now()),
+          "updatedAt" = now()
+      WHERE id IN ${sql.in(ids)}
+    `.pipe(Effect.asVoid);
 
 export const makePaymentRepo = (sql: SqlClient.SqlClient): PaymentRepo => ({
   transaction: (effect) => sql.withTransaction(effect),

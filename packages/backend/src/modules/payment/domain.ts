@@ -1,8 +1,10 @@
 import type { SqlError } from '@effect/sql';
 import {
+  type ApplyOfferAccepted,
   type CheckoutRenewal,
   type FirstCharge,
   MAX_CHECKOUT_HORIZON_DAYS,
+  type Metadata,
   type Payment,
   PaymentMethod,
   PaymentStatus,
@@ -13,6 +15,7 @@ import { Effect, Option } from 'effect';
 import type { DeferRefusal } from '@/infra/http/errors.js';
 import type {
   AdvanceAnchor,
+  CampaignPayment,
   DeferTarget,
   PaymentRepo,
 } from '@/modules/payment/data-access.js';
@@ -533,3 +536,77 @@ export const operatorDeferBlocked = (
 /** The whole days a handover defer moved the date, for display only. */
 export const wholeDaysBetween = (from: Date, to: Date): number =>
   Math.floor((to.getTime() - from.getTime()) / DAY_MS);
+
+/** The most days one campaign purchase may add (the longest offer is 364). */
+const MAX_CAMPAIGN_DAYS = 400;
+
+/**
+ * The days a campaign purchase adds: its `extend_days` metadata, a whole number of days
+ * given as a number or a digit string (metadata is the caller's opaque JSON). Null when
+ * absent, malformed, or outside 1..400.
+ */
+export const campaignDays = (metadata: Metadata | null): number | null => {
+  const raw = metadata?.['extend_days'];
+  const days = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw;
+  return typeof days === 'number' &&
+    Number.isInteger(days) &&
+    days >= 1 &&
+    days <= MAX_CAMPAIGN_DAYS
+    ? days
+    : null;
+};
+
+export type CampaignDecision =
+  | { readonly kind: 'not_found' }
+  | { readonly kind: 'applied_elsewhere' }
+  | { readonly kind: 'not_recurring' }
+  | { readonly kind: 'invalid_days' }
+  | { readonly kind: 'replay'; readonly answer: ApplyOfferAccepted }
+  | {
+      readonly kind: 'apply';
+      readonly pending: readonly CampaignPayment[];
+      readonly days: number;
+    };
+
+/** The applied answer without the marker's own bookkeeping. */
+const answerOf = (
+  applied: NonNullable<CampaignPayment['applied']>,
+): ApplyOfferAccepted => ({
+  result: applied.result,
+  paymentId: applied.paymentId,
+  periodEnd: applied.periodEnd,
+  nextPaymentDate: applied.nextPaymentDate,
+  nextPaymentDate_formatted: applied.nextPaymentDate_formatted,
+});
+
+/**
+ * What apply-offer does with a buyer's campaign payments (oldest first) for `contact`.
+ * One applied to another contact refuses the whole call. Unapplied ones must be recurring
+ * subscriptions (the CRM issues no other kind; this is the backstop) and are applied
+ * together, their days summed. When every one is already applied to `contact`, the latest
+ * apply's answer is replayed.
+ */
+export const campaignDecision = (
+  rows: readonly CampaignPayment[],
+  contact: string,
+): CampaignDecision => {
+  if (
+    rows.some((r) => r.applied !== null && r.applied.externalUserId !== contact)
+  ) {
+    return { kind: 'applied_elsewhere' };
+  }
+  const pending = rows.filter((r) => r.applied === null);
+  if (pending.length === 0) {
+    const latest = rows.at(-1)?.applied;
+    return latest == null
+      ? { kind: 'not_found' }
+      : { kind: 'replay', answer: answerOf(latest) };
+  }
+  if (pending.some((r) => !r.recurring)) {
+    return { kind: 'not_recurring' };
+  }
+  const days = pending.map((r) => campaignDays(r.metadata));
+  return days.every((d) => d !== null)
+    ? { kind: 'apply', pending, days: days.reduce((a, b) => a + b, 0) }
+    : { kind: 'invalid_days' };
+};

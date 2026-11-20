@@ -11,12 +11,11 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { extractBearer } from '@/infra/http/bearer.js';
 import { Unauthorized } from '@/infra/http/errors.js';
 import { makeRoute } from '@/infra/http/route.js';
-import { enqueue } from '@/infra/queue/store.js';
 import { authenticateToken } from '@/modules/auth/domain.js';
 import { makeCheckoutRepo } from '@/modules/checkout/data-access.js';
-import { EXTERNAL_USER_ID_CHANGE } from '@/modules/identity/contracts.js';
 import { makeExternalUserIdChangeRepo } from '@/modules/identity/data-access.js';
 import {
+  enqueueExternalUserIdChange,
   renameExternalUser,
   type RenameDeps,
 } from '@/modules/identity/domain.js';
@@ -31,23 +30,6 @@ const serviceActor = (request: FastifyRequest) => {
     ? Effect.fail(new Unauthorized({ reason: 'missing bearer token' }))
     : authenticateToken(presented);
 };
-
-/** Enqueue the opt-in `external_user_id_changed` notify (docs/31). Keyed on the ledger
- * row this rename appended, so a retried call (which replays that row) dedupes while a
- * genuine re-rename of the same pair is its own message — the id pair alone collapsed
- * every remap after the first. */
-const enqueueChange = (sql: SqlClient.SqlClient, result: RenameAccepted) =>
-  enqueue(sql)({
-    messageType: EXTERNAL_USER_ID_CHANGE,
-    idemKey: `euidchg:${result.changeId}`,
-    payload: {
-      from: result.from,
-      to: result.to,
-      movedPayments: result.movedPayments,
-      movedSessions: result.movedSessions,
-      changeId: result.changeId,
-    },
-  }).pipe(Effect.asVoid);
 
 /**
  * Remap a user's opaque external id (docs/31). The whole remap + ledger append (and the
@@ -67,7 +49,7 @@ const rename = (input: RenameExternalUserRequest, request: FastifyRequest) =>
       Effect.gen(function* () {
         const result = yield* renameExternalUser(deps)(input, 'service');
         if (input.refireEvents === true) {
-          yield* enqueueChange(sql, result);
+          yield* enqueueExternalUserIdChange(sql, result);
         }
         return result;
       }),

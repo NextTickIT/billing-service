@@ -100,6 +100,27 @@ it.effect('skips an event with no externalUserId (no call)', () => {
     );
 });
 
+it.effect(
+  'skips a site buyer id (a UUID), which no SendPulse contact has (no call)',
+  () => {
+    const calls: Recorded[] = [];
+    return connectorFor(recordingFetch(200, { success: true }, calls), {
+      initial_payment_succeeded: 'flow_42',
+    })
+      .deliver(
+        event({
+          externalUserId: '0b6c1f7e-5d1a-4c3e-9a51-2f0e8d6b7c11',
+          name: 'initial_payment_succeeded',
+        }),
+      )
+      .pipe(
+        Effect.map(() => {
+          expect(calls).toHaveLength(0);
+        }),
+      );
+  },
+);
+
 it.effect('skips an unmapped event (no call)', () => {
   const calls: Recorded[] = [];
   return connectorFor(recordingFetch(200, { success: true }, calls), {})

@@ -1,3 +1,4 @@
+import { ApplyOfferAccepted } from '@billing-service/shared';
 import { Schema } from 'effect';
 
 export {
@@ -49,7 +50,7 @@ export const ReactivateNotify = Schema.Struct({
 export type ReactivateNotify = Schema.Schema.Type<typeof ReactivateNotify>;
 
 /** payment_defer payload: the new paid-through date + the granted day count, the defer
- * revision the date-moving UPDATE set, and `reason` for a handover defer. `revision` is 0
+ * revision the date-moving UPDATE set, and `reason` for a handover or campaign defer. `revision` is 0
  * on a message enqueued before it existed. */
 export const DeferNotify = Schema.Struct({
   paymentId: Schema.String,
@@ -99,3 +100,13 @@ export const CancelRequest = Schema.Struct({
 });
 
 export type CancelRequest = Schema.Schema.Type<typeof CancelRequest>;
+
+/** `payments."campaignApplied"`: who a campaign one-time payment was applied to, under
+ * which buyer id, and the answer that apply gave (replayed on a repeat). */
+export const CampaignApplied = Schema.Struct({
+  buyerId: Schema.String,
+  externalUserId: Schema.String,
+  ...ApplyOfferAccepted.fields,
+});
+
+export type CampaignApplied = Schema.Schema.Type<typeof CampaignApplied>;

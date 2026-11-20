@@ -450,8 +450,9 @@ export const PaymentDeferredEvent = Schema.Struct({
     newPeriodEnd: Schema.String,
     days: Schema.Int,
     // `handover`: a card-check payment's first charge moved while the payer is still paid
-    // elsewhere; it grants no access. Absent on an operator defer.
-    reason: Schema.optional(Schema.Literal('handover')),
+    // elsewhere; it grants no access. `campaign`: days a paid campaign purchase added.
+    // Absent on an operator defer.
+    reason: Schema.optional(Schema.Literal('handover', 'campaign')),
     // The payment's defer revision this defer set (1 for its first). Orders the defers of
     // one payment whatever order they are delivered in.
     revision: Schema.Int.pipe(Schema.nonNegative()),
