@@ -52,6 +52,10 @@ import {
   cardCheckRefundRetryConfig,
   runCardCheckRefundSweep,
 } from '@/modules/checkout/card-check-refund.js';
+import {
+  CARD_CHECK_STALL_INTERVAL_SECONDS,
+  runCardCheckStallSweep,
+} from '@/modules/checkout/card-check-stall.js';
 import { makeContactsRepo } from '@/modules/contacts/data-access.js';
 import { runContactsSync } from '@/modules/contacts/sync.js';
 import { makeSinksRepo } from '@/modules/sinks/data-access.js';
@@ -522,6 +526,14 @@ export const bootWorker = (config: AppConfig) =>
     // A refund still owed whose task dead-lettered is re-driven here.
     yield* Effect.forkDaemon(
       runCardCheckRefundSweep(sql, RECEIPT_SWEEP_INTERVAL_SECONDS),
+    );
+    // A card check WayForPay never answers (a 3-D Secure code that never came) is
+    // reported as declined here, so the payer is offered the fallback.
+    yield* Effect.forkDaemon(
+      runCardCheckStallSweep(
+        { sql, client: yield* WayForPay, publish: outbox.publish },
+        CARD_CHECK_STALL_INTERVAL_SECONDS,
+      ),
     );
     const queue = yield* Queue;
     return yield* queue.run({

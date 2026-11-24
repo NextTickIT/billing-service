@@ -202,6 +202,10 @@ const failOnReason = (
   endpoint: string,
   reasonCode: number | undefined,
   reason: string | undefined,
+  order: {
+    readonly transactionStatus?: string | undefined;
+    readonly processingDate?: string | number | null | undefined;
+  } = {},
 ) =>
   reasonCode !== undefined && reasonCode !== REASON.OK
     ? Effect.fail(
@@ -209,6 +213,13 @@ const failOnReason = (
           endpoint,
           reasonCode,
           reason: reason ?? 'unexpected reasonCode',
+          ...(order.transactionStatus === undefined
+            ? {}
+            : { transactionStatus: order.transactionStatus }),
+          ...(order.processingDate === undefined ||
+          order.processingDate === null
+            ? {}
+            : { processingDate: order.processingDate }),
         }),
       )
     : Effect.void;
@@ -278,7 +289,7 @@ const checkStatus =
           new W4pOrderNotFoundError({ orderReference }),
         );
       }
-      yield* failOnReason('CHECK_STATUS', reasonCode, parsed.reason);
+      yield* failOnReason('CHECK_STATUS', reasonCode, parsed.reason, parsed);
       return parsed;
     });
 
