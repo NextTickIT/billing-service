@@ -76,6 +76,8 @@ export const W4pCheckStatusResponseSchema = Schema.Struct({
   amount: OptionalStringOrNumber,
   currency: Schema.optional(Schema.String),
   refundAmount: OptionalStringOrNumber,
+  /** Unix seconds of the order's last processing step (the 3-D Secure challenge, say). */
+  processingDate: NullableStringOrNumber,
 });
 
 export type W4pCheckStatusResponse = Schema.Schema.Type<

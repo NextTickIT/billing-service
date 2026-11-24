@@ -81,6 +81,30 @@ it.effect('checkStatus fails W4pOrderNotFoundError on reasonCode 1127', () =>
     ),
 );
 
+it.effect(
+  'checkStatus keeps the status and processing time of an order held for the 3-D Secure code',
+  () =>
+    clientFor({
+      reasonCode: 5110,
+      reason: 'Ok',
+      orderReference: 'o1',
+      transactionStatus: 'WaitingOtpConfirm',
+      processingDate: 1795532501,
+    })
+      .checkStatus('o1')
+      .pipe(
+        Effect.flip,
+        Effect.map((error) => {
+          expect(error).toMatchObject({
+            _tag: 'W4pApiError',
+            reasonCode: 5110,
+            transactionStatus: 'WaitingOtpConfirm',
+            processingDate: 1795532501,
+          });
+        }),
+      ),
+);
+
 it.effect('regularStatus accepts 4107 (closed) as a valid state response', () =>
   clientFor({ reasonCode: 4107, status: 'Removed' })
     .regularStatus('o1')

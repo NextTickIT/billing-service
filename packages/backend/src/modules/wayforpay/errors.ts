@@ -81,6 +81,11 @@ export class W4pApiError extends Data.TaggedError('W4pApiError')<{
   readonly endpoint: string;
   readonly reasonCode: number;
   readonly reason: string;
+  /** CHECK_STATUS only: the order's status and its last processing time (unix seconds)
+   * when the response carried them — an order held in a 3-D Secure wait answers 5110
+   * with `WaitingOtpConfirm`. */
+  readonly transactionStatus?: string;
+  readonly processingDate?: string | number | null;
 }> {}
 
 export type W4pError =
