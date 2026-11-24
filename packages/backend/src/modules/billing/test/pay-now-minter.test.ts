@@ -49,6 +49,7 @@ const fakeRepo = (planted: CheckoutSession[] = []) => {
     findById: die,
     reissueLapsed: die,
     claimForPayment: die,
+    claimAsApplied: die,
     releasePending: die,
     completeIfOpen: die,
     renameOpenSessionsExternalUser: die,

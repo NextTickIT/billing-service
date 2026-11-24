@@ -1,5 +1,7 @@
 import { it } from '@effect/vitest';
 import {
+  type CheckoutOrigin,
+  CheckoutSessionKind,
   type Payment,
   PaymentMethod,
   PaymentStatus,
@@ -11,6 +13,7 @@ import type { Charge, Match } from '@/modules/charge/contracts.js';
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
   changeablePayment,
+  isPageFlip,
   makeCheckoutApplier,
   planMethodChange,
 } from '@/modules/checkout/domain.js';
@@ -167,6 +170,113 @@ it('owed → card bills the arrears amount (verify config ignored)', () => {
   });
 });
 
+// ---- method-less request: the payer picks on the page, so it is always a checkout ----
+
+const ARREARS = 30000;
+const TOKEN_CHARGE = 1;
+
+const VERIFY_PRICE = 0;
+
+it.each([
+  {
+    state: 'active',
+    status: PaymentStatus.Active,
+    verify: true,
+    amount: VERIFY_PRICE,
+    arrears: false,
+  },
+  {
+    state: 'active',
+    status: PaymentStatus.Active,
+    verify: false,
+    amount: TOKEN_CHARGE,
+    arrears: false,
+  },
+  {
+    state: 'past due',
+    status: PaymentStatus.PastDue,
+    verify: true,
+    amount: ARREARS,
+    arrears: true,
+  },
+  {
+    state: 'past due',
+    status: PaymentStatus.PastDue,
+    verify: false,
+    amount: ARREARS,
+    arrears: true,
+  },
+  {
+    state: 'renewal failed',
+    status: PaymentStatus.RenewalFailed,
+    verify: true,
+    amount: ARREARS,
+    arrears: true,
+  },
+  {
+    state: 'renewal failed',
+    status: PaymentStatus.RenewalFailed,
+    verify: false,
+    amount: ARREARS,
+    arrears: true,
+  },
+])(
+  'no target method on a $state sub (verify on: $verify) issues a checkout, never the flip',
+  ({ status, verify, amount, arrears }) => {
+    const plan = planMethodChange(
+      paymentWith(status),
+      undefined,
+      verify,
+      TOKEN_CHARGE,
+    );
+
+    expect(plan).toEqual({ action: 'checkout', amount, arrears });
+  },
+);
+
+// ---- isPageFlip: which /pay pick lands as the no-payment flip ----
+
+const changeLink = (
+  origin: CheckoutOrigin | null,
+  method: PaymentMethod | null,
+  kind = CheckoutSessionKind.CardChange,
+) => ({ kind, origin, method });
+
+it.each([
+  {
+    pick: 'crypto on a method-less up-to-date change link',
+    session: changeLink('card_change', null),
+    method: CRYPTO,
+    expected: true,
+  },
+  {
+    pick: 'card on a method-less up-to-date change link',
+    session: changeLink('card_change', null),
+    method: CARD,
+    expected: false,
+  },
+  {
+    pick: 'crypto on a method-less owed change link (a crypto purchase of the arrears)',
+    session: changeLink('card_change_arrears', null),
+    method: CRYPTO,
+    expected: false,
+  },
+  {
+    pick: 'crypto on a change link minted for card',
+    session: changeLink('card_change', CARD),
+    method: CRYPTO,
+    expected: false,
+  },
+  {
+    pick: 'crypto on a plain checkout with no method',
+    session: changeLink(null, null, CheckoutSessionKind.Checkout),
+    method: CRYPTO,
+    expected: false,
+  },
+])('$pick → flip: $expected', ({ session, method, expected }) => {
+  expect(isPageFlip(session, method)).toBe(expected);
+});
+
 // ---- applier: how a paid method-change lands on the payment ----
 
 const event = (
@@ -260,6 +370,7 @@ const completingCheckout = (onComplete: () => void): CheckoutRepo => ({
   reissueLapsed: () => Effect.die('unexpected reissueLapsed'),
   insert: () => Effect.die('unused'),
   claimForPayment: () => Effect.die('unused'),
+  claimAsApplied: () => Effect.die('unused'),
   releasePending: () => Effect.die('unused'),
   completeIfOpen: () => Effect.sync(onComplete).pipe(Effect.as(true)),
   renameOpenSessionsExternalUser: () => Effect.die('unused'),

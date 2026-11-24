@@ -67,6 +67,7 @@ const repoWith = (
     },
     insert: die,
     claimForPayment: die,
+    claimAsApplied: die,
     releasePending: die,
     renameOpenSessionsExternalUser: die,
   } as unknown as CheckoutRepo;
@@ -225,6 +226,7 @@ describe('guards on re-issue', () => {
     );
     const withRelease = {
       ...repo,
+      claimAsApplied: () => Effect.die('unused'),
       releasePending: (rid: string) => {
         released.push(rid);
         return Effect.void;

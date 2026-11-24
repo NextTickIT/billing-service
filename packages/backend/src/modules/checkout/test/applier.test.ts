@@ -61,6 +61,7 @@ const unusedCheckout: CheckoutRepo = {
   reissueLapsed: () => Effect.die('unexpected reissueLapsed'),
   insert: () => Effect.die('unused'),
   claimForPayment: () => Effect.die('unused'),
+  claimAsApplied: () => Effect.die('unused'),
   releasePending: () => Effect.die('unused'),
   completeIfOpen: () => Effect.die('unused'),
   renameOpenSessionsExternalUser: () => Effect.die('unused'),

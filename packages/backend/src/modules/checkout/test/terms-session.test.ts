@@ -141,6 +141,7 @@ const repoWith = (session: CheckoutSession): CheckoutRepo => ({
   reissueLapsed: () => Effect.die('unused'),
   insert: () => Effect.die('unused'),
   claimForPayment: () => Effect.die('unused'),
+  claimAsApplied: () => Effect.die('unused'),
   releasePending: () => Effect.die('unused'),
   completeIfOpen: () => Effect.die('unused'),
   renameOpenSessionsExternalUser: () => Effect.die('unused'),

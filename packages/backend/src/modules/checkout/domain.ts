@@ -411,10 +411,12 @@ export const changeablePayment = (
  * target method: an owed subscription (past_due/renewal_failed) pays its arrears and
  * revives in place; an up-to-date one runs a 0-amount card verify when enabled, else a
  * minimal tokenizing charge (`cardChangeChargeMinor`). Mirrors the card-change amount rule.
+ * No target (`undefined`): the payer picks on the page, so it is always a checkout priced
+ * like a card change; a Crypto pick there flips at `/pay` instead (`isPageFlip`).
  */
 export const planMethodChange = (
   payment: Payment,
-  targetMethod: number,
+  targetMethod: number | undefined,
   cardVerifyEnabled: boolean,
   cardChangeChargeMinor: number,
 ): MethodChangePlan => {
@@ -431,6 +433,21 @@ export const planMethodChange = (
       : cardChangeChargeMinor;
   return { action: 'checkout', amount, arrears: owed };
 };
+
+/**
+ * Whether a `/pay` pick is the no-payment flip (docs/32 §7): Crypto picked on a change
+ * link minted without a method for an up-to-date subscription (`origin='card_change'`).
+ * An owed link (`card_change_arrears`) stays a crypto purchase of the arrears, and a link
+ * minted with a method keeps paying through the provider whatever is picked.
+ */
+export const isPageFlip = (
+  session: Pick<CheckoutSession, 'kind' | 'origin' | 'method'>,
+  method: PaymentMethod,
+): boolean =>
+  session.kind === CheckoutSessionKind.CardChange &&
+  session.origin === 'card_change' &&
+  session.method === null &&
+  method === PaymentMethod.Crypto;
 
 /**
  * Whether a charge on an open checkout session may settle under the session's terms.

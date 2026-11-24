@@ -63,6 +63,7 @@ import {
   checkoutPath,
   cycleOptions,
   defaultOptionIndex,
+  isPageFlip,
   type MethodChangePlan,
   type PickedOption,
   pickOption,
@@ -474,6 +475,7 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
       methodLocked: prolong || lockMethod,
       prolong,
       everSentToProvider: yield* repo.everSentToProvider(id),
+      cryptoSwitches: isPageFlip(found.value, PaymentMethod.Crypto),
     };
   });
 
@@ -1026,6 +1028,115 @@ const orderFor = (session: CheckoutSession, option: number | undefined) =>
     amount: picked.chosen.total,
   }));
 
+const APPLIED_CRYPTO = {
+  kind: 'applied',
+  method: PaymentMethod.Crypto,
+} as const satisfies PayInstruction;
+
+/**
+ * The locked subscription a flip may switch: still Active and not yet due by a fresh clock
+ * read. A due row may already be in the scheduler's hands, which charges the token it read
+ * after releasing the lock, so switching it now would still be charged by card. Otherwise a
+ * 409 — ask for a new link (or retry after the renewal).
+ */
+const flippable = (
+  locked: Option.Option<Payment>,
+): Effect.Effect<Payment, Conflict> =>
+  Effect.flatMap(Clock.currentTimeMillis, (now) =>
+    Option.isSome(locked) &&
+    locked.value.status === PaymentStatus.Active &&
+    locked.value.nextPaymentDate.getTime() > now
+      ? Effect.succeed(locked.value)
+      : Effect.fail(
+          new Conflict({
+            field: 'checkout session (subscription no longer up to date)',
+          }),
+        ),
+  );
+
+/**
+ * The no-payment switch to crypto (docs/32 §4.3): under the row lock, drop the card token
+ * + record crypto, and enqueue `method_changed` since no charge event will announce it — in
+ * ONE transaction, so the sub is never switched but unannounced. Already crypto with no
+ * token is a genuine no-op: nothing is written or emitted. Otherwise the row must be
+ * `flippable`. The caller names the message's dedup key (`idemKeyOf`): what counts as a
+ * retry of the same switch depends on what the caller holds.
+ */
+const flipToCrypto = (
+  sql: SqlClient.SqlClient,
+  paymentId: string,
+  idemKeyOf: (payment: Payment) => string,
+) =>
+  sql.withTransaction(
+    Effect.gen(function* () {
+      const payments = makePaymentRepo(sql);
+      const locked = yield* payments.lockById(paymentId);
+      if (
+        Option.isSome(locked) &&
+        locked.value.method === PaymentMethod.Crypto &&
+        locked.value.recurringTokenRef === null
+      ) {
+        return;
+      }
+      const payment = yield* flippable(locked);
+      // Typed so a field rename can't silently drift from what methodChangeNotify decodes
+      // in the worker (the queue payload is otherwise `unknown`).
+      const payload: MethodChangeNotify = {
+        paymentId: payment.id,
+        externalUserId: payment.externalUserId,
+        method: PaymentMethod.Crypto,
+        at: yield* Clock.currentTimeMillis,
+      };
+      yield* payments.clearToken(payment.id);
+      yield* payments.setMethod(payment.id, PaymentMethod.Crypto);
+      yield* enqueue(sql)({
+        messageType: PAYMENT_METHOD_CHANGE,
+        idemKey: idemKeyOf(payment),
+        payload,
+      });
+    }),
+  );
+
+/**
+ * A Crypto pick on a method-less change link for an up-to-date sub (`isPageFlip`) takes
+ * no payment: claim the session as completed and flip, in one transaction, so the link
+ * cannot be reused and a double click (which loses the claim) flips nothing twice. The
+ * message keys on the claimed session, so a later switch back and forth through another
+ * link is announced again. None for every other pick, which pays through the provider.
+ */
+const flipOnPage = (
+  sql: SqlClient.SqlClient,
+  id: string,
+  method: PaymentMethod,
+  nowMillis: number,
+) =>
+  Effect.gen(function* () {
+    if (method !== PaymentMethod.Crypto) {
+      return Option.none<PayInstruction>();
+    }
+    const repo = makeCheckoutRepo(sql);
+    const found = yield* repo.findById(id);
+    if (Option.isNone(found) || !isPageFlip(found.value, method)) {
+      return Option.none<PayInstruction>();
+    }
+    yield* assertClaimable(found.value, nowMillis);
+    // A change session always names its payment; a missing one locks no row → 409.
+    const paymentId = found.value.paymentId ?? '';
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        if (!(yield* repo.claimAsApplied(id, method))) {
+          return yield* Effect.fail(
+            new Conflict({
+              field: 'checkout session payment (already in progress)',
+            }),
+          );
+        }
+        yield* flipToCrypto(sql, paymentId, () => `method-change:${id}`);
+      }),
+    );
+    return Option.some<PayInstruction>(APPLIED_CRYPTO);
+  });
+
 const pay = (input: SelectMethod, request: FastifyRequest) =>
   Effect.gen(function* () {
     assertBffSecret(request);
@@ -1044,6 +1155,10 @@ const pay = (input: SelectMethod, request: FastifyRequest) =>
       nowMillis,
       request.server.appConfig.wayforpay.sessionTtlSeconds,
     );
+    const flipped = yield* flipOnPage(sql, id, input.method, nowMillis);
+    if (Option.isSome(flipped)) {
+      return flipped.value;
+    }
     const claimed = yield* claimPayableSession(repos, id, input, nowMillis);
     // The claim resolved this same pick; a refusal here still releases it, like a failed
     // crypto mint below.
@@ -1127,7 +1242,8 @@ const callback = (body: unknown, request: FastifyRequest) => {
 };
 
 /** A `card_change` session for a method change: it re-tokenizes/switches the SAME recurring
- * payment, preselecting the DESTINATION method. Never one-time, carries no promo/redirects,
+ * payment, preselecting the DESTINATION method (none when the payer picks it on the page,
+ * docs/32 §7). Never one-time, carries no promo/redirects,
  * server-initiated so no idempotency key. `origin` records at mint time whether paying it
  * settles arrears (credits a period) — never inferred when it is paid. */
 type ChangeOrigin = 'card_change' | 'card_change_arrears';
@@ -1140,7 +1256,7 @@ interface ChangeCharge {
 
 const changeSession = (
   payment: Payment,
-  targetMethod: number,
+  targetMethod: number | undefined,
   { amount, origin }: ChangeCharge,
   id: string,
   expiresAt: Date,
@@ -1207,7 +1323,7 @@ const resolveChangeable = (sql: SqlClient.SqlClient, externalUserId: string) =>
 const openChangeSession = (
   sql: SqlClient.SqlClient,
   payment: Payment,
-  targetMethod: number,
+  targetMethod: number | undefined,
   charge: ChangeCharge,
   request: FastifyRequest,
 ) =>
@@ -1255,7 +1371,8 @@ const cardChange = (input: CardChangeRequest, request: FastifyRequest) =>
 
 /**
  * SendPulse-initiated payment-method change (docs/32), previous-method agnostic:
- * switch the user's one recurring payment to `input.method` (0=Card, 1=Crypto). Per
+ * switch the user's one recurring payment to `input.method` (0=Card, 1=Crypto), or with no
+ * `method` hand back a link where the payer picks it (always `checkout`). Per
  * `planMethodChange`:
  * - `flip` (an up-to-date subscription → crypto): drop the card token + record crypto with
  *   NO payment — the existing scheduler then prompts a manual crypto renewal next cycle.
@@ -1277,43 +1394,15 @@ const methodChange = (input: MethodChangeRequest, request: FastifyRequest) =>
       config.cardChangeChargeMinor,
     );
     if (plan.action === 'flip') {
-      // Already crypto with no stored token → nothing to change; return without mutating
-      // or emitting a spurious `method_changed` for a genuine no-op.
-      if (
-        payment.method === PaymentMethod.Crypto &&
-        payment.recurringTokenRef === null
-      ) {
-        return { kind: 'applied', method: PaymentMethod.Crypto } as const;
-      }
-      const payments = makePaymentRepo(sql);
-      const at = yield* Clock.currentTimeMillis;
-      // The no-payment flip mutates the payment but takes no money, so no charge event
-      // fires — enqueue `method_changed` so a sink learns the method moved (the paid
-      // paths already emit card_change_succeeded / recurring_payment_succeeded). All three
-      // writes run in ONE transaction so the request can never leave the sub switched but
-      // the notification unsent. The idemKey anchors on the paid-through end (which the flip
-      // does not move), so a double-submit / client retry within the period dedupes to ONE
-      // notification — wall-clock ms would let each retry re-emit.
-      yield* sql.withTransaction(
-        Effect.gen(function* () {
-          yield* payments.clearToken(payment.id);
-          yield* payments.setMethod(payment.id, PaymentMethod.Crypto);
-          // Typed so a field rename can't silently drift from what methodChangeNotify
-          // decodes in the worker (the queue payload is otherwise `unknown`).
-          const payload: MethodChangeNotify = {
-            paymentId: payment.id,
-            externalUserId: payment.externalUserId,
-            method: PaymentMethod.Crypto,
-            at,
-          };
-          yield* enqueue(sql)({
-            messageType: PAYMENT_METHOD_CHANGE,
-            idemKey: `method-change:${payment.id}:${payment.currentPeriodEnd.toISOString()}`,
-            payload,
-          });
-        }),
+      // A retry of this request holds no session, so it dedupes on the paid-through end,
+      // which the flip does not move: one notification per period from this path.
+      yield* flipToCrypto(
+        sql,
+        payment.id,
+        (locked) =>
+          `method-change:${locked.id}:${locked.currentPeriodEnd.toISOString()}`,
       );
-      return { kind: 'applied', method: PaymentMethod.Crypto } as const;
+      return APPLIED_CRYPTO;
     }
     const session = yield* openChangeSession(
       sql,

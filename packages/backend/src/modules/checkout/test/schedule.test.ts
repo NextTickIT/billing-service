@@ -201,6 +201,7 @@ const repoWith = (
         writes.claimed.push(id);
         return true;
       }),
+    claimAsApplied: () => Effect.die('unused'),
     releasePending: (id: string) =>
       Effect.sync(() => {
         writes.released.push(id);

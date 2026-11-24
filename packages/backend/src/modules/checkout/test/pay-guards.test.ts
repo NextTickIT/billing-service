@@ -101,6 +101,7 @@ const repoWith = (
         writes.reissued.push(input);
         return input.id;
       }),
+    claimAsApplied: () => Effect.die('unused'),
     releasePending: (id: string) =>
       Effect.sync(() => {
         writes.released.push(id);

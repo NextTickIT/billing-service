@@ -136,6 +136,7 @@ const insertedFor = (promo: CheckoutPromo | null) =>
       reissueLapsed: () => Effect.die('unexpected reissueLapsed'),
       insert: () => Effect.succeed(true),
       claimForPayment: () => Effect.succeed(false),
+      claimAsApplied: () => Effect.die('unused'),
       releasePending: () => Effect.void,
       completeIfOpen: () => Effect.succeed(true),
       renameOpenSessionsExternalUser: () => Effect.succeed(0),
