@@ -12,7 +12,7 @@ import {
   PaymentMethod,
   sessionIdOfRef,
 } from '@billing-service/shared';
-import { afterOptionPick, useCheckoutStore } from './store.js';
+import { afterOptionPick, useCheckoutStore, useMethodPick } from './store.js';
 import { formatDate } from '@/app/datetime.js';
 import { useMoney } from '@/app/money.js';
 import BaseSpinner from '@/components/BaseSpinner.vue';
@@ -25,6 +25,7 @@ const { t, locale } = useI18n();
 const { formatPrice } = useMoney();
 const route = useRoute();
 const store = useCheckoutStore();
+const pick = useMethodPick();
 
 // A provider's failure link brings the payer back with its order reference, which names
 // the option after the session id (`chk_<uuid>_c3`); the page is the session's.
@@ -34,12 +35,18 @@ const id = sessionIdOfRef(route.params['id'] as string);
 // card in the provider's hosted widget, not our page. It hands off the SAME way as a
 // normal Purchase — we fetch a signed form (POST /pay) and the browser posts it
 // directly to WayForPay — the only difference being that a verify needs no button, so
-// we auto-start the handoff the moment the session loads.
+// we auto-start the handoff the moment the session loads. A change link minted without a
+// method is the exception: the payer picks card (this verify) or crypto first (docs/32 §7).
 const isVerify = computed(
   () =>
     store.session?.kind === CheckoutSessionKind.CardChange &&
-    store.session.amount === 0,
+    store.session.amount === 0 &&
+    store.session.method !== null,
 );
+
+// The pick took effect with no payment (crypto on an up-to-date change link): nothing to
+// hand off, the page says what changed.
+const applied = computed(() => store.instruction?.kind === 'applied');
 
 const isPayable = computed(
   () =>
@@ -116,14 +123,15 @@ function submitW4PForm(action: string, fields: Record<string, unknown>): void {
 }
 
 // A card method hands back a form to POST to WayForPay; a crypto method hands back a
-// redirect to the WhitePay hosted page. Both navigate away, so the button stays busy.
+// redirect to the WhitePay hosted page. Both navigate away, so the button stays busy. An
+// `applied` pick navigates nowhere: the template shows its result.
 watch(
   () => store.instruction,
   (instruction) => {
     if (!instruction) return;
     if (instruction.kind === 'form') {
       submitW4PForm(instruction.action, instruction.fields);
-    } else {
+    } else if (instruction.kind === 'redirect') {
       window.location.assign(instruction.url);
     }
   },
@@ -156,21 +164,22 @@ function methodLabel(method: PaymentMethod): string {
     : t('checkout.methodCard');
 }
 
-// The user's current pick. Seeded from the session's default method once it loads,
-// falling back to Card if that default isn't offered (e.g. a Crypto default while
-// crypto is build-disabled).
-const selectedMethod = ref<PaymentMethod>(PaymentMethod.Card);
+// The user's current pick: the method they pressed while the picker still offers it, else
+// the session's default method, falling back to Card if that default isn't offered (e.g.
+// a Crypto default while crypto is build-disabled).
+const selectedMethod = computed<PaymentMethod>(() => {
+  const picked = pick.picked;
+  if (picked !== null && methods.value.includes(picked)) return picked;
+  const preferred = store.session?.method ?? PaymentMethod.Card;
+  return methods.value.includes(preferred) ? preferred : PaymentMethod.Card;
+});
 
-watch(
-  () => store.session,
-  (session) => {
-    if (!session) return;
-    const preferred = session.method ?? PaymentMethod.Card;
-    selectedMethod.value = methods.value.includes(preferred)
-      ? preferred
-      : PaymentMethod.Card;
-  },
-  { immediate: true },
+// Crypto picked where it only switches the method (no payment): the page confirms the
+// switch instead of showing a price to pay.
+const confirmsSwitch = computed(
+  () =>
+    store.session?.cryptoSwitches === true &&
+    selectedMethod.value === PaymentMethod.Crypto,
 );
 
 // The options the payer picks from; one entry (the flat terms) when there is no choice,
@@ -300,8 +309,12 @@ const legalLinks = [
       </div>
 
       <template v-else-if="store.session">
+        <div v-if="applied" class="checkout__msg checkout__msg--ok">
+          {{ t('checkout.methodChangedCrypto') }}
+        </div>
+
         <div
-          v-if="store.session.status === CheckoutSessionStatus.Expired"
+          v-else-if="store.session.status === CheckoutSessionStatus.Expired"
           class="checkout__msg checkout__msg--warn"
         >
           {{ t('checkout.expired') }}
@@ -387,7 +400,7 @@ const legalLinks = [
               </span>
             </label>
           </div>
-          <div class="checkout__row">
+          <div v-if="!confirmsSwitch" class="checkout__row">
             <span class="checkout__label">{{ t('common.amount') }}</span>
             <span class="checkout__value">
               {{
@@ -489,12 +502,14 @@ const legalLinks = [
                 :label="methodLabel(m)"
                 :variant="selectedMethod === m ? 'primary' : 'ghost'"
                 :disabled="store.submitting"
-                @click="selectedMethod = m"
+                @click="pick.picked = m"
               />
             </div>
             <BaseButton
               class="checkout__paybtn"
-              :label="t('checkout.pay')"
+              :label="
+                confirmsSwitch ? t('checkout.changeMethod') : t('checkout.pay')
+              "
               :loading="store.submitting"
               @click="onPay()"
             />

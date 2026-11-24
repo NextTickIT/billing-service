@@ -69,11 +69,13 @@ The recorded rail is keyed on the event **SOURCE**, not on whether a token came 
 
 ### 4.3 The flip (up-to-date → Crypto)
 
-`clearToken` + `setMethod(Crypto)` + enqueue `method_changed`, all in ONE
-transaction (so the sub is never switched but unannounced). No-op guard: if already
-`Crypto` with a null token, return `applied` without mutating or emitting. The
-message idemKey anchors on `currentPeriodEnd` (which the flip does not move), so a
-client retry within the period dedupes to one notification.
+`flipToCrypto`: under the payment row lock, `clearToken` + `setMethod(Crypto)` + enqueue
+`method_changed`, all in ONE transaction (so the sub is never switched but unannounced).
+No-op guard: if already `Crypto` with a null token, return `applied` without mutating or
+emitting. Otherwise the locked row must be `Active` with `nextPaymentDate` strictly in the
+future by a fresh clock read, else `409` (see §5). The caller names the message idemKey: the
+`method: 1` request anchors on `currentPeriodEnd` (which the flip does not move), so a client
+retry within the period dedupes to one notification; the page flip keys on its session (§7).
 
 ### 4.4 `method_changed` event
 
@@ -98,15 +100,49 @@ terminal for the create-or-extend path.
 - The card-change matcher runs before checkout/recurring, so a change callback never
   falls into create-or-extend. The owed advance is guarded on `owesMoney`, so a
   redelivered callback advances the anchor exactly once.
-- The flip only runs on Active subs (future `nextPaymentDate`), so it cannot race a
-  due scheduler tick; a tick reads the token at tick time (charge once, or already
-  token-less → manual).
+- An Active sub is not necessarily before its due date: the scheduler takes a due row
+  (`nextPaymentDate <= now`), releases its lock and then charges the token it read. So the
+  flip requires, under the row lock, `nextPaymentDate` strictly in the future, and answers
+  `409` for a due sub (on both the `method: 1` request and the page pick). A tick that
+  locks the row after a flip reads it token-less → manual prompt.
 - `method_changed` reaches SendPulse ONLY if the operator maps a flow for it via
   `PUT /api/sinks/:code` (name-based dispatch; unmapped events are dropped).
 
 ## 6. Deferred / not in scope
 
 - Locking the method on a change session's checkout page (the picker still offers
-  both methods; correctness comes from recording what was actually paid).
+  both methods; correctness comes from recording what was actually paid). A Crypto pick
+  on a change link minted WITH a method is still a crypto purchase, never the page flip.
 - Folding `/card-change` into `/method-change` (kept for backward-compat).
-- A route-level test of the flip's enqueued payload (no route/DB test harness yet).
+- A route-level test of the `method: 1` flip's enqueued payload. It shares
+  `flipToCrypto` with the page flip, which `test/e2e/method-change.e2e.ts` covers (§7).
+
+## 7. Method-less request — the payer picks on the page
+
+The bot may send only the contact: `{ "externalUserId": "1001" }` (no `method`). The
+answer is then always `{ "kind": "checkout", "sessionId", "checkoutUrl", "expiresAt" }`:
+a `CardChange` session with `method = null` (nothing preselected, `lockMethod = false`),
+priced by `planMethodChange(payment, undefined, …)`:
+
+| sub state | amount | origin | page | Card pick | Crypto pick |
+|-----------|--------|--------|------|-----------|-------------|
+| owed (past_due / renewal_failed) | arrears | `card_change_arrears` | picker | Purchase of the arrears | WhitePay order for the arrears |
+| active | 0 (verify on) or `cardChangeChargeMinor` | `card_change` | picker (no auto-verify) | verify / tokenizing Purchase | **flip**, no payment |
+
+Paid picks land through the existing applier (§4.2), which records the method actually
+paid. The page auto-starts the verify only for a 0-amount change session that carries a
+method, so a session minted WITH a method behaves exactly as before.
+
+**The page flip** (`isPageFlip`: `CardChange` + origin `card_change` + stored method null +
+Crypto picked). `POST /api/checkout-sessions/:id/pay` then, in ONE transaction:
+`claimAsApplied` (`created` → `completed`, method = Crypto, only while the stored method is
+null), then run the flip of §4.3 (`flipToCrypto`, shared with the `method: 1` path). A sub
+that owes, is gone or is due answers `409` and rolls the claim back — the link's verify
+price cannot collect arrears, ask for a new one. The message idemKey is
+`method-change:<sessionId>`, so each link announces its own switch: crypto → card → crypto
+through three links sends two `method_changed`. It answers the new `PayInstruction` member
+`{ "kind": "applied", "method": 1 }` and the page shows "Payment method changed." A double
+click loses the claim (`409`) and flips nothing twice; the completed link cannot be paid
+again. `CheckoutSessionPublic.cryptoSwitches` tells the page that a Crypto pick is this
+switch: with Crypto selected it hides the amount and labels the button "Change payment
+method" instead of "Pay".

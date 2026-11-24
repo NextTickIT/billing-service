@@ -45,6 +45,8 @@ export default {
     pastDue:
       'This link expired on {date}. If payment is still due, we will send a new message.',
     completed: 'Payment completed.',
+    methodChangedCrypto: 'Payment method changed.',
+    changeMethod: 'Change payment method',
     processing: 'Processing your payment…',
     confirmed: 'Payment confirmed.',
     returnHint: 'You can now return to the payment page or bot.',

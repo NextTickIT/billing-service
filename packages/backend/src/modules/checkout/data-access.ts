@@ -81,6 +81,16 @@ export interface CheckoutRepo {
     at: Date,
   ) => Effect.Effect<boolean, SqlError.SqlError>;
   /**
+   * Claim a method-less change session for a pick that takes effect with no payment (the
+   * page flip, docs/32 §7): record `method` and complete it, but ONLY from `created` with
+   * no method yet. Like `claimForPayment` the session id is the idempotency key — a
+   * double click loses here, so the flip it guards runs once. True iff this call won.
+   */
+  readonly claimAsApplied: (
+    id: string,
+    method: number,
+  ) => Effect.Effect<boolean, SqlError.SqlError>;
+  /**
    * Release a claim back to `created` after the provider mint failed, so the buyer can
    * retry (or pick another method) instead of the session bricking in `pending`. Only a
    * still-`pending` row is reopened — a callback that completed the session meanwhile is
@@ -240,6 +250,16 @@ const claimForPayment =
       WHERE id = ${id} AND status = ${CheckoutSessionStatus.Created}
         AND ((origin IS DISTINCT FROM 'prolong' AND NOT "lockMethod")
           OR method = ${method})
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length > 0));
+
+const claimAsApplied =
+  (sql: SqlClient.SqlClient) => (id: string, method: number) =>
+    sql<{ readonly id: string }>`
+      UPDATE checkout_sessions
+      SET method = ${method}, status = ${CheckoutSessionStatus.Completed}
+      WHERE id = ${id} AND status = ${CheckoutSessionStatus.Created}
+        AND method IS NULL
       RETURNING id
     `.pipe(Effect.map((rows) => rows.length > 0));
 
@@ -486,6 +506,7 @@ export const makeCheckoutRepo = (sql: SqlClient.SqlClient): CheckoutRepo => ({
   findByIdempotencyKey: findByIdempotencyKey(sql),
   reissueLapsed: reissueLapsed(sql),
   claimForPayment: claimForPayment(sql),
+  claimAsApplied: claimAsApplied(sql),
   releasePending: releasePending(sql),
   completeIfOpen: completeIfOpen(sql),
   renameOpenSessionsExternalUser: renameOpenSessionsExternalUser(sql),

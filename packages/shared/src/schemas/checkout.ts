@@ -636,11 +636,12 @@ export type CardChangeRequest = Schema.Schema.Type<typeof CardChangeRequest>;
  * POST /api/payment/method-change body: switch the user's ONE recurring subscription to a
  * target payment method, agnostic to whatever it is now. `method` is the DESTINATION
  * (0=Card, 1=Crypto); the server resolves the user's recurring payment itself. Card→card
- * (re-tokenize), crypto→card, and card→crypto are all valid.
+ * (re-tokenize), crypto→card, and card→crypto are all valid. Without `method` the payer
+ * picks the destination on the hosted page, so the answer is always a `checkout` link.
  */
 export const MethodChangeRequest = Schema.Struct({
   externalUserId: Schema.String,
-  method: PaymentMethodSchema,
+  method: Schema.optional(PaymentMethodSchema),
 });
 
 export type MethodChangeRequest = Schema.Schema.Type<
@@ -748,6 +749,9 @@ export const CheckoutSessionPublic = CheckoutSession.pipe(
       // Whether this session's order was ever handed to a provider (claimed for payment),
       // so a caller deciding whether to replace a link knows a payment may still land.
       everSentToProvider: Schema.Boolean,
+      // A Crypto pick switches the method with no payment (a method-less change link for an
+      // up-to-date sub, docs/32 §7): the page confirms the switch instead of charging.
+      cryptoSwitches: Schema.Boolean,
       options: Schema.Array(CheckoutOptionPublic),
       defaultOption: Schema.Int,
     }),
@@ -799,7 +803,13 @@ export type RedirectInstruction = Schema.Schema.Type<
  * POST /api/checkout-sessions/:id/pay response, discriminated on `kind`: a card
  * method hands back a `form` to POST to WayForPay; a crypto method hands back a
  * `redirect` to the WhitePay hosted page. A new provider adds a member, not a field.
+ * `applied`: the pick took effect with no payment — Crypto on an up-to-date method-less
+ * change link (docs/32 §7); the page shows the result instead of handing off.
  */
-export const PayInstruction = Schema.Union(PurchaseForm, RedirectInstruction);
+export const PayInstruction = Schema.Union(
+  PurchaseForm,
+  RedirectInstruction,
+  MethodChangeApplied,
+);
 
 export type PayInstruction = Schema.Schema.Type<typeof PayInstruction>;

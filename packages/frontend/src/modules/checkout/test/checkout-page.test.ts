@@ -3,6 +3,7 @@ import {
   CheckoutSessionKind,
   CheckoutSessionStatus,
   Currency,
+  type PayInstruction,
   PaymentMethod,
 } from '@billing-service/shared';
 import { createPinia } from 'pinia';
@@ -16,7 +17,11 @@ import en from '@/i18n/locales/en.js';
 import ru from '@/i18n/locales/ru.js';
 import uk from '@/i18n/locales/uk.js';
 import CheckoutPage from '@/modules/checkout/CheckoutPage.vue';
-import { afterOptionPick, useCheckoutStore } from '@/modules/checkout/store.js';
+import {
+  afterOptionPick,
+  useCheckoutStore,
+  useMethodPick,
+} from '@/modules/checkout/store.js';
 
 const ID = 'chk_0b5e6a3c-1f2d-4c7b-9a8e-1234567890ab';
 
@@ -39,6 +44,7 @@ const single: CheckoutSessionPublic = {
   methodLocked: false,
   prolong: false,
   everSentToProvider: false,
+  cryptoSwitches: false,
   options: [
     { amount: 5000, period: 'P4W', promo: null, renewal: null, cycles: null },
   ],
@@ -86,17 +92,23 @@ const cycles: CheckoutSessionPublic = {
   })),
 };
 
-/** Render the page server-side over a store already holding `session`. */
+/** Render the page server-side over a store already holding `session` (and the answer
+ * of a `/pay` already made, when given). */
 const render = async (
   session: CheckoutSessionPublic,
   locale = 'uk',
+  instruction: PayInstruction | null = null,
+  pickedMethod: PaymentMethod | null = null,
 ): Promise<string> => {
   // Same as app/main.ts: the linter's type service does not read .vue files.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
   const app = createSSRApp(CheckoutPage);
   const pinia = createPinia();
   app.use(pinia);
-  useCheckoutStore(pinia).session = session;
+  const store = useCheckoutStore(pinia);
+  store.session = session;
+  store.instruction = instruction;
+  useMethodPick(pinia).picked = pickedMethod;
   app.use(createI18n({ legacy: false, locale, messages: { en, ru, uk } }));
   const router = createRouter({
     history: createMemoryHistory(),
@@ -446,5 +458,120 @@ describe('a caller-locked method', () => {
 
     expect(open).toContain('checkout__methods');
     expect(locked).not.toContain('checkout__methods');
+  });
+});
+
+// The "Amount" row's label, in any of the three languages.
+const AMOUNT_LABEL = />(Amount|Сума|Сумма)</;
+
+// Up to date, card verify on: the change link charges nothing.
+const verifyChange: CheckoutSessionPublic = {
+  ...single,
+  amount: 0,
+  kind: CheckoutSessionKind.CardChange,
+  method: null,
+  options: [
+    { amount: 0, period: 'P4W', promo: null, renewal: null, cycles: null },
+  ],
+};
+
+describe('a payment-method change link', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('minted without a method offers card and crypto instead of starting the verify', async () => {
+    vi.stubEnv('VITE_WHITEPAY_ENABLED', 'true');
+
+    const html = await render(verifyChange, 'en');
+
+    expect(html).toContain('checkout__methods');
+    expect(html).toContain('Crypto');
+    expect(html).not.toContain('Redirecting to card verification');
+  });
+
+  it('minted for card still goes straight to the card verify', async () => {
+    vi.stubEnv('VITE_WHITEPAY_ENABLED', 'true');
+
+    const html = await render(
+      { ...verifyChange, method: PaymentMethod.Card },
+      'en',
+    );
+
+    expect(html).toContain('Redirecting to card verification');
+    expect(html).not.toContain('checkout__methods');
+  });
+
+  it.each([
+    ['en', 'Payment method changed.'],
+    ['uk', 'Спосіб оплати змінено.'],
+    ['ru', 'Способ оплаты изменён.'],
+  ])(
+    'a crypto pick applied without payment says so, with no Pay button (%s)',
+    async (locale, expected) => {
+      const html = await render(verifyChange, locale, {
+        kind: 'applied',
+        method: PaymentMethod.Crypto,
+      });
+
+      expect(html).toContain(expected);
+      expect(html).not.toContain('checkout__paybtn');
+    },
+  );
+});
+
+describe('a crypto switch on a change link', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['en', 'Change payment method'],
+    ['uk', 'Змінити спосіб оплати'],
+    ['ru', 'Изменить способ оплаты'],
+  ])(
+    'crypto picked where it only switches the method: no amount, a confirm button (%s)',
+    async (locale, expected) => {
+      vi.stubEnv('VITE_WHITEPAY_ENABLED', 'true');
+
+      const html = await render(
+        { ...verifyChange, cryptoSwitches: true },
+        locale,
+        null,
+        PaymentMethod.Crypto,
+      );
+
+      expect(html).toContain(expected);
+      expect(html).not.toMatch(AMOUNT_LABEL);
+    },
+  );
+
+  it('card picked on the same link keeps the amount and the Pay button', async () => {
+    vi.stubEnv('VITE_WHITEPAY_ENABLED', 'true');
+
+    const html = await render(
+      { ...verifyChange, cryptoSwitches: true },
+      'en',
+      null,
+      PaymentMethod.Card,
+    );
+
+    expect(html).toMatch(AMOUNT_LABEL);
+    expect(html).toContain('>Pay<');
+    expect(html).not.toContain('Change payment method');
+  });
+
+  it('crypto picked on an owed change link is a payment: amount and Pay stay', async () => {
+    vi.stubEnv('VITE_WHITEPAY_ENABLED', 'true');
+
+    const html = await render(
+      { ...verifyChange, amount: 30000, cryptoSwitches: false },
+      'en',
+      null,
+      PaymentMethod.Crypto,
+    );
+
+    expect(html).toMatch(AMOUNT_LABEL);
+    expect(html).not.toContain('Change payment method');
   });
 });

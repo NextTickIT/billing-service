@@ -52,6 +52,7 @@ const unusedCheckout: CheckoutRepo = {
   reissueLapsed: die,
   insert: die,
   claimForPayment: die,
+  claimAsApplied: die,
   releasePending: die,
   completeIfOpen: die,
   renameOpenSessionsExternalUser: die,

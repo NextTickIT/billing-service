@@ -169,3 +169,8 @@ export const useCheckoutStore = defineStore('checkout', () => {
     pay,
   };
 });
+
+/** The method the payer pressed in the page's picker; null until they press one. */
+export const useMethodPick = defineStore('checkout-method-pick', () => ({
+  picked: ref<PaymentMethod | null>(null),
+}));
