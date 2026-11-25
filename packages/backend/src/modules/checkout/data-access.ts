@@ -103,7 +103,8 @@ export interface CheckoutRepo {
   /**
    * Complete a session unless it already is, returning true iff THIS call completed
    * it. The settlement claim: exactly one charge settles a session; a different charge
-   * that reaches an already-completed session gets false and is quarantined.
+   * that reaches an already-completed session gets false and is quarantined. A Closed
+   * session is never completed: it was closed as unpayable, so late money is quarantined.
    */
   readonly completeIfOpen: (
     id: string,
@@ -275,7 +276,8 @@ const releasePending = (sql: SqlClient.SqlClient) => (id: string) =>
 const completeIfOpen = (sql: SqlClient.SqlClient) => (id: string) =>
   sql<{ readonly id: string }>`
     UPDATE checkout_sessions SET status = ${CheckoutSessionStatus.Completed}
-    WHERE id = ${id} AND status <> ${CheckoutSessionStatus.Completed}
+    WHERE id = ${id}
+      AND status NOT IN (${CheckoutSessionStatus.Completed}, ${CheckoutSessionStatus.Closed})
     RETURNING id
   `.pipe(Effect.map((rows) => rows.length > 0));
 
@@ -319,6 +321,26 @@ export const closeOpenCardCheck =
       WHERE id = ${id}
         AND status IN (${CheckoutSessionStatus.Created}, ${CheckoutSessionStatus.Pending})
         AND "firstCharge" = 'card_check'
+      RETURNING id
+    `.pipe(Effect.map((rows) => rows.length > 0));
+
+/**
+ * Close a lapsed pay-now session as `unpaid`, re-checking in the same statement (which
+ * takes the row lock a settlement's `completeIfOpen` also takes) that it is still open,
+ * has no options, and its `payableUntil` lies at or before `lapsedBy`. True iff THIS call
+ * closed it; a payment that won the lock first leaves it Completed.
+ */
+export const closeUnpaidPayNow =
+  (sql: SqlClient.SqlClient) =>
+  (id: string, lapsedBy: Date): Effect.Effect<boolean, SqlError.SqlError> =>
+    sql<{ readonly id: string }>`
+      UPDATE checkout_sessions
+      SET status = ${CheckoutSessionStatus.Closed}, "closedReason" = 'unpaid'
+      WHERE id = ${id}
+        AND status IN (${CheckoutSessionStatus.Created}, ${CheckoutSessionStatus.Pending})
+        AND "firstCharge" = 'now'
+        AND options IS NULL
+        AND "payableUntil" <= ${lapsedBy}
       RETURNING id
     `.pipe(Effect.map((rows) => rows.length > 0));
 

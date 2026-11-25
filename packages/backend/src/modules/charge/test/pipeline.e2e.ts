@@ -28,6 +28,7 @@ import { refundScenarios } from '@/modules/charge/test/refund.e2e.js';
 import { reissueMetadataScenarios } from '@/modules/checkout/test/reissue-metadata.e2e.js';
 import { cardCheckScenarios } from '@/modules/checkout/test/card-check.e2e.js';
 import { cardCheckStallScenarios } from '@/modules/checkout/test/card-check-stall.e2e.js';
+import { payNowUnpaidScenarios } from '@/modules/checkout/test/pay-now-unpaid.e2e.js';
 import { Outbox } from '@/modules/outbox/domain.js';
 import { sinkCancelled } from '@/modules/billing/events.js';
 import {
@@ -1513,4 +1514,5 @@ export const effectScenarios: readonly EffectScenario[] = [
   ...reissueMetadataScenarios,
   ...cardCheckScenarios,
   ...cardCheckStallScenarios,
+  ...payNowUnpaidScenarios,
 ];

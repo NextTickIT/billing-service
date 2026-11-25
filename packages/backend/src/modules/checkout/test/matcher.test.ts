@@ -124,6 +124,26 @@ it.effect('does not match an unknown order reference', () =>
   ),
 );
 
+it.effect.each([
+  ['a payment', 'succeeded', { matched: false }],
+  [
+    'a decline',
+    'failed',
+    { matched: false, ignored: 'checkout: declined a closed session' },
+  ],
+] as const)(
+  '%s for a session closed unpaid is not matched (%s)',
+  ([, status, expected]) =>
+    makeCheckoutMatcher(
+      repoWith({ ...session, status: CheckoutSessionStatus.Closed }),
+      noLiveSub,
+    )(event({ status })).pipe(
+      Effect.map((result) => {
+        expect(result).toEqual(expected);
+      }),
+    ),
+);
+
 it.effect(
   'does not re-credit an already-completed session (crypto double-pay → quarantine)',
   () =>

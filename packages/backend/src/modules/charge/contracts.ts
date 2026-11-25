@@ -212,7 +212,11 @@ export type MatchResult =
        * on the success events. */
       readonly checkoutSessionId?: string;
     }
-  | { readonly matched: false };
+  | { readonly matched: false }
+  /** Ours, and nothing to do: the receipt is consumed with no write, no event and no
+   * quarantine (a decline for a session already closed unpaid). `ignored` is the log
+   * line's reason. */
+  | { readonly matched: false; readonly ignored: string };
 
 export type Match = Extract<MatchResult, { readonly matched: true }>;
 
@@ -226,14 +230,15 @@ export type ChargeMatcher = (
   event: Charge,
 ) => Effect.Effect<MatchResult, SqlError.SqlError>;
 
-/** Try each matcher in order; the first match wins (checkout, then recurring). */
+/** Try each matcher in order; the first match, or the first matcher that claims the
+ * charge as ignored, wins (checkout, then recurring). */
 export const makeCompositeMatcher =
   (matchers: readonly ChargeMatcher[]): ChargeMatcher =>
   (event) =>
     Effect.gen(function* () {
       for (const matcher of matchers) {
         const result = yield* matcher(event);
-        if (result.matched) {
+        if (result.matched || 'ignored' in result) {
           return result;
         }
       }
@@ -303,9 +308,10 @@ export interface ChargedTerms {
  * - `already_applied`: a different charge already settled this session.
  * - `intro_on_live`: an intro-priced checkout paid while the contact holds a live sub
  *   (Q8, enforced again at settlement); `subscriptionId` is that live sub.
+ * - `closed_session`: the session was closed unpaid after the charge was matched.
  */
 export interface RefusedCharge {
-  readonly refused: 'already_applied' | 'intro_on_live';
+  readonly refused: 'already_applied' | 'intro_on_live' | 'closed_session';
   readonly subscriptionId: string | null;
 }
 

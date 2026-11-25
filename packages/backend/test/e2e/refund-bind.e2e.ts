@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 
+import { normalizeCallback } from '@/modules/wayforpay/callback.js';
+
 import {
   ADMIN_TOKEN,
   loadBffHandler,
@@ -94,6 +96,58 @@ export const refundBindScenarios: readonly Scenario[] = [
         ).trim(),
         '1',
         'only the accepted bind was audited',
+      );
+    },
+  },
+  {
+    name: 'quarantine bind: a decline is refused before it is queued, so no money is reported received',
+    run: async ({ baseUrl, query }) => {
+      const bind = await loginOperator(baseUrl);
+      const decline = await seedQuarantined(query, 'chk_declined', 'failed');
+
+      const refused = await bind(decline);
+
+      assert.equal(refused.status, 422, 'the decline bind is refused');
+      const body = (await refused.json()) as { error?: string };
+      assert.match(body.error ?? '', /no money/, 'the refusal says why');
+      assert.equal(
+        (
+          await query(
+            `SELECT count(*) FROM messages WHERE "messageType" = 'payment_rebind'`,
+          )
+        ).trim(),
+        '0',
+        'nothing was queued',
+      );
+    },
+  },
+  {
+    name: 'quarantine bind: an order held in a 3-D Secure wait is refused before it is queued, so no money is reported received',
+    run: async ({ baseUrl, query }) => {
+      const bind = await loginOperator(baseUrl);
+      const { status } = normalizeCallback({
+        orderReference: 'chk_otp_wait',
+        transactionStatus: 'WaitingOtpConfirm',
+        reasonCode: 5110,
+        amount: '50',
+        currency: 'USD',
+        createdDate: '1795600000',
+      });
+      const otpWait = await seedQuarantined(query, 'chk_otp_wait', status);
+
+      const refused = await bind(otpWait);
+
+      assert.equal(refused.status, 422, 'the bind is refused');
+      const body = (await refused.json()) as { error?: string };
+      assert.match(body.error ?? '', /no money/, 'the refusal says why');
+      assert.equal(
+        (
+          await query(
+            `SELECT count(*) FROM messages WHERE "messageType" = 'payment_rebind'`,
+          )
+        ).trim(),
+        '0',
+        'nothing was queued',
       );
     },
   },
