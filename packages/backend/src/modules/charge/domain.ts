@@ -505,10 +505,27 @@ const quarantine = (deps: HandleDeps, event: Charge, incomingId: string) =>
     yield* deps.publish(quarantined(event, quarantineId, incomingId));
   });
 
+/** A charge a matcher claimed and found nothing to do for: closed as matched, logged. */
+const consumeIgnored = (
+  deps: HandleDeps,
+  event: Charge,
+  incomingId: string,
+  reason: string,
+) =>
+  Effect.logInfo(`CHARGE_IGNORED ${reason}`).pipe(
+    Effect.annotateLogs({
+      idemKey: event.idemKey,
+      externalRef: event.externalRef,
+      status: event.status,
+    }),
+    Effect.andThen(deps.repo.setMatchResult(incomingId, 'matched')),
+  );
+
 /** Why each refusal is a refund candidate, as the watchdog's marker line reads it. */
 const REFUSAL_REASON: Record<RefusedCharge['refused'], string> = {
   already_applied: 'charge: session already settled',
   intro_on_live: 'checkout: intro-priced payment on a live subscription',
+  closed_session: 'checkout: paid a closed session',
 };
 
 /** The applier refused the charge and wrote nothing: quarantine it, loudly. */
@@ -759,7 +776,9 @@ const process = (deps: HandleDeps, event: Charge) =>
         }
         const match = yield* deps.matcher(event);
         if (!match.matched) {
-          return yield* quarantine(deps, event, incomingId);
+          return yield* 'ignored' in match
+            ? consumeIgnored(deps, event, incomingId, match.ignored)
+            : quarantine(deps, event, incomingId);
         }
         if (match.kind === 'card_change') {
           return yield* recordCardChange(deps, event, match, incomingId);
@@ -805,6 +824,21 @@ export const handleChargeEvent =
       Effect.flatMap((event) => process(deps, event)),
     );
 
+/** Whether a quarantined charge may be bound as money received: only a success. A refund
+ * is money returned, a decline money never taken, an order in flight (`pending`) is
+ * settled by its own final callback, and an `unknown` status (e.g. a 3-D Secure wait,
+ * `WaitingOtpConfirm`) is no proof of money; the operator page shows neither status nor
+ * raw to judge it by. */
+export const isBindable = (status: Charge['status']): boolean =>
+  status === 'succeeded';
+
+const UNBINDABLE: Partial<Record<Charge['status'], string>> = {
+  refunded: 'a refund',
+  failed: 'a decline',
+  pending: 'still in flight',
+  unknown: 'of an unknown status',
+};
+
 /**
  * Reprocess an operator-bound quarantine (FR-009). The operator binds a SPECIFIC
  * incoming charge by id: one user may have several quarantined events at once (e.g.
@@ -825,11 +859,12 @@ const rebind =
         return; // incoming charge vanished — nothing to reprocess
       }
       const event = found.value;
-      if (event.status === 'refunded') {
+      if (!isBindable(event.status)) {
         // A bind settles a payment: on a refund it would report money returned as money
-        // received. A bind queued before the refund was attributed lands here too.
+        // received, on a decline money never taken. A bind queued before the refund was
+        // attributed lands here too.
         return yield* Effect.logWarning(
-          'REBIND_REFUSED the charge is a refund; nothing written',
+          `REBIND_REFUSED the charge is ${UNBINDABLE[event.status] ?? event.status}; nothing written`,
         ).pipe(
           Effect.annotateLogs({
             incomingEventId: bind.incomingEventId,

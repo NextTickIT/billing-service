@@ -19,6 +19,7 @@ import { makeRoute } from '@/infra/http/route.js';
 import { enqueue } from '@/infra/queue/store.js';
 import { authenticate, requireRole } from '@/modules/auth/domain.js';
 import { PAYMENT_REBIND } from '@/modules/charge/contracts.js';
+import { isBindable } from '@/modules/charge/domain.js';
 import {
   type ChargeRepo,
   makeChargeRepo,
@@ -46,23 +47,32 @@ const operatorActor = (request: FastifyRequest) => {
 const readId = (request: FastifyRequest): string =>
   (request.params as { readonly id: string }).id;
 
+const REFUND_REFUSAL =
+  'the charge is a refund and cannot be bound as a payment; once its original payment is settled, run charges:reprocess-refunded (docs/34)';
+
 /**
- * A bind settles a payment, and a refund is money returned: binding one would report it as
- * money received. The worker refuses a bind already queued; this refuses a new one before
- * it is queued, so the operator sees why instead of a 202 that does nothing (docs/34).
+ * A bind settles a payment, so only a success may be bound (`isBindable`): binding a
+ * refund, a decline, an order in flight or an unknown status would report money received
+ * that never was. The worker refuses a bind already
+ * queued; this refuses a new one before it is queued, so the operator sees why instead of
+ * a 202 that does nothing (docs/34).
  */
-const refuseRefund = (repo: ChargeRepo, incomingEventId: string) =>
+const refuseUnbindable = (repo: ChargeRepo, incomingEventId: string) =>
   repo.getIncomingChargeById(incomingEventId).pipe(
-    Effect.flatMap((charge) =>
-      Option.isSome(charge) && charge.value.status === 'refunded'
-        ? Effect.fail(
-            new UnprocessableEntity({
-              reason:
-                'the charge is a refund and cannot be bound as a payment; once its original payment is settled, run charges:reprocess-refunded (docs/34)',
-            }),
-          )
-        : Effect.void,
-    ),
+    Effect.flatMap((charge) => {
+      if (Option.isNone(charge) || isBindable(charge.value.status)) {
+        return Effect.void;
+      }
+      const { status } = charge.value;
+      return Effect.fail(
+        new UnprocessableEntity({
+          reason:
+            status === 'refunded'
+              ? REFUND_REFUSAL
+              : `the charge is ${status}: no money was received, so it cannot be bound as a payment`,
+        }),
+      );
+    }),
   );
 
 const bind = (body: BindBody, request: FastifyRequest) =>
@@ -83,7 +93,7 @@ const bind = (body: BindBody, request: FastifyRequest) =>
         new UnprocessableEntity({ reason: 'quarantine already resolved' }),
       );
     }
-    yield* refuseRefund(repo, found.value.incomingEventId);
+    yield* refuseUnbindable(repo, found.value.incomingEventId);
     yield* repo.insertAudit({
       actor: Role[actor.role],
       action: 'bind_quarantine',

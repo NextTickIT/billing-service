@@ -31,6 +31,7 @@ import {
   type ChargeApplier,
   type ChargeMatcher,
   type Match,
+  type MatchResult,
   type RefusedCharge,
   type SettledCharge,
   type Settlement,
@@ -539,6 +540,49 @@ const isPaidCheckout = (session: CheckoutSession): boolean =>
   session.kind === CheckoutSessionKind.Checkout &&
   session.firstCharge !== 'card_check';
 
+/** Why a session takes no more money, as the anomaly line reads it; null while open. */
+const unpayableReason = (session: CheckoutSession): string | null => {
+  switch (session.status) {
+    case CheckoutSessionStatus.Completed:
+      return 'checkout: paid a completed session';
+    case CheckoutSessionStatus.Closed:
+      return 'checkout: paid a closed session';
+    default:
+      return null;
+  }
+};
+
+/**
+ * The no-match for a session that takes no more money, or null while it is open. A
+ * session is completed on the FIRST successful charge. A second success (crypto
+ * double-pay: two paid orders for one session) or a late decline arriving after
+ * completion must NOT re-credit or emit a spurious failure — fall through to quarantine
+ * so the operator sees it (a refund candidate), never book it (docs/26). A Closed session
+ * (lapsed unpaid) takes no money either: the caller may already have offered a new
+ * attempt, so money for the old one is a refund candidate. A decline for it changes
+ * nothing and is no refund candidate, so it is consumed.
+ */
+const noMoreMoney = (
+  session: CheckoutSession,
+  event: Charge,
+): Effect.Effect<MatchResult | null> =>
+  Effect.gen(function* () {
+    if (
+      session.status === CheckoutSessionStatus.Closed &&
+      event.status === 'failed'
+    ) {
+      return { matched: false, ignored: 'checkout: declined a closed session' };
+    }
+    const unpayable = unpayableReason(session);
+    if (unpayable === null) {
+      return null;
+    }
+    if (event.status === 'succeeded') {
+      yield* settlementAnomaly(unpayable, event);
+    }
+    return { matched: false };
+  });
+
 /**
  * Checkout matcher: an incoming event whose `externalRef` names a known checkout
  * session and one of its options (`parseCheckoutRef`) resolves to a `checkout` match.
@@ -571,15 +615,9 @@ export const makeCheckoutMatcher =
         return { matched: false };
       }
       const { session, chosen } = found.value;
-      // A session is completed on the FIRST successful charge. A second success (crypto
-      // double-pay: two paid orders for one session) or a late decline arriving after
-      // completion must NOT re-credit or emit a spurious failure — fall through to
-      // quarantine so the operator sees it (a refund candidate), never book it (docs/26).
-      if (session.status === CheckoutSessionStatus.Completed) {
-        if (event.status === 'succeeded') {
-          yield* settlementAnomaly('checkout: paid a completed session', event);
-        }
-        return { matched: false };
+      const settled = yield* noMoreMoney(session, event);
+      if (settled !== null) {
+        return settled;
       }
       if (!(yield* settlesOnSession(event, session, chosen.total))) {
         return { matched: false };
@@ -662,6 +700,23 @@ const alreadyApplied = (subscriptionId: string | null): RefusedCharge => ({
   refused: 'already_applied',
   subscriptionId,
 });
+
+/** Why the settlement claim lost: the session was closed unpaid after the match, or a
+ * different charge settled it. */
+const refusedClaim = (
+  checkout: CheckoutRepo,
+  sessionId: string,
+): Effect.Effect<RefusedCharge, SqlError.SqlError> =>
+  checkout
+    .findById(sessionId)
+    .pipe(
+      Effect.map((found) =>
+        Option.isSome(found) &&
+        found.value.status === CheckoutSessionStatus.Closed
+          ? { refused: 'closed_session' as const, subscriptionId: null }
+          : alreadyApplied(null),
+      ),
+    );
 
 /** Aborts the checkout settlement savepoint so the session claim rolls back with it. */
 class IntroOnLive extends Data.TaggedError('IntroOnLive')<{
@@ -785,10 +840,9 @@ const applyCheckout =
     match: Match,
   ): Effect.Effect<AppliedCharge, SqlError.SqlError> =>
     Effect.gen(function* () {
-      if (
-        !(yield* checkout.completeIfOpen(sessionIdOfRef(event.externalRef)))
-      ) {
-        return alreadyApplied(null);
+      const sessionId = sessionIdOfRef(event.externalRef);
+      if (!(yield* checkout.completeIfOpen(sessionId))) {
+        return yield* refusedClaim(checkout, sessionId);
       }
       const applied = yield* createOrExtend(payments)({
         externalUserId: match.externalUserId,

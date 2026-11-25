@@ -1,5 +1,12 @@
 import { it } from '@effect/vitest';
-import { type Payment, PaymentStatus } from '@billing-service/shared';
+import {
+  type CheckoutSession,
+  CheckoutSessionKind,
+  CheckoutSessionStatus,
+  type Payment,
+  PaymentMethod,
+  PaymentStatus,
+} from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 import { expect } from 'vitest';
 
@@ -453,14 +460,51 @@ const checkoutMatch = (over: Partial<Match> = {}): Match => ({
   ...over,
 });
 
-it.effect(
-  'a different charge on a completed session is alreadyApplied and writes nothing',
-  () =>
+/** The session a lost settlement claim finds when it looks again. */
+const sessionIn = (status: CheckoutSessionStatus): CheckoutSession => ({
+  id: 'chk_lost',
+  externalUserId: 'sp:1',
+  amount: 30000,
+  currency: 0,
+  period: 'P1M',
+  method: PaymentMethod.Card,
+  status,
+  kind: CheckoutSessionKind.Checkout,
+  recurring: true,
+  paymentId: null,
+  successUrl: null,
+  failureUrl: null,
+  promo: null,
+  renewal: null,
+  origin: 'migration',
+  renewalOf: null,
+  startsAt: null,
+  payableUntil: null,
+  lockMethod: true,
+  options: null,
+  idempotencyKey: null,
+  email: '',
+  metadata: null,
+  expiresAt: new Date('2026-12-01T00:00:00Z'),
+  createdAt: new Date('2026-11-01T00:00:00Z'),
+});
+
+it.effect.each([
+  ['completed', CheckoutSessionStatus.Completed, 'already_applied'],
+  [
+    'closed unpaid after the match',
+    CheckoutSessionStatus.Closed,
+    'closed_session',
+  ],
+] as const)(
+  'a charge whose session claim is lost to a session %s is refused as %s and writes nothing',
+  ([, status, expectedRefusal]) =>
     Effect.gen(function* () {
       // unusedSubs dies on any payment read or write.
       const checkout: CheckoutRepo = {
         ...unusedCheckout,
         completeIfOpen: () => Effect.succeed(false),
+        findById: () => Effect.succeed(Option.some(sessionIn(status))),
       };
 
       const result = yield* makeCheckoutApplier(
@@ -470,7 +514,7 @@ it.effect(
       )(event, checkoutMatch());
 
       expect(result).toEqual({
-        refused: 'already_applied',
+        refused: expectedRefusal,
         subscriptionId: null,
       });
     }),

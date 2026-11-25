@@ -41,14 +41,18 @@ export enum CheckoutSessionKind {
 export const CheckoutSessionKindSchema = Schema.Enums(CheckoutSessionKind);
 
 /**
- * Why a card-check session was closed: `late` (the verify arrived within 24 h of
+ * Why a session was closed. A card check: `late` (the verify arrived within 24 h of
  * `startsAt` or after `payableUntil`), `on_live` (the contact already holds a live
- * subscription), `superseded` (the caller closed it to offer something else).
+ * subscription), `superseded` (the caller closed it to offer something else). A pay-now
+ * session: `unpaid` (its `payableUntil` lapsed and WayForPay reports the order refused,
+ * unknown, or stuck on an unanswered bank confirmation), so the caller may offer a new
+ * attempt; money arriving after the close is quarantined, never booked.
  */
 export const CheckoutClosedReason = Schema.Literal(
   'late',
   'on_live',
   'superseded',
+  'unpaid',
 );
 
 export type CheckoutClosedReason = Schema.Schema.Type<

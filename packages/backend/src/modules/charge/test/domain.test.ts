@@ -48,6 +48,7 @@ import {
 import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import { makeCheckoutApplier } from '@/modules/checkout/domain.js';
 import type { PaymentRepo } from '@/modules/payment/data-access.js';
+import { normalizeCallback } from '@/modules/wayforpay/callback.js';
 import type { ApprovalLookup } from '@/modules/charge/contracts.js';
 
 /** An approval recorded before the ledger kept snapshots: the row is the report. */
@@ -2073,6 +2074,44 @@ it.effect(
       expect(fake.payments.has(refundId)).toBe(false);
       expect(fake.quarantineStatus.get(refundId)).toBe('open');
       expect(fake.matchResults.get(refundId)).toBe('quarantined');
+      expect(pub.events.map((e) => e.name)).toEqual([
+        'unknown_payment_quarantined',
+      ]);
+    }),
+);
+
+const otpWaitCallback = normalizeCallback({
+  orderReference: 'ref-1',
+  transactionStatus: 'WaitingOtpConfirm',
+  reasonCode: 5110,
+  amount: '300',
+  currency: 'UAH',
+  createdDate: '1788000000',
+});
+
+it.effect.each([
+  ['a decline', refundCharge('w4pcb:ref-1|Declined', { status: 'failed' })],
+  ['an order held in a 3-D Secure wait', otpWaitCallback],
+] as const)(
+  'an operator bind of %s is refused: no fixation, no success event',
+  ([, decline]) =>
+    Effect.gen(function* () {
+      const fake = makeFakeRepo();
+      const { pub, deps } = refundDeps(fake);
+      yield* handleChargeEvent(deps)(encoded(decline));
+      const declineId = yield* fake.repo.upsertIncomingCharge(decline);
+
+      yield* rebindFromPayload(deps)({
+        incomingEventId: declineId,
+        quarantineId: `q_${declineId}`,
+        externalUserId: BUYER,
+        subscriptionId: 'pay_1',
+        period: 'P1M',
+        method: 0,
+      });
+
+      expect(fake.payments.has(declineId)).toBe(false);
+      expect(fake.quarantineStatus.get(declineId)).toBe('open');
       expect(pub.events.map((e) => e.name)).toEqual([
         'unknown_payment_quarantined',
       ]);

@@ -54,8 +54,13 @@ import {
 } from '@/modules/checkout/card-check-refund.js';
 import {
   CARD_CHECK_STALL_INTERVAL_SECONDS,
+  type CardCheckStallDeps,
   runCardCheckStallSweep,
 } from '@/modules/checkout/card-check-stall.js';
+import {
+  PAY_NOW_UNPAID_INTERVAL_SECONDS,
+  runPayNowUnpaidSweep,
+} from '@/modules/checkout/pay-now-unpaid.js';
 import { makeContactsRepo } from '@/modules/contacts/data-access.js';
 import { runContactsSync } from '@/modules/contacts/sync.js';
 import { makeSinksRepo } from '@/modules/sinks/data-access.js';
@@ -497,6 +502,28 @@ const startContactsSync = (config: AppConfig) =>
     yield* Effect.logInfo('contacts sync started');
   });
 
+/** The sweeps that ask WayForPay about open sessions no callback resolved. */
+const startStatusSweeps = (
+  sql: SqlClient.SqlClient,
+  publish: CardCheckStallDeps['publish'],
+) =>
+  Effect.gen(function* () {
+    const client = yield* WayForPay;
+    // A card check WayForPay never answers (a 3-D Secure code that never came) is
+    // reported as declined here, so the payer is offered the fallback.
+    yield* Effect.forkDaemon(
+      runCardCheckStallSweep(
+        { sql, client, publish },
+        CARD_CHECK_STALL_INTERVAL_SECONDS,
+      ),
+    );
+    // A lapsed pay-now session WayForPay refused (or never saw) is closed `unpaid` here,
+    // so the caller offers a new attempt instead of a manager.
+    yield* Effect.forkDaemon(
+      runPayNowUnpaidSweep({ sql, client }, PAY_NOW_UNPAID_INTERVAL_SECONDS),
+    );
+  });
+
 /**
  * Register handlers, start the gated sources, then run the queue dispatch loop.
  * The returned effect never completes (the loop runs forever): the standalone
@@ -527,14 +554,7 @@ export const bootWorker = (config: AppConfig) =>
     yield* Effect.forkDaemon(
       runCardCheckRefundSweep(sql, RECEIPT_SWEEP_INTERVAL_SECONDS),
     );
-    // A card check WayForPay never answers (a 3-D Secure code that never came) is
-    // reported as declined here, so the payer is offered the fallback.
-    yield* Effect.forkDaemon(
-      runCardCheckStallSweep(
-        { sql, client: yield* WayForPay, publish: outbox.publish },
-        CARD_CHECK_STALL_INTERVAL_SECONDS,
-      ),
-    );
+    yield* startStatusSweeps(sql, outbox.publish);
     const queue = yield* Queue;
     return yield* queue.run({
       workerId,
