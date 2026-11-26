@@ -2,6 +2,7 @@ import { it } from '@effect/vitest';
 import {
   type CheckoutOrigin,
   CheckoutSessionKind,
+  CheckoutSessionStatus,
   type Payment,
   PaymentMethod,
   PaymentStatus,
@@ -14,6 +15,7 @@ import type { CheckoutRepo } from '@/modules/checkout/data-access.js';
 import {
   changeablePayment,
   isPageFlip,
+  isSwitchShaped,
   makeCheckoutApplier,
   planMethodChange,
 } from '@/modules/checkout/domain.js';
@@ -275,6 +277,53 @@ it.each([
   },
 ])('$pick → flip: $expected', ({ session, method, expected }) => {
   expect(isPageFlip(session, method)).toBe(expected);
+});
+
+// ---- isSwitchShaped: which used-up link the no-payment flip could have completed ----
+
+const usedLink = (
+  overrides: Partial<{
+    kind: CheckoutSessionKind;
+    origin: CheckoutOrigin | null;
+    status: CheckoutSessionStatus;
+    method: PaymentMethod | null;
+  }> = {},
+) => ({
+  kind: CheckoutSessionKind.CardChange,
+  origin: 'card_change' as CheckoutOrigin | null,
+  status: CheckoutSessionStatus.Completed,
+  method: CRYPTO as PaymentMethod | null,
+  ...overrides,
+});
+
+it.each([
+  {
+    link: 'a completed up-to-date change link that ended on crypto',
+    session: usedLink(),
+    expected: true,
+  },
+  {
+    link: 'the same link still open',
+    session: usedLink({ status: CheckoutSessionStatus.Created, method: null }),
+    expected: false,
+  },
+  {
+    link: 'a completed change link that ended on card',
+    session: usedLink({ method: CARD }),
+    expected: false,
+  },
+  {
+    link: 'a completed owed change link paid in crypto',
+    session: usedLink({ origin: 'card_change_arrears' }),
+    expected: false,
+  },
+  {
+    link: 'a completed crypto checkout',
+    session: usedLink({ kind: CheckoutSessionKind.Checkout, origin: null }),
+    expected: false,
+  },
+])('$link → switch-shaped: $expected', ({ session, expected }) => {
+  expect(isSwitchShaped(session)).toBe(expected);
 });
 
 // ---- applier: how a paid method-change lands on the payment ----

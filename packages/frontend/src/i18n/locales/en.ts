@@ -45,7 +45,11 @@ export default {
     pastDue:
       'This link expired on {date}. If payment is still due, we will send a new message.',
     completed: 'Payment completed.',
-    methodChangedCrypto: 'Payment method changed.',
+    methodChangedCrypto:
+      'Payment method changed to crypto. Nothing was charged, and your card is no longer saved.',
+    methodChangedCryptoNext:
+      'When the next payment is due, the bot will send you a crypto payment link. To pay by card instead, ask the bot for a new link.',
+    payCryptoNow: 'Pay with crypto now',
     changeMethod: 'Change payment method',
     processing: 'Processing your payment…',
     confirmed: 'Payment confirmed.',

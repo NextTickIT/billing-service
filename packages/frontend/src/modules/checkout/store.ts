@@ -91,6 +91,24 @@ const recoverableRefusal = (
 export const afterOptionPick = (notice: Notice | null): Notice | null =>
   notice?.perOption === true ? null : notice;
 
+/**
+ * The session re-read after a pick that took effect with no payment, for what only the
+ * used-up link knows (a renewal waiting to be paid). The switch is already confirmed on
+ * the page, so a read that fails must not replace that confirmation with an error: the
+ * session stays as it was, and reopening the link shows the rest.
+ */
+export const sessionAfterSwitch = async (
+  id: string,
+  current: CheckoutSessionPublic | null,
+): Promise<CheckoutSessionPublic | null> => {
+  try {
+    return await getCheckoutSession(id);
+  } catch (e) {
+    if (e instanceof CheckoutApiError || e instanceof TypeError) return current;
+    throw e;
+  }
+};
+
 export const useCheckoutStore = defineStore('checkout', () => {
   const session = ref<CheckoutSessionPublic | null>(null);
   const loading = ref(false);
