@@ -12,7 +12,12 @@ import {
   PaymentMethod,
   sessionIdOfRef,
 } from '@billing-service/shared';
-import { afterOptionPick, useCheckoutStore, useMethodPick } from './store.js';
+import {
+  afterOptionPick,
+  sessionAfterSwitch,
+  useCheckoutStore,
+  useMethodPick,
+} from './store.js';
 import { formatDate } from '@/app/datetime.js';
 import { useMoney } from '@/app/money.js';
 import BaseSpinner from '@/components/BaseSpinner.vue';
@@ -47,6 +52,10 @@ const isVerify = computed(
 // The pick took effect with no payment (crypto on an up-to-date change link): nothing to
 // hand off, the page says what changed.
 const applied = computed(() => store.instruction?.kind === 'applied');
+
+// The same switch seen on a later visit to the used-up link, which must not read as a
+// payment; it also carries the renewal the payer can still pay, when one is waiting.
+const switched = computed(() => store.session?.switched ?? null);
 
 const isPayable = computed(
   () =>
@@ -133,6 +142,11 @@ watch(
       submitW4PForm(instruction.action, instruction.fields);
     } else if (instruction.kind === 'redirect') {
       window.location.assign(instruction.url);
+    } else {
+      // The session as it is after the switch: only that read knows of a waiting renewal.
+      void sessionAfterSwitch(id, store.session).then((session) => {
+        store.session = session;
+      });
     }
   },
 );
@@ -309,8 +323,18 @@ const legalLinks = [
       </div>
 
       <template v-else-if="store.session">
-        <div v-if="applied" class="checkout__msg checkout__msg--ok">
+        <div v-if="applied || switched" class="checkout__msg checkout__msg--ok">
           {{ t('checkout.methodChangedCrypto') }}
+          <span class="checkout__msg-detail">
+            {{ t('checkout.methodChangedCryptoNext') }}
+          </span>
+          <a
+            v-if="switched?.payUrl"
+            :href="switched.payUrl"
+            class="checkout__switch-pay"
+          >
+            {{ t('checkout.payCryptoNow') }}
+          </a>
         </div>
 
         <div
@@ -572,6 +596,12 @@ const legalLinks = [
   margin-top: 0.35rem;
   font-size: 0.875em;
   opacity: 0.8;
+}
+.checkout__switch-pay {
+  display: block;
+  margin-top: 0.75rem;
+  font-weight: 600;
+  color: inherit;
 }
 .checkout__msg--warn {
   color: var(--amber);

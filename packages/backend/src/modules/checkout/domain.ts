@@ -451,6 +451,19 @@ export const isPageFlip = (
   method === PaymentMethod.Crypto;
 
 /**
+ * Whether a used-up change link is one the page flip could have completed: the only
+ * no-payment switch there is. A paid change session has the same shape, so the caller
+ * also checks that no provider was ever involved (`completedWithoutProvider`).
+ */
+export const isSwitchShaped = (
+  session: Pick<CheckoutSession, 'kind' | 'origin' | 'status' | 'method'>,
+): boolean =>
+  session.kind === CheckoutSessionKind.CardChange &&
+  session.origin === 'card_change' &&
+  session.status === CheckoutSessionStatus.Completed &&
+  session.method === PaymentMethod.Crypto;
+
+/**
  * Whether a charge on an open checkout session may settle under the session's terms.
  * Both providers map an unknown currency to UAH, so a succeeded charge in another
  * currency is not what the session priced: never book it (quarantine, loudly). A

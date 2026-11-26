@@ -8,6 +8,8 @@ import {
   CheckoutSessionStatus,
   firstChargeOf,
   type NewCheckoutSession,
+  type PaymentMethod,
+  PaymentStatus,
 } from '@billing-service/shared';
 import { Effect, Option } from 'effect';
 
@@ -289,6 +291,51 @@ const renameOpenSessionsExternalUser =
         AND status IN (${CheckoutSessionStatus.Created}, ${CheckoutSessionStatus.Pending})
       RETURNING id
     `.pipe(Effect.map((rows) => rows.length));
+
+/**
+ * Whether a session was completed with no provider ever involved, which only
+ * `claimAsApplied` does: every paid session was claimed first, and a claim stamps
+ * `"firstSentToProviderAt"` for good.
+ */
+export const completedWithoutProvider =
+  (sql: SqlClient.SqlClient) => (id: string) =>
+    sql<{ readonly id: string }>`
+      SELECT id FROM checkout_sessions
+      WHERE id = ${id} AND status = ${CheckoutSessionStatus.Completed}
+        AND "firstSentToProviderAt" IS NULL AND "claimedAt" IS NULL
+    `.pipe(Effect.map((rows) => rows.length > 0));
+
+/**
+ * The renewal link a used-up switch may offer: the newest still-payable pay-now or
+ * manual-renewal session of the subscription the switch acted on, while that subscription
+ * is live and still pays by `method`. The link, the subscription and the switch must all
+ * belong to one contact: after a remap (docs/31) a completed session keeps its old contact,
+ * and must not hand out the new contact's link. A Pending pay-now link of another method
+ * is left out, because `/pay` refuses it (a stale link already at a provider is never
+ * re-minted); a lapsed one too, since the scheduler mints the next.
+ */
+export const findSwitchRenewal =
+  (sql: SqlClient.SqlClient) =>
+  (
+    switched: Pick<CheckoutSession, 'paymentId' | 'externalUserId'>,
+    method: PaymentMethod,
+  ) =>
+    sql<{ readonly id: string }>`
+      SELECT r.id FROM checkout_sessions r
+      JOIN payments p ON p.id::text = r."renewalOf"
+      WHERE r."renewalOf" = ${switched.paymentId}
+        AND p."externalUserId" = ${switched.externalUserId}
+        AND r."externalUserId" = ${switched.externalUserId}
+        AND p.status IN (${PaymentStatus.Active}, ${PaymentStatus.PastDue})
+        AND p.method = ${method}
+        AND r.origin IN ('prolong', 'manual_renewal')
+        AND r."expiresAt" > now()
+        AND (r.status = ${CheckoutSessionStatus.Created}
+          OR (r.status = ${CheckoutSessionStatus.Pending}
+            AND (r.origin = 'manual_renewal' OR r.method = p.method)))
+      ORDER BY r."createdAt" DESC
+      LIMIT 1
+    `.pipe(Effect.map((rows) => Option.fromNullable(rows[0]?.id)));
 
 /**
  * A session read under a row lock held to the end of the surrounding transaction: the

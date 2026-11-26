@@ -156,6 +156,7 @@ describe('public session and prolong contracts', () => {
       prolong: true,
       everSentToProvider: false,
       cryptoSwitches: false,
+      switched: null,
       options: [
         {
           amount: 5000,

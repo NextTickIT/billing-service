@@ -55,6 +55,8 @@ import { serviceActor } from '@/modules/auth/service-actor.js';
 import {
   type CheckoutRepo,
   closeOpenCardCheck,
+  completedWithoutProvider,
+  findSwitchRenewal,
   makeCheckoutRepo,
 } from '@/modules/checkout/data-access.js';
 import {
@@ -64,6 +66,7 @@ import {
   cycleOptions,
   defaultOptionIndex,
   isPageFlip,
+  isSwitchShaped,
   type MethodChangePlan,
   type PickedOption,
   pickOption,
@@ -417,6 +420,49 @@ const authorizeSessionRead = (request: FastifyRequest) => {
   });
 };
 
+/**
+ * What a used-up change link shows when its pick switched the method with no payment
+ * (the page flip): the method it switched to and the renewal link it may offer
+ * (`findSwitchRenewal`). Null for every other session.
+ */
+const switchedOf = (
+  sql: SqlClient.SqlClient,
+  session: CheckoutSession,
+  baseUrl: string,
+) =>
+  Effect.gen(function* () {
+    if (
+      !isSwitchShaped(session) ||
+      !(yield* completedWithoutProvider(sql)(session.id))
+    ) {
+      return null;
+    }
+    const method = PaymentMethod.Crypto;
+    const renewal = yield* findSwitchRenewal(sql)(session, method);
+    return {
+      method,
+      payUrl: Option.match(renewal, {
+        onNone: () => null,
+        onSome: (id) => checkoutPath(baseUrl, id),
+      }),
+    };
+  });
+
+/** Both sides of the no-payment switch as the page sees them: whether a Crypto pick on
+ * this link would be one, and whether one already used the link up. */
+const switchViewOf = (
+  sql: SqlClient.SqlClient,
+  session: CheckoutSession,
+  request: FastifyRequest,
+) =>
+  Effect.map(
+    switchedOf(sql, session, request.server.appConfig.checkoutBaseUrl),
+    (switched) => ({
+      cryptoSwitches: isPageFlip(session, PaymentMethod.Crypto),
+      switched,
+    }),
+  );
+
 const getSession = (_input: unknown, request: FastifyRequest) =>
   Effect.gen(function* () {
     yield* authorizeSessionRead(request);
@@ -475,7 +521,7 @@ const getSession = (_input: unknown, request: FastifyRequest) =>
       methodLocked: prolong || lockMethod,
       prolong,
       everSentToProvider: yield* repo.everSentToProvider(id),
-      cryptoSwitches: isPageFlip(found.value, PaymentMethod.Crypto),
+      ...(yield* switchViewOf(sql, found.value, request)),
     };
   });
 

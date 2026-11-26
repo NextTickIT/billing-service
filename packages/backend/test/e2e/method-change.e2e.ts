@@ -10,6 +10,7 @@ import {
 import { SqlClient } from '@effect/sql';
 import { Effect } from 'effect';
 
+import { loadConfig } from '@/config.js';
 import { TaskRegistry } from '@/infra/task-registry.js';
 import { registerHandlers, runFor } from '@/modules/charge/test/e2e-harness.js';
 import { Outbox } from '@/modules/outbox/domain.js';
@@ -20,6 +21,7 @@ import { bearer, withCardCheckApp } from './card-check.e2e.js';
 import type { Scenario } from './http-harness.js';
 import { postJson } from './http-harness.js';
 import {
+  callProlong,
   eventsOf,
   type Http,
   httpContext,
@@ -28,6 +30,7 @@ import {
   publicRead,
   scalar,
   seedSubs,
+  sessionIdOf,
   WHITEPAY_PAY_URL,
   withWhitePayApp,
   onApp,
@@ -158,6 +161,80 @@ const cryptoPick: Scenario = {
       },
       VERIFY_ON,
     );
+  },
+};
+
+const rename = async (http: Http, from: string, to: string): Promise<void> => {
+  const res = await postJson(
+    `${http.baseUrl}/api/payment/rename-external-user`,
+    { from, to },
+    bearer(http.secret),
+  );
+  assert.equal(res.status, 200, `rename ${from} → ${to} → 200`);
+};
+
+const usedUpSwitch: Scenario = {
+  name: 'method change without a method: the link used up by a crypto switch reads as a switch, and carries the renewal link once one is open',
+  run: async ({ baseUrl, query }) => {
+    const http = await httpContext(baseUrl, query, 'mc-used');
+    const contact = 'sp:mc-used';
+    await seedSubs([{ externalUserId: contact, end: END }]);
+    await withWhitePayApp(async (whitePayUrl) => {
+      const on = await onApp(http, whitePayUrl);
+      const id = String((await methodChange(on, contact))['sessionId']);
+      const open = await publicRead(on, id);
+      await pay(on, id, PaymentMethod.Crypto);
+
+      const switched = await publicRead(on, id);
+      const renewalId = await sessionIdOf(
+        await callProlong(on, contact),
+        'pay-now link of the switched sub',
+      );
+      const withRenewal = await publicRead(on, id);
+
+      assert.equal(open['switched'], null, 'an open link is no switch');
+      assert.deepEqual(
+        switched['switched'],
+        { method: PaymentMethod.Crypto, payUrl: null },
+        'a switch, with nothing to pay yet',
+      );
+      assert.deepEqual(
+        withRenewal['switched'],
+        {
+          method: PaymentMethod.Crypto,
+          payUrl: `${loadConfig().checkoutBaseUrl}/checkout/${renewalId}`,
+        },
+        'the open renewal link of the same sub',
+      );
+    });
+  },
+};
+
+const switchAfterRemap: Scenario = {
+  name: 'method change without a method: a used-up switch link never hands out the renewal link of the contact its sub was remapped to',
+  run: async ({ baseUrl, query }) => {
+    const http = await httpContext(baseUrl, query, 'mc-remap');
+    const before = 'sp:mc-remap-a';
+    const after = 'sp:mc-remap-b';
+    await seedSubs([{ externalUserId: before, end: END }]);
+    await withWhitePayApp(async (whitePayUrl) => {
+      const on = await onApp(http, whitePayUrl);
+      const id = String((await methodChange(on, before))['sessionId']);
+      await pay(on, id, PaymentMethod.Crypto);
+      await rename(on, before, after);
+      await sessionIdOf(
+        await callProlong(on, after),
+        'pay-now link of the remapped contact',
+      );
+
+      const read = await publicRead(on, id);
+
+      assert.deepEqual(
+        read['switched'],
+        { method: PaymentMethod.Crypto, payUrl: null },
+        "still a switch, but the other contact's link stays private",
+      );
+    });
   },
 };
 
@@ -306,6 +383,8 @@ const switchTwice: Scenario = {
 
 export const methodChangeScenarios: readonly Scenario[] = [
   cryptoPick,
+  usedUpSwitch,
+  switchAfterRemap,
   cardPick,
   owedCryptoPick,
   dueSub,

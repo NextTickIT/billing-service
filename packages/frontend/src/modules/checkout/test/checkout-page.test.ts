@@ -45,6 +45,7 @@ const single: CheckoutSessionPublic = {
   prolong: false,
   everSentToProvider: false,
   cryptoSwitches: false,
+  switched: null,
   options: [
     { amount: 5000, period: 'P4W', promo: null, renewal: null, cycles: null },
   ],
@@ -503,9 +504,9 @@ describe('a payment-method change link', () => {
   });
 
   it.each([
-    ['en', 'Payment method changed.'],
-    ['uk', 'Спосіб оплати змінено.'],
-    ['ru', 'Способ оплаты изменён.'],
+    ['en', 'Payment method changed to crypto. Nothing was charged'],
+    ['uk', 'Спосіб оплати змінено на крипто. Кошти не списано'],
+    ['ru', 'Способ оплаты изменён на крипто. Деньги не списаны'],
   ])(
     'a crypto pick applied without payment says so, with no Pay button (%s)',
     async (locale, expected) => {
@@ -518,6 +519,67 @@ describe('a payment-method change link', () => {
       expect(html).not.toContain('checkout__paybtn');
     },
   );
+});
+
+// The same link opened again after the crypto pick used it up.
+const usedUpSwitch: CheckoutSessionPublic = {
+  ...verifyChange,
+  status: CheckoutSessionStatus.Completed,
+  method: PaymentMethod.Crypto,
+  switched: { method: PaymentMethod.Crypto, payUrl: null },
+};
+
+const RENEWAL_URL =
+  'https://bill.example/checkout/chk_11111111-2222-4333-8444-555555555555';
+
+describe('a change link used up by a switch to crypto', () => {
+  it.each([
+    ['en', 'Payment method changed to crypto', 'Payment completed'],
+    ['uk', 'Спосіб оплати змінено на крипто', 'Оплату виконано'],
+    ['ru', 'Способ оплаты изменён на крипто', 'Оплата выполнена'],
+  ])(
+    'says the method changed, never that a payment was made (%s)',
+    async (locale, expected, paidWording) => {
+      const html = await render(usedUpSwitch, locale);
+
+      expect(html).toContain(expected);
+      expect(html).not.toContain(paidWording);
+    },
+  );
+
+  it('tells the payer how to get back to paying by card', async () => {
+    const html = await render(usedUpSwitch, 'uk');
+
+    expect(html).toContain('попросіть у бота нове посилання');
+  });
+
+  it('links to the waiting renewal so it can be paid in crypto', async () => {
+    const html = await render(
+      {
+        ...usedUpSwitch,
+        switched: { method: PaymentMethod.Crypto, payUrl: RENEWAL_URL },
+      },
+      'uk',
+    );
+
+    expect(html).toContain(`href="${RENEWAL_URL}"`);
+    expect(html).toContain('Сплатити криптою зараз');
+  });
+
+  it('offers no pay link while no renewal is waiting', async () => {
+    const html = await render(usedUpSwitch, 'uk');
+
+    expect(html).not.toContain('Сплатити криптою зараз');
+  });
+
+  it('a change link completed by a payment still says the payment was made', async () => {
+    const html = await render(
+      { ...usedUpSwitch, method: PaymentMethod.Card, switched: null },
+      'uk',
+    );
+
+    expect(html).toContain('Оплату виконано.');
+  });
 });
 
 describe('a crypto switch on a change link', () => {

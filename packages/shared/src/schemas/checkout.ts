@@ -756,6 +756,16 @@ export const CheckoutSessionPublic = CheckoutSession.pipe(
       // A Crypto pick switches the method with no payment (a method-less change link for an
       // up-to-date sub, docs/32 §7): the page confirms the switch instead of charging.
       cryptoSwitches: Schema.Boolean,
+      // Set only on a session that pick completed (the switch took no payment): the page
+      // says the method changed instead of claiming a payment was made. `payUrl` is the
+      // subscription's open renewal link while it still pays by `method`, so a payer whose
+      // renewal is waiting can pay it from the used-up link.
+      switched: Schema.NullOr(
+        Schema.Struct({
+          method: PaymentMethodSchema,
+          payUrl: Schema.NullOr(Schema.String),
+        }),
+      ),
       options: Schema.Array(CheckoutOptionPublic),
       defaultOption: Schema.Int,
     }),
