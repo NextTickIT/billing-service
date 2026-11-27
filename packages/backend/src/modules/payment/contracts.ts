@@ -58,7 +58,7 @@ export const DeferNotify = Schema.Struct({
   newPeriodEnd: Schema.String,
   days: Schema.Int,
   at: Schema.Number,
-  reason: Schema.optional(Schema.Literal('handover')),
+  reason: Schema.optional(Schema.Literal('handover', 'campaign')),
   revision: Schema.optionalWith(Schema.Int, { default: () => 0 }),
 });
 
