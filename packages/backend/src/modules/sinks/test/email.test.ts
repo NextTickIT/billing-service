@@ -91,6 +91,8 @@ const connector = (
     readonly sendStatus?: number;
     readonly cache?: Ref.Ref<CachedToken | null>;
     readonly bodies?: Bodies;
+    /** `successUrl` by checkout session id; a session absent here has none. */
+    readonly successUrls?: Readonly<Record<string, string>>;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -113,6 +115,8 @@ const connector = (
                 ? Option.none<string>()
                 : Option.some(opts.address),
             ),
+          resolveSuccessUrl: (sessionId) =>
+            Effect.succeed(Option.fromNullable(opts.successUrls?.[sessionId])),
         },
         opts.events ?? ['initial_payment_succeeded'],
       ),
@@ -227,6 +231,106 @@ describe('renderReceipt for a crypto payment', () => {
 
   it('keeps the payment details on a card receipt', () => {
     expect(renderReceipt(event())?.html).toContain('Карта');
+  });
+
+  it("sends a first payment's button to the caller's success URL", () => {
+    const r = crypto('initial_payment_succeeded', {
+      successUrl: 'https://go.test/paid?buyer=b1',
+    });
+
+    expect(r?.html).toContain('href="https://go.test/paid?buyer=b1"');
+    expect(r?.html).not.toContain('href="https://t.me/next_tick_bot"');
+    expect(r?.text).toContain('Перейти в бот: https://go.test/paid?buyer=b1');
+  });
+
+  it('falls back to the bot when the success URL is not http', () => {
+    const r = crypto('initial_payment_succeeded', {
+      successUrl: 'javascript:alert(1)',
+    });
+
+    expect(r?.html).toContain('href="https://t.me/next_tick_bot"');
+    expect(r?.html).not.toContain('javascript:');
+  });
+});
+
+/** The HTML part of the one email a connector run sent. */
+const sentHtml = (calls: readonly Recorded[]): string => {
+  const sent = calls[1]?.body as { email: Record<string, unknown> };
+  return Buffer.from(String(sent.email['html']), 'base64').toString('utf8');
+};
+
+const deliverWithSession = (
+  over: Partial<StoredEvent>,
+  events: readonly string[],
+) => {
+  const calls: Recorded[] = [];
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const { sink } = yield* connector(calls, {
+        address: 'a@b.co',
+        events,
+        successUrls: { chk_1: 'https://go.test/paid?buyer=b1' },
+      });
+      const base = event(over);
+      yield* sink.deliver({
+        ...base,
+        payload: { ...base.payload, checkoutSessionId: 'chk_1' },
+      });
+      return sentHtml(calls);
+    }),
+  );
+};
+
+describe("email connector and the checkout's success URL", () => {
+  it('puts it on a card first-payment receipt', async () => {
+    const html = await deliverWithSession({}, ['initial_payment_succeeded']);
+
+    expect(html).toContain('href="https://go.test/paid?buyer=b1"');
+    expect(html).toContain('Открыть доступ');
+  });
+
+  it('puts it on a crypto first-payment receipt in place of the bot', async () => {
+    const html = await deliverWithSession(
+      { payload: { amount: 25000, currency: 1, method: 1, period: 'P22W' } },
+      ['initial_payment_succeeded'],
+    );
+
+    expect(html).toContain('href="https://go.test/paid?buyer=b1"');
+    expect(html).not.toContain('href="https://t.me/next_tick_bot"');
+  });
+
+  it('puts it on a one-time purchase receipt', async () => {
+    const html = await deliverWithSession(
+      { name: 'one_time_purchase_succeeded' },
+      ['one_time_purchase_succeeded'],
+    );
+
+    expect(html).toContain('href="https://go.test/paid?buyer=b1"');
+  });
+
+  it('leaves a renewal receipt without it', async () => {
+    const html = await deliverWithSession(
+      { name: 'recurring_payment_succeeded' },
+      ['recurring_payment_succeeded'],
+    );
+
+    expect(html).not.toContain('https://go.test');
+  });
+
+  it('sends a first-payment receipt with no button when the session has none', async () => {
+    const calls: Recorded[] = [];
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { sink } = yield* connector(calls, { address: 'a@b.co' });
+        const base = event();
+        yield* sink.deliver({
+          ...base,
+          payload: { ...base.payload, checkoutSessionId: 'chk_none' },
+        });
+      }),
+    );
+
+    expect(sentHtml(calls)).not.toContain('Открыть доступ');
   });
 });
 

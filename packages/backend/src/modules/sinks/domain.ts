@@ -36,6 +36,9 @@ export interface ConnectorDeps {
   readonly resolveEmail: (
     externalUserId: string,
   ) => Effect.Effect<Option.Option<string>>;
+  readonly resolveSuccessUrl: (
+    checkoutSessionId: string,
+  ) => Effect.Effect<Option.Option<string>>;
   /** The CRM's own limiter — a separate budget, so a CRM backlog cannot throttle the
    * customer-facing SendPulse deliveries sharing this process. */
   readonly crmRateLimiter: RateLimiter;
@@ -59,6 +62,7 @@ const emailConnector = (
       rateLimiter: deps.emailRateLimiter,
       tokenCache: deps.emailTokenCache,
       resolveEmail: deps.resolveEmail,
+      resolveSuccessUrl: deps.resolveSuccessUrl,
     },
     sink.config.events,
   );

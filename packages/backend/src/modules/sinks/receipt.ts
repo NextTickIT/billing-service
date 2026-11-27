@@ -206,7 +206,9 @@ const COPY: Readonly<Record<string, Copy>> = {
  * A crypto payer's receipt is about access, not the money: no amount, no currency, no
  * payment method, no dates. Crypto settles minutes to hours after the payer left the
  * page, so all this email has to say is "you are in" — and point at the bot, where the
- * subscription and its dates live.
+ * subscription and its dates live. On a first payment the button is the caller's
+ * `successUrl` when there is one: that link is what hands the purchase over, and the
+ * redirect to it is exactly what this payer missed.
  */
 const CRYPTO_LEAD: Readonly<Record<string, string>> = {
   initial_payment_succeeded: 'Доступ к NextTick открыт.',
@@ -318,7 +320,13 @@ const viewFor = (event: StoredEvent): View | null => {
       heading: 'Спасибо!',
       paragraphs: [crypto, 'Все детали — в нашем боте.'],
       rows: [],
-      action: { url: BOT_URL, label: 'Перейти в бот' },
+      action: {
+        url:
+          (event.name === 'initial_payment_succeeded'
+            ? safeUrl(payload['successUrl'])
+            : null) ?? BOT_URL,
+        label: 'Перейти в бот',
+      },
     };
   const copy = COPY[event.name];
   if (copy === undefined) return null;
