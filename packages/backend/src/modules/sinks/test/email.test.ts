@@ -299,6 +299,15 @@ describe("email connector and the checkout's success URL", () => {
     expect(html).not.toContain('href="https://t.me/next_tick_bot"');
   });
 
+  it('puts it on a one-time purchase receipt', async () => {
+    const html = await deliverWithSession(
+      { name: 'one_time_purchase_succeeded' },
+      ['one_time_purchase_succeeded'],
+    );
+
+    expect(html).toContain('href="https://go.test/paid?buyer=b1"');
+  });
+
   it('leaves a renewal receipt without it', async () => {
     const html = await deliverWithSession(
       { name: 'recurring_payment_succeeded' },
