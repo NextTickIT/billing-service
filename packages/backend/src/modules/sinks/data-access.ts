@@ -31,6 +31,13 @@ export interface SinksRepo {
   readonly findEmail: (
     externalUserId: string,
   ) => Effect.Effect<Option.Option<string>, SqlError.SqlError>;
+  /**
+   * Where the caller asked the payer to land after paying, read off the checkout
+   * session. The payment events do not carry it, so a receipt asks for it by session.
+   */
+  readonly findSuccessUrl: (
+    checkoutSessionId: string,
+  ) => Effect.Effect<Option.Option<string>, SqlError.SqlError>;
 }
 
 const listWithSecret = (sql: SqlClient.SqlClient) => () =>
@@ -79,9 +86,16 @@ const findEmail = (sql: SqlClient.SqlClient) => (externalUserId: string) =>
     LIMIT 1
   `.pipe(Effect.map((rows) => Option.fromNullable(rows[0]?.email)));
 
+const findSuccessUrl =
+  (sql: SqlClient.SqlClient) => (checkoutSessionId: string) =>
+    sql<{ readonly successUrl: string | null }>`
+      SELECT "successUrl" FROM checkout_sessions WHERE id = ${checkoutSessionId}
+    `.pipe(Effect.map((rows) => Option.fromNullable(rows[0]?.successUrl)));
+
 export const makeSinksRepo = (sql: SqlClient.SqlClient): SinksRepo => ({
   listWithSecret: listWithSecret(sql),
   getWithSecret: getWithSecret(sql),
   write: write(sql),
   findEmail: findEmail(sql),
+  findSuccessUrl: findSuccessUrl(sql),
 });

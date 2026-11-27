@@ -75,6 +75,10 @@ export interface EmailClientOptions {
   readonly resolveEmail: (
     externalUserId: string,
   ) => Effect.Effect<Option.Option<string>>;
+  /** The `successUrl` of the checkout that took this payment, or None. */
+  readonly resolveSuccessUrl: (
+    checkoutSessionId: string,
+  ) => Effect.Effect<Option.Option<string>>;
 }
 
 interface HttpFail {
@@ -239,6 +243,42 @@ const assertSent = (raw: string): Effect.Effect<void, HttpFail> => {
 const b64 = (value: string): string =>
   Buffer.from(value, 'utf8').toString('base64');
 
+/**
+ * A first payment is the one receipt whose button must finish the purchase: the
+ * caller's `successUrl` is where access is handed over, and a crypto payer has long
+ * left the page that would have redirected there. A renewal has nothing to finish.
+ */
+const FIRST_PAYMENT_EVENTS: readonly string[] = [
+  'initial_payment_succeeded',
+  'one_time_purchase_succeeded',
+];
+
+/** The event with its checkout's `successUrl` on the payload, when there is one to add. */
+const withSuccessUrl = (
+  ctx: EmailClientOptions,
+  event: StoredEvent,
+): Effect.Effect<StoredEvent> => {
+  const sessionId = event.payload['checkoutSessionId'];
+  if (
+    !FIRST_PAYMENT_EVENTS.includes(event.name) ||
+    typeof sessionId !== 'string' ||
+    typeof event.payload['successUrl'] === 'string'
+  ) {
+    return Effect.succeed(event);
+  }
+  return ctx.resolveSuccessUrl(sessionId).pipe(
+    Effect.map(
+      Option.match({
+        onNone: () => event,
+        onSome: (successUrl) => ({
+          ...event,
+          payload: { ...event.payload, successUrl },
+        }),
+      }),
+    ),
+  );
+};
+
 export const makeEmailConnector = (
   ctx: EmailClientOptions,
   events: readonly string[],
@@ -252,7 +292,7 @@ export const makeEmailConnector = (
       if (event.externalUserId === null) {
         return; // no owner to address (a quarantine event) — also out of scope
       }
-      const rendered = renderReceipt(event);
+      const rendered = renderReceipt(yield* withSuccessUrl(ctx, event));
       if (rendered === null) {
         // Configured to email an event the template has no copy for. Loud on purpose:
         // the alternative is a customer-shaped gap nobody sees.

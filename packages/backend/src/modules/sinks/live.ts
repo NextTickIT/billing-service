@@ -71,6 +71,8 @@ export const SinksLive = (
         // the enclosing delivery retries rather than quietly sending to nobody.
         resolveEmail: (externalUserId) =>
           repo.findEmail(externalUserId).pipe(Effect.orDie),
+        resolveSuccessUrl: (checkoutSessionId) =>
+          repo.findSuccessUrl(checkoutSessionId).pipe(Effect.orDie),
       };
       const cache = yield* Ref.make<CacheState | null>(null);
 
