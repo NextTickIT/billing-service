@@ -5,6 +5,7 @@ import { expect } from 'vitest';
 
 import {
   cancelLapsed,
+  deferNotify as deferNotifyHandler,
   lapseNotify,
   methodChanged,
   methodChangeNotify,
@@ -109,6 +110,25 @@ it.effect('paymentDeferred: id is deterministic from paymentId and at', () =>
     expect(e1.id).toBe(e2.id);
     expect(e1.id).toBe(`evt_pay_abc_deferred_${deferNotify.at.toString()}`);
   }),
+);
+
+it.effect.each(['handover', 'campaign'] as const)(
+  'deferNotify: a %s defer is published with its reason',
+  (reason) =>
+    Effect.gen(function* () {
+      const pub = recordingPublish();
+
+      yield* deferNotifyHandler(pub.publish)({ ...deferNotify, reason });
+
+      expect(pub.events).toHaveLength(1);
+      expect(pub.events[0]?.name).toBe('payment_deferred');
+      expect(pub.events[0]?.payload).toEqual({
+        newPeriodEnd: '2026-09-12',
+        days: 30,
+        reason,
+        revision: 1,
+      });
+    }),
 );
 
 it.effect('cancelLapsed: produces renewal_failed with reason cancelled', () =>
